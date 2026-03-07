@@ -3,6 +3,7 @@ import { Effect, Encoding, Fiber, Option, Ref } from "effect"
 import { TestClock } from "effect/testing"
 import {
   HttpClient,
+  HttpClientError,
   HttpClientRequest,
   HttpClientResponse,
 } from "effect/unstable/http"
@@ -350,6 +351,38 @@ describe("CodexAuth", () => {
     }),
   )
 
+  it.effect("captures transport failures when requesting a device code", () =>
+    Effect.gen(function* () {
+      const cause = new Error("boom")
+      const client = HttpClient.make((request) =>
+        Effect.fail(
+          new HttpClientError.HttpClientError({
+            reason: new HttpClientError.TransportError({
+              request,
+              cause,
+            }),
+          }),
+        ),
+      )
+
+      const error = yield* requestDeviceCode().pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.flip,
+      )
+
+      assert.strictEqual(error.reason, "DeviceFlowFailed")
+      assert.strictEqual(
+        error.message,
+        "Failed to request a Codex device authorization code",
+      )
+      assert.strictEqual(HttpClientError.isHttpClientError(error.cause), true)
+      if (!HttpClientError.isHttpClientError(error.cause)) {
+        assert.fail("Expected an HttpClientError cause")
+      }
+      assert.strictEqual(error.cause.cause, cause)
+    }),
+  )
+
   it.effect(
     "treats 404 and 403 poll responses as pending with the safety delay",
     () =>
@@ -517,6 +550,26 @@ describe("CodexAuth", () => {
         assert.strictEqual(body.get("refresh_token"), "refresh-token")
         assert.strictEqual(body.get("client_id"), CLIENT_ID)
       }),
+  )
+
+  it.effect("captures decode failures when refreshing tokens", () =>
+    Effect.gen(function* () {
+      const { client } = yield* makeClient(() =>
+        jsonResponse({ access_token: "access-token" }),
+      )
+
+      const error = yield* refreshToken("refresh-token").pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.flip,
+      )
+
+      assert.strictEqual(error.reason, "RefreshFailed")
+      assert.strictEqual(
+        error.message,
+        "Failed to decode the Codex refresh token response",
+      )
+      assert.notStrictEqual(error.cause, undefined)
+    }),
   )
 
   it("re-exports the public Codex auth surface without storage helpers", () => {

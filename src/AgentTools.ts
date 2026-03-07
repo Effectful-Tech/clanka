@@ -44,9 +44,9 @@ export const AgentTools = Toolkit.make(
       glob: Schema.optional(Schema.String).annotate({
         documentation: "--glob",
       }),
-      maxLines: Schema.Finite.annotate({
+      maxLines: Schema.optional(Schema.Finite).annotate({
         documentation:
-          "The total maximum number of lines to return across all files",
+          "The total maximum number of lines to return across all files (default: 500)",
       }),
     }),
     success: Schema.String,
@@ -86,6 +86,9 @@ export const AgentToolHandlers = AgentTools.toLayer(
 
     return AgentTools.of({
       readFile: Effect.fn("AgentTools.readFile")(function* (options) {
+        yield* Effect.logInfo(`Calling "readFile"`).pipe(
+          Effect.annotateLogs(options),
+        )
         const cwd = yield* CurrentDirectory
         let stream = pipe(
           fs.stream(pathService.join(cwd, options.path)),
@@ -107,6 +110,7 @@ export const AgentToolHandlers = AgentTools.toLayer(
         )
       }),
       rg: Effect.fn("AgentTools.rg")(function* (options) {
+        yield* Effect.logInfo(`Calling "rg"`).pipe(Effect.annotateLogs(options))
         const cwd = yield* CurrentDirectory
         const args = ["--max-filesize", "1M", "--line-number"]
         if (options.glob) {
@@ -125,21 +129,25 @@ export const AgentToolHandlers = AgentTools.toLayer(
             return line.slice(0, 500) + "...[truncated]"
           }),
         )
-        if (options.maxLines) {
-          stream = Stream.take(stream, options.maxLines)
-        }
+        stream = Stream.take(stream, options.maxLines ?? 500)
         return yield* Stream.runCollect(stream).pipe(
           Effect.map(Array.join("\n")),
           Effect.orDie,
         )
       }),
       glob: Effect.fn("AgentTools.glob")(function* (pattern) {
+        yield* Effect.logInfo(`Calling "glob"`).pipe(
+          Effect.annotateLogs({ pattern }),
+        )
         const cwd = yield* CurrentDirectory
         return yield* Effect.promise(() => Glob.glob(pattern, { cwd })).pipe(
           Effect.map(Array.join("\n")),
         )
       }),
       bash: Effect.fn("AgentTools.bash")(function* (command) {
+        yield* Effect.logInfo(`Calling "bash"`).pipe(
+          Effect.annotateLogs({ command }),
+        )
         const cwd = yield* CurrentDirectory
         const cmd = ChildProcess.make("bash", ["-c", command], {
           cwd,

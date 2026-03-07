@@ -53,11 +53,9 @@ ${options.script}
             ) as Tool.Handler<string>
             // oxlint-disable-next-line typescript/no-explicit-any
             sandbox[name] = function (params: any) {
-              return Effect.logInfo(`Calling "${name}"`).pipe(
-                Effect.andThen(handler.handler(params, {})),
-                Effect.provideServices(handler.services),
-                runPromise,
-              )
+              return handler
+                .handler(params, {})
+                .pipe(Effect.provideServices(handler.services), runPromise)
             }
           }
 

@@ -224,10 +224,29 @@ describe("TypeBuilder", () => {
     ).toBe("200 | 404")
   })
 
+  it("renders numeric enum reverse mappings as literal unions", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.Enum({
+          200: "Ok",
+          404: "NotFound",
+          Ok: 200,
+          NotFound: 404,
+        }),
+      ),
+    ).toBe("200 | 404")
+  })
+
   it("renders template literals with interpolations", () => {
     expect(
       TypeBuilder.render(Schema.TemplateLiteral(["user_", Schema.String])),
     ).toBe("`user_${string}`")
+  })
+
+  it("renders template literals that start with interpolations", () => {
+    expect(
+      TypeBuilder.render(Schema.TemplateLiteral([Schema.String, "_suffix"])),
+    ).toBe("`${string}_suffix`")
   })
 
   it("renders all-literal template literals as string literals", () => {

@@ -15,6 +15,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import * as Glob from "glob"
 import * as Rg from "@vscode/ripgrep"
 import { NodeServices } from "@effect/platform-node"
+import { patchContent } from "./ApplyPatch.ts"
 
 export class CurrentDirectory extends ServiceMap.Service<
   CurrentDirectory,
@@ -68,6 +69,30 @@ export const AgentTools = Toolkit.make(
     success: Schema.String,
     dependencies: [CurrentDirectory],
   }),
+  Tool.make("applyPatch", {
+    description: "Apply a patch to a single file.",
+    parameters: Schema.Struct({
+      path: Schema.String,
+      patchText: Schema.String.annotate({
+        documentation: "Raw @@ hunks or one wrapped update block.",
+      }),
+    }),
+    success: Schema.String,
+    dependencies: [CurrentDirectory],
+  }),
+  Tool.make("removeFile", {
+    description: "Remove a file at the given path.",
+    parameters: Schema.String.annotate({
+      identifier: "path",
+    }),
+    dependencies: [CurrentDirectory],
+  }),
+  Tool.make("sleep", {
+    description: "Sleep for a specified number of milliseconds",
+    parameters: Schema.Finite.annotate({
+      identifier: "ms",
+    }),
+  }),
   Tool.make("taskComplete", {
     description:
       "Call this when you have fully completed the user's task, completely ending the session",
@@ -91,7 +116,7 @@ export const AgentToolHandlers = AgentTools.toLayer(
         )
         const cwd = yield* CurrentDirectory
         let stream = pipe(
-          fs.stream(pathService.join(cwd, options.path)),
+          fs.stream(pathService.resolve(cwd, options.path)),
           Stream.decodeText,
           Stream.splitLines,
         )
@@ -109,6 +134,13 @@ export const AgentToolHandlers = AgentTools.toLayer(
           Effect.orDie,
         )
       }),
+      removeFile: Effect.fn("AgentTools.removeFile")(function* (path) {
+        yield* Effect.logInfo(`Calling "removeFile"`).pipe(
+          Effect.annotateLogs({ path }),
+        )
+        const cwd = yield* CurrentDirectory
+        yield* fs.remove(pathService.resolve(cwd, path))
+      }, Effect.orDie),
       rg: Effect.fn("AgentTools.rg")(function* (options) {
         yield* Effect.logInfo(`Calling "rg"`).pipe(Effect.annotateLogs(options))
         const cwd = yield* CurrentDirectory
@@ -155,6 +187,22 @@ export const AgentToolHandlers = AgentTools.toLayer(
         })
         return yield* spawner.string(cmd).pipe(Effect.orDie)
       }),
+      sleep: Effect.fn("AgentTools.sleep")(function* (ms) {
+        yield* Effect.logInfo(`Calling "sleep" for ${ms}ms`)
+        return yield* Effect.sleep(ms)
+      }),
+      applyPatch: Effect.fn("AgentTools.applyPatch")(function* (options) {
+        yield* Effect.logInfo(`Calling "applyPatch"`).pipe(
+          Effect.annotateLogs({ path: options.path }),
+        )
+        const cwd = yield* CurrentDirectory
+        const file = pathService.resolve(cwd, options.path)
+        const input = yield* fs.readFileString(file)
+        const next = patchContent(file, input, options.patchText)
+        yield* fs.writeFileString(file, next)
+        const path = pathService.relative(cwd, file).replaceAll("\\", "/")
+        return `M ${path}`
+      }, Effect.orDie),
       taskComplete: Effect.fn("AgentTools.taskComplete")(function* (message) {
         const deferred = yield* TaskCompleteDeferred
         yield* Deferred.succeed(deferred, message)

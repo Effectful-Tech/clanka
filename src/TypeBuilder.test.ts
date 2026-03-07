@@ -131,6 +131,95 @@ describe("TypeBuilder", () => {
     )
   })
 
+  it("renders readonly arrays", () => {
+    expect(TypeBuilder.render(Schema.Array(Schema.String))).toBe(
+      "readonly string[]",
+    )
+  })
+
+  it("renders mutable arrays", () => {
+    expect(
+      TypeBuilder.render(Schema.mutable(Schema.Array(Schema.String))),
+    ).toBe("string[]")
+  })
+
+  it("renders readonly tuples", () => {
+    expect(
+      TypeBuilder.render(Schema.Tuple([Schema.String, Schema.Number])),
+    ).toBe(lines("readonly [", "    string,", "    number", "]"))
+  })
+
+  it("renders mutable tuples", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.mutable(Schema.Tuple([Schema.String, Schema.Number])),
+      ),
+    ).toBe(lines("[", "    string,", "    number", "]"))
+  })
+
+  it("renders optional tuple elements", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.Tuple([Schema.String, Schema.optional(Schema.Number)]),
+      ),
+    ).toBe(lines("readonly [", "    string,", "    number?", "]"))
+  })
+
+  it("renders tuples with rest elements", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.TupleWithRest(Schema.Tuple([Schema.String]), [
+          Schema.Number,
+          Schema.Boolean,
+        ]),
+      ),
+    ).toBe(
+      lines(
+        "readonly [",
+        "    string,",
+        "    ...number[],",
+        "    boolean",
+        "]",
+      ),
+    )
+  })
+
+  it("renders unions", () => {
+    expect(
+      TypeBuilder.render(Schema.Union([Schema.String, Schema.Number])),
+    ).toBe("string | number")
+  })
+
+  it("renders optional tuple elements with union members", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.Tuple([
+          Schema.String,
+          Schema.optional(Schema.Union([Schema.Number, Schema.Boolean])),
+        ]),
+      ),
+    ).toBe(lines("readonly [", "    string,", "    (number | boolean)?", "]"))
+  })
+
+  it("renders tuples with composite rest element types", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.TupleWithRest(Schema.Tuple([Schema.String]), [
+          Schema.Union([Schema.Number, Schema.Boolean]),
+          Schema.Boolean,
+        ]),
+      ),
+    ).toBe(
+      lines(
+        "readonly [",
+        "    string,",
+        "    ...(number | boolean)[],",
+        "    boolean",
+        "]",
+      ),
+    )
+  })
+
   it("renders documented fields", () => {
     expect(
       TypeBuilder.render(

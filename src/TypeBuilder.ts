@@ -11,6 +11,9 @@ const primitiveTypeNode = (
   kind: ts.KeywordTypeSyntaxKind,
 ): ts.KeywordTypeNode => ts.factory.createKeywordTypeNode(kind)
 
+const readonlyTypeNode = (type: ts.TypeNode): ts.TypeOperatorNode =>
+  ts.factory.createTypeOperatorNode(ts.SyntaxKind.ReadonlyKeyword, type)
+
 const nullTypeNode = (): ts.LiteralTypeNode =>
   ts.factory.createLiteralTypeNode(ts.factory.createNull())
 
@@ -177,6 +180,78 @@ const objectsTypeNode = (ast: AST.Objects): ts.TypeLiteralNode =>
     ...ast.indexSignatures.map(indexSignatureTypeElement),
   ])
 
+const unionTypeNode = (ast: AST.Union): ts.TypeNode => {
+  const [firstType, ...restTypes] = ast.types
+
+  if (firstType === undefined) {
+    return primitiveTypeNode(ts.SyntaxKind.NeverKeyword)
+  }
+
+  if (restTypes.length === 0) {
+    return toTypeNode(firstType)
+  }
+
+  return ts.factory.createUnionTypeNode(ast.types.map(toTypeNode))
+}
+
+const stripOptionalTupleUndefined = (ast: AST.AST): AST.AST => {
+  if (!AST.isOptional(ast) || ast._tag !== "Union") {
+    return ast
+  }
+
+  const definedTypes = ast.types.filter((type) => type._tag !== "Undefined")
+  const [definedType] = definedTypes
+
+  if (definedTypes.length === ast.types.length) {
+    return ast
+  }
+
+  return definedTypes.length === 1 && definedType !== undefined
+    ? definedType
+    : new AST.Union(
+        definedTypes,
+        ast.mode,
+        ast.annotations,
+        ast.checks,
+        ast.encoding,
+        ast.context,
+      )
+}
+
+const tupleElementTypeNode = (ast: AST.AST): ts.TypeNode => {
+  const type = toTypeNode(stripOptionalTupleUndefined(ast))
+
+  return AST.isOptional(ast) ? ts.factory.createOptionalTypeNode(type) : type
+}
+
+const arraysTypeNode = (ast: AST.Arrays): ts.TypeNode => {
+  const [restHead, ...restTail] = ast.rest
+
+  if (
+    ast.elements.length === 0 &&
+    ast.rest.length === 1 &&
+    restHead !== undefined
+  ) {
+    const arrayType = ts.factory.createArrayTypeNode(toTypeNode(restHead))
+
+    return ast.isMutable ? arrayType : readonlyTypeNode(arrayType)
+  }
+
+  const tupleType = ts.factory.createTupleTypeNode([
+    ...ast.elements.map(tupleElementTypeNode),
+    ...(restHead === undefined
+      ? []
+      : [
+          ts.factory.createRestTypeNode(
+            ts.factory.createArrayTypeNode(toTypeNode(restHead)),
+          ),
+          ...restTail.map(tupleElementTypeNode),
+        ]),
+  ])
+
+  return ast.isMutable ? tupleType : readonlyTypeNode(tupleType)
+}
+
 const toTypeNode = (ast: AST.AST): ts.TypeNode => {
   switch (ast._tag) {
     case "String":
@@ -209,6 +284,10 @@ const toTypeNode = (ast: AST.AST): ts.TypeNode => {
       return uniqueSymbolTypeNode(ast)
     case "Objects":
       return objectsTypeNode(ast)
+    case "Arrays":
+      return arraysTypeNode(ast)
+    case "Union":
+      return unionTypeNode(ast)
     default:
       return unknownTypeNode()
   }

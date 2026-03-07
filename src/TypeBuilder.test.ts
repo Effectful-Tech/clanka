@@ -184,6 +184,42 @@ describe("TypeBuilder", () => {
     )
   })
 
+  it("renders unions", () => {
+    expect(
+      TypeBuilder.render(Schema.Union([Schema.String, Schema.Number])),
+    ).toBe("string | number")
+  })
+
+  it("renders optional tuple elements with union members", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.Tuple([
+          Schema.String,
+          Schema.optional(Schema.Union([Schema.Number, Schema.Boolean])),
+        ]),
+      ),
+    ).toBe(lines("readonly [", "    string,", "    (number | boolean)?", "]"))
+  })
+
+  it("renders tuples with composite rest element types", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.TupleWithRest(Schema.Tuple([Schema.String]), [
+          Schema.Union([Schema.Number, Schema.Boolean]),
+          Schema.Boolean,
+        ]),
+      ),
+    ).toBe(
+      lines(
+        "readonly [",
+        "    string,",
+        "    ...(number | boolean)[],",
+        "    boolean",
+        "]",
+      ),
+    )
+  })
+
   it("renders documented fields", () => {
     expect(
       TypeBuilder.render(

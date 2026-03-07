@@ -180,6 +180,20 @@ const objectsTypeNode = (ast: AST.Objects): ts.TypeLiteralNode =>
     ...ast.indexSignatures.map(indexSignatureTypeElement),
   ])
 
+const unionTypeNode = (ast: AST.Union): ts.TypeNode => {
+  const [firstType, ...restTypes] = ast.types
+
+  if (firstType === undefined) {
+    return primitiveTypeNode(ts.SyntaxKind.NeverKeyword)
+  }
+
+  if (restTypes.length === 0) {
+    return toTypeNode(firstType)
+  }
+
+  return ts.factory.createUnionTypeNode(ast.types.map(toTypeNode))
+}
+
 const stripOptionalTupleUndefined = (ast: AST.AST): AST.AST => {
   if (!AST.isOptional(ast) || ast._tag !== "Union") {
     return ast
@@ -188,9 +202,20 @@ const stripOptionalTupleUndefined = (ast: AST.AST): AST.AST => {
   const definedTypes = ast.types.filter((type) => type._tag !== "Undefined")
   const [definedType] = definedTypes
 
+  if (definedTypes.length === ast.types.length) {
+    return ast
+  }
+
   return definedTypes.length === 1 && definedType !== undefined
     ? definedType
-    : ast
+    : new AST.Union(
+        definedTypes,
+        ast.mode,
+        ast.annotations,
+        ast.checks,
+        ast.encoding,
+        ast.context,
+      )
 }
 
 const tupleElementTypeNode = (ast: AST.AST): ts.TypeNode => {
@@ -261,6 +286,8 @@ const toTypeNode = (ast: AST.AST): ts.TypeNode => {
       return objectsTypeNode(ast)
     case "Arrays":
       return arraysTypeNode(ast)
+    case "Union":
+      return unionTypeNode(ast)
     default:
       return unknownTypeNode()
   }

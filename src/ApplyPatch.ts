@@ -5,6 +5,11 @@ type Chunk = {
   readonly eof?: boolean
 }
 
+type Wrapped = {
+  readonly path: string
+  readonly chunks: ReadonlyArray<Chunk>
+}
+
 const BEGIN = "*** Begin Patch"
 const END = "*** End Patch"
 
@@ -48,12 +53,12 @@ const parseChunks = (
 
     while (i < end) {
       const line = lines[i]!
-      if (line.startsWith("@@") || line.startsWith("***")) {
-        break
-      }
       if (line === "*** End of File") {
         eof = true
         i++
+        break
+      }
+      if (line.startsWith("@@") || line.startsWith("***")) {
         break
       }
       if (line.startsWith(" ")) {
@@ -82,7 +87,7 @@ const parseChunks = (
   }
 }
 
-const parseWrapped = (text: string): ReadonlyArray<Chunk> => {
+const parseWrapped = (text: string): Wrapped => {
   const lines = text.split("\n")
   const begin = lines.findIndex((line) => line.trim() === BEGIN)
   const end = lines.findIndex((line) => line.trim() === END)
@@ -99,6 +104,10 @@ const parseWrapped = (text: string): ReadonlyArray<Chunk> => {
   }
   if (!lines[i]!.startsWith("*** Update File:")) {
     fail("only single-file update patches are supported")
+  }
+  const path = lines[i]!.slice("*** Update File:".length).trim()
+  if (path.length === 0) {
+    fail("missing update file path")
   }
 
   i++
@@ -119,7 +128,18 @@ const parseWrapped = (text: string): ReadonlyArray<Chunk> => {
     fail("only one update file section is supported")
   }
 
-  return parsed.chunks
+  return {
+    path,
+    chunks: parsed.chunks,
+  }
+}
+
+export const wrappedPath = (input: string): string | undefined => {
+  const text = normalize(input)
+  if (!text.startsWith(BEGIN)) {
+    return
+  }
+  return parseWrapped(text).path
 }
 
 const parse = (input: string): ReadonlyArray<Chunk> => {
@@ -131,8 +151,8 @@ const parse = (input: string): ReadonlyArray<Chunk> => {
     throw new Error("patch rejected: empty patch")
   }
 
-  if (text.includes(BEGIN)) {
-    return parseWrapped(text)
+  if (text.startsWith(BEGIN)) {
+    return parseWrapped(text).chunks
   }
 
   const parsed = parseChunks(text.split("\n"), 0)

@@ -74,8 +74,7 @@ export const AgentTools = Toolkit.make(
     parameters: Schema.Struct({
       path: Schema.String,
       patchText: Schema.String.annotate({
-        documentation:
-          "Use raw @@ hunks, or a full *** Begin Patch block with one *** Update File section.",
+        documentation: "Raw @@ hunks or one wrapped update block.",
       }),
     }),
     success: Schema.String,

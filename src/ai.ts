@@ -33,7 +33,7 @@ Effect.gen(function* () {
     while (true) {
       let prompt = Prompt.empty
       if (output.length > 0) {
-        console.log({ output })
+        console.log("Executing script:\n", output, "\n\n")
         const result = yield* pipe(
           executor.execute({
             tools,
@@ -42,7 +42,6 @@ Effect.gen(function* () {
           Stream.mkString,
         )
         prompt = Prompt.make(result)
-        console.log({ result })
         output = ""
       }
       yield* pipe(
@@ -67,8 +66,6 @@ Effect.gen(function* () {
         }),
       )
       output = output.trim()
-      const history = yield* Ref.get(chat.history)
-      console.log("History:", ...history.content)
     }
   }).pipe(
     Effect.race(Deferred.await(deferred)),

@@ -33,6 +33,14 @@ export const AgentTools = Toolkit.make(
     success: Schema.NullOr(Schema.String),
     dependencies: [CurrentDirectory],
   }),
+  Tool.make("writeFile", {
+    description: "Write content to a file, replacing it if it already exists.",
+    parameters: Schema.Struct({
+      path: Schema.String,
+      content: Schema.String,
+    }),
+    dependencies: [CurrentDirectory],
+  }),
   Tool.make("readdir", {
     description: "List the contents of a directory",
     parameters: Schema.String.annotate({
@@ -132,6 +140,16 @@ export const AgentToolHandlers = AgentTools.toLayer(
           Effect.orDie,
         )
       }),
+      writeFile: Effect.fn("AgentTools.writeFile")(function* (options) {
+        yield* Effect.logInfo(`Calling "writeFile"`).pipe(
+          Effect.annotateLogs({ path: options.path }),
+        )
+        const cwd = yield* CurrentDirectory
+        yield* fs.writeFileString(
+          pathService.resolve(cwd, options.path),
+          options.content,
+        )
+      }, Effect.orDie),
       removeFile: Effect.fn("AgentTools.removeFile")(function* (path) {
         yield* Effect.logInfo(`Calling "removeFile"`).pipe(
           Effect.annotateLogs({ path }),

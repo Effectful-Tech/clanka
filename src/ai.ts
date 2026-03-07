@@ -48,7 +48,7 @@ const ClientLayer = CodexAiClient.pipe(
 
 Effect.gen(function* () {
   const renderer = yield* ToolkitRenderer
-  const chat = yield* Chat.fromPrompt("What is the tech stack of this project?")
+  const chat = yield* Chat.fromPrompt(process.argv[2]!)
   const toolkit = yield* Tools
 
   const result = yield* Effect.gen(function* () {
@@ -64,8 +64,14 @@ Effect.gen(function* () {
             case "text-delta":
               process.stdout.write(part.delta)
               break
+            case "text-end":
+              console.log("")
+              break
             case "reasoning-delta":
               process.stdout.write(part.delta)
+              break
+            case "reasoning-end":
+              console.log("")
               break
           }
           return Effect.void

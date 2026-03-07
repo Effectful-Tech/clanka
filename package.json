@@ -8,6 +8,11 @@
   "bin": {
     "lalph": "./dist/cli.mjs"
   },
+  "main": "./dist/index.mjs",
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "prepare": "husky && effect-language-service patch",
     "check": "oxlint -c .oxlintrc.json --fix && pnpm tsgo --noEmit",

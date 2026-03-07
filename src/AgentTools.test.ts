@@ -1,3 +1,6 @@
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { basename, join } from "node:path"
 import { Deferred, Effect, Stream } from "effect"
 import { describe, expect, it } from "vitest"
 import {
@@ -36,38 +39,47 @@ describe("AgentTools", () => {
   })
 
   it("runs multiline python scripts in the current directory", async () => {
-    const output = await Effect.runPromise(
-      Effect.gen(function* () {
-        const executor = yield* Executor
-        const tools = yield* AgentTools
+    const tempRoot = await mkdtemp(join(tmpdir(), "clanka-python-"))
+    const cwd = join(tempRoot, "tool cwd")
+    await mkdir(cwd)
+    await writeFile(join(cwd, "value.txt"), "14\n")
 
-        return yield* executor
-          .execute({
-            tools,
-            script: [
-              "const output = await python(`",
-              "from pathlib import Path",
-              "print(Path.cwd().name)",
-              "print(sum(i * i for i in range(4)))",
-              "`)",
-              "console.log(output.trimEnd())",
-            ].join("\n"),
-          })
-          .pipe(Stream.mkString)
-      }).pipe(
-        Effect.provide([
-          AgentToolHandlers,
-          Executor.layer,
-          ToolkitRenderer.layer,
-        ]),
-        Effect.provideService(CurrentDirectory, process.cwd()),
-        Effect.provideServiceEffect(
-          TaskCompleteDeferred,
-          Deferred.make<string>(),
+    try {
+      const output = await Effect.runPromise(
+        Effect.gen(function* () {
+          const executor = yield* Executor
+          const tools = yield* AgentTools
+
+          return yield* executor
+            .execute({
+              tools,
+              script: [
+                "const output = await python(`",
+                "from pathlib import Path",
+                'print(Path("value.txt").read_text().strip())',
+                "print(Path.cwd().name)",
+                "`)",
+                "console.log(output.trimEnd())",
+              ].join("\n"),
+            })
+            .pipe(Stream.mkString)
+        }).pipe(
+          Effect.provide([
+            AgentToolHandlers,
+            Executor.layer,
+            ToolkitRenderer.layer,
+          ]),
+          Effect.provideService(CurrentDirectory, cwd),
+          Effect.provideServiceEffect(
+            TaskCompleteDeferred,
+            Deferred.make<string>(),
+          ),
         ),
-      ),
-    )
+      )
 
-    expect(output).toContain(`${process.cwd().split("/").at(-1)}\n14\n`)
+      expect(output).toContain(`14\n${basename(cwd)}\n`)
+    } finally {
+      await rm(tempRoot, { force: true, recursive: true })
+    }
   })
 })

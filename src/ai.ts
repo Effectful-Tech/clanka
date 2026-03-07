@@ -1,5 +1,14 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
-import { Effect, FileSystem, Layer, pipe, Schema, Stream } from "effect"
+import {
+  Deferred,
+  Effect,
+  FileSystem,
+  Layer,
+  pipe,
+  Ref,
+  Schema,
+  Stream,
+} from "effect"
 import { Chat, Prompt, Tool, Toolkit } from "effect/unstable/ai"
 import { CodexAiClient } from "./Codex.ts"
 import { KeyValueStore } from "effect/unstable/persistence"
@@ -9,40 +18,9 @@ import {
   AgentToolHandlers,
   AgentTools,
   CurrentDirectory,
+  TaskCompleteDeferred,
 } from "./AgentTools.ts"
 import { Executor } from "./Executor.ts"
-
-const Tools = Toolkit.make(
-  Tool.make("execute", {
-    description: "Execute javascript",
-    parameters: Schema.Struct({
-      script: Schema.String,
-    }),
-    success: Schema.String,
-    dependencies: [CurrentDirectory],
-  }),
-)
-
-const ToolsLayer = Tools.toLayer(
-  Effect.gen(function* () {
-    const executor = yield* Executor
-    const tools = yield* AgentTools
-    return Tools.of({
-      execute: ({ script }) => {
-        console.log("Executing script:")
-        console.log(script)
-        console.log("")
-        return pipe(
-          executor.execute({
-            tools,
-            script,
-          }),
-          Stream.mkString,
-        )
-      },
-    })
-  }),
-).pipe(Layer.provide([AgentToolHandlers, Executor.layer]))
 
 const ClientLayer = CodexAiClient.pipe(
   Layer.provide(KeyValueStore.layerFileSystem("data")),
@@ -53,25 +31,36 @@ Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const renderer = yield* ToolkitRenderer
   const chat = yield* Chat.fromPrompt(process.argv[2]!)
-  const toolkit = yield* Tools
+  const deferred = yield* Deferred.make<string>()
+  const executor = yield* Executor
+  const tools = yield* AgentTools
 
   const agentsMd = yield* fs.readFileString("AGENTS.md")
 
   const result = yield* Effect.gen(function* () {
+    let output = ""
     while (true) {
-      let hadToolCall = false
+      let prompt = Prompt.empty
+      if (output.length > 0) {
+        console.log({ output })
+        const result = yield* pipe(
+          executor.execute({
+            tools,
+            script: output,
+          }),
+          Stream.mkString,
+        )
+        prompt = Prompt.make(result)
+        console.log({ result })
+        output = ""
+      }
       yield* pipe(
-        chat.streamText({ prompt: Prompt.empty, toolkit }),
+        chat.streamText({ prompt }),
+        Stream.takeUntil((part) => part.type === "text-end"),
         Stream.runForEach((part) => {
           switch (part.type) {
-            case "tool-call":
-              hadToolCall = true
-              break
             case "text-delta":
-              process.stdout.write(part.delta)
-              break
-            case "text-end":
-              console.log("\n")
+              output += part.delta
               break
             case "reasoning-delta":
               process.stdout.write(part.delta)
@@ -86,19 +75,22 @@ Effect.gen(function* () {
           return Effect.void
         }),
       )
-      if (!hadToolCall) break
+      output = output.trim()
+      const history = yield* Ref.get(chat.history)
+      console.log("History:", ...history.content)
     }
   }).pipe(
+    Effect.race(Deferred.await(deferred)),
     Effect.provideService(CurrentDirectory, process.cwd()),
+    Effect.provideService(TaskCompleteDeferred, deferred),
     OpenAiLanguageModel.withConfigOverride({
       instructions: `You are a professional software engineer. You are precise, thoughtful and concise. You make changes with care and always do the due diligence to ensure the best possible outcome. You make no mistakes.
 
 - You only add comments when necessary.
 - You do the research before making changes.
 
-## Executing code
-
-Use the "execute" tool to run javascript code to interact with the system.
+From now on only respond with javascript code, using the function below.
+DO NOT add any markdown formatting, just code.
 Use \`console.log\` to print any output you need.
 Top level await is supported.
 You have the following functions available to you:
@@ -127,7 +119,8 @@ ${agentsMd}`,
   console.log("Result:", result)
 }).pipe(
   Effect.provide([
-    ToolsLayer,
+    AgentToolHandlers,
+    Executor.layer,
     ToolkitRenderer.layer,
     OpenAiLanguageModel.model("gpt-5.4", {
       store: false,

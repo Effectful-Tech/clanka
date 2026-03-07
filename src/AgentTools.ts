@@ -1,5 +1,6 @@
 import {
   Array,
+  Deferred,
   Effect,
   FileSystem,
   Layer,
@@ -20,6 +21,11 @@ export class CurrentDirectory extends ServiceMap.Service<
   CurrentDirectory,
   string
 >()("clanka/AgentTools/CurrentDirectory") {}
+
+export class TaskCompleteDeferred extends ServiceMap.Service<
+  TaskCompleteDeferred,
+  Deferred.Deferred<string>
+>()("clanka/AgentTools/TaskCompleteDeferred") {}
 
 export const AgentTools = Toolkit.make(
   Tool.make("applyPatch", {
@@ -104,6 +110,14 @@ export const AgentTools = Toolkit.make(
     parameters: Schema.Finite.annotate({
       identifier: "ms",
     }),
+  }),
+  Tool.make("taskComplete", {
+    description:
+      "Only call this when you have fully completed the user's task, completely ending the session",
+    parameters: Schema.String.annotate({
+      identifier: "message",
+    }),
+    dependencies: [TaskCompleteDeferred],
   }),
 )
 
@@ -227,6 +241,10 @@ export const AgentToolHandlers = AgentTools.toLayer(
         const path = pathService.relative(cwd, file).replaceAll("\\", "/")
         return `M ${path}`
       }, Effect.orDie),
+      taskComplete: Effect.fn("AgentTools.taskComplete")(function* (message) {
+        const deferred = yield* TaskCompleteDeferred
+        yield* Deferred.succeed(deferred, message)
+      }),
     })
   }),
 ).pipe(Layer.provide(NodeServices.layer))

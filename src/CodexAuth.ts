@@ -1,4 +1,14 @@
-import { Effect, Encoding, Option, Result, Schema } from "effect"
+import {
+  Console,
+  Effect,
+  Encoding,
+  Layer,
+  Option,
+  Result,
+  Schema,
+  Semaphore,
+  ServiceMap,
+} from "effect"
 import {
   HttpClient,
   HttpClientRequest,
@@ -18,6 +28,7 @@ const DEVICE_CODE_URL = `${ISSUER}/api/accounts/deviceauth/usercode`
 const DEVICE_TOKEN_URL = `${ISSUER}/api/accounts/deviceauth/token`
 const TOKEN_URL = `${ISSUER}/oauth/token`
 const DEVICE_REDIRECT_URI = `${ISSUER}/deviceauth/callback`
+const DEVICE_VERIFICATION_URL = `${ISSUER}/codex/device`
 const DEFAULT_DEVICE_POLL_INTERVAL_SECONDS = 5
 const DEFAULT_TOKEN_EXPIRY_SECONDS = 3600
 
@@ -384,3 +395,97 @@ export const toCodexAuthKeyValueStore = (store: KeyValueStore.KeyValueStore) =>
 
 export const toTokenStore = (store: KeyValueStore.KeyValueStore) =>
   KeyValueStore.toSchemaStore(toCodexAuthKeyValueStore(store), TokenData)
+
+export class CodexAuth extends ServiceMap.Service<CodexAuth>()(
+  "clanka/CodexAuth",
+  {
+    make: Effect.gen(function* () {
+      const tokenStore = toTokenStore(yield* KeyValueStore.KeyValueStore)
+      const httpClient = yield* HttpClient.HttpClient
+      const semaphore = Semaphore.makeUnsafe(1)
+
+      let currentToken = yield* Effect.orDie(tokenStore.get(STORE_TOKEN_KEY))
+
+      const withHttpClient = <A, E>(
+        effect: Effect.Effect<A, E, HttpClient.HttpClient>,
+      ): Effect.Effect<A, E> =>
+        Effect.provideService(effect, HttpClient.HttpClient, httpClient)
+
+      const saveToken = (token: TokenData) =>
+        Effect.orDie(tokenStore.set(STORE_TOKEN_KEY, token)).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              currentToken = Option.some(token)
+            }),
+          ),
+          Effect.as(token),
+        )
+
+      const clearToken = Effect.orDie(tokenStore.remove(STORE_TOKEN_KEY)).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            currentToken = Option.none()
+          }),
+        ),
+      )
+
+      const authenticateWithDeviceFlow = Effect.gen(function* () {
+        const deviceCode = yield* withHttpClient(requestDeviceCode())
+        yield* Console.log(
+          `Open ${DEVICE_VERIFICATION_URL} and enter code: ${deviceCode.userCode}`,
+        )
+        const authorization = yield* withHttpClient(
+          pollAuthorization(deviceCode),
+        )
+        return yield* withHttpClient(exchangeAuthorizationCode(authorization))
+      })
+
+      const authenticateNoLock = Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const token = yield* restore(authenticateWithDeviceFlow)
+          return yield* saveToken(token)
+        }),
+      )
+
+      const getNoLock = Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          if (Option.isSome(currentToken) && !currentToken.value.isExpired()) {
+            return currentToken.value
+          }
+
+          if (Option.isNone(currentToken)) {
+            const token = yield* restore(authenticateWithDeviceFlow)
+            return yield* saveToken(token)
+          }
+
+          const refreshedToken = yield* restore(
+            withHttpClient(refreshToken(currentToken.value.refresh)).pipe(
+              Effect.tapError((error) =>
+                Console.warn(
+                  `Codex token refresh failed, falling back to device auth: ${error.message}`,
+                ),
+              ),
+              Effect.option,
+            ),
+          )
+
+          if (Option.isSome(refreshedToken)) {
+            return yield* saveToken(refreshedToken.value)
+          }
+
+          yield* clearToken
+          const token = yield* restore(authenticateWithDeviceFlow)
+          return yield* saveToken(token)
+        }),
+      )
+
+      return {
+        get: semaphore.withPermit(getNoLock),
+        authenticate: semaphore.withPermit(authenticateNoLock),
+        logout: semaphore.withPermit(Effect.uninterruptible(clearToken)),
+      } as const
+    }),
+  },
+) {
+  static readonly layer = Layer.effect(this, this.make)
+}

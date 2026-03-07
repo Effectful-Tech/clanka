@@ -1,5 +1,6 @@
 export {
   CLIENT_ID,
+  CodexAuth,
   CODEX_API_BASE,
   CodexAuthError,
   ISSUER,

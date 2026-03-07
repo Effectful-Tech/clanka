@@ -1,5 +1,5 @@
 import { Schema, SchemaAST as AST } from "effect"
-import ts from "typescript"
+import * as ts from "typescript"
 
 const resolveDocumentation = AST.resolveAt<string>("documentation")
 const identifierPattern = /^[$A-Z_a-z][$0-9A-Z_a-z]*$/u
@@ -16,6 +16,11 @@ const readonlyTypeNode = (type: ts.TypeNode): ts.TypeOperatorNode =>
 
 const nullTypeNode = (): ts.LiteralTypeNode =>
   ts.factory.createLiteralTypeNode(ts.factory.createNull())
+
+const stringLiteralTypeNode = (value: string): ts.LiteralTypeNode =>
+  ts.factory.createLiteralTypeNode(ts.factory.createStringLiteral(value))
+
+const literalText = (value: AST.Literal["literal"]): string => String(value)
 
 const numberLiteralTypeNode = (value: number): ts.LiteralTypeNode => {
   if (Object.is(value, -0) || value < 0) {
@@ -50,9 +55,7 @@ const bigintLiteralTypeNode = (value: bigint): ts.LiteralTypeNode => {
 const literalTypeNode = (ast: AST.Literal): ts.LiteralTypeNode => {
   switch (typeof ast.literal) {
     case "string":
-      return ts.factory.createLiteralTypeNode(
-        ts.factory.createStringLiteral(ast.literal),
-      )
+      return stringLiteralTypeNode(ast.literal)
     case "number":
       return numberLiteralTypeNode(ast.literal)
     case "boolean":
@@ -62,6 +65,18 @@ const literalTypeNode = (ast: AST.Literal): ts.LiteralTypeNode => {
     case "bigint":
       return bigintLiteralTypeNode(ast.literal)
   }
+}
+
+const unionOfTypeNodes = (types: ReadonlyArray<ts.TypeNode>): ts.TypeNode => {
+  const [firstType, ...restTypes] = types
+
+  if (firstType === undefined) {
+    return primitiveTypeNode(ts.SyntaxKind.NeverKeyword)
+  }
+
+  return restTypes.length === 0
+    ? firstType
+    : ts.factory.createUnionTypeNode(types)
 }
 
 const uniqueSymbolTypeNode = (ast: AST.UniqueSymbol): ts.TypeNode => {
@@ -180,18 +195,95 @@ const objectsTypeNode = (ast: AST.Objects): ts.TypeLiteralNode =>
     ...ast.indexSignatures.map(indexSignatureTypeElement),
   ])
 
-const unionTypeNode = (ast: AST.Union): ts.TypeNode => {
-  const [firstType, ...restTypes] = ast.types
+const unionTypeNode = (ast: AST.Union): ts.TypeNode =>
+  unionOfTypeNodes(ast.types.map(toTypeNode))
 
-  if (firstType === undefined) {
-    return primitiveTypeNode(ts.SyntaxKind.NeverKeyword)
+const enumTypeNode = (ast: AST.Enum): ts.TypeNode =>
+  unionOfTypeNodes(
+    ast.enums.map(([, value]) =>
+      typeof value === "string"
+        ? stringLiteralTypeNode(value)
+        : numberLiteralTypeNode(value),
+    ),
+  )
+
+type TemplateLiteralSpan = {
+  type: ts.TypeNode
+  text: string
+}
+
+type TemplateLiteralState = {
+  head: string
+  currentText: string
+  spans: Array<TemplateLiteralSpan>
+}
+
+const pushTemplateLiteralInterpolation = (
+  state: TemplateLiteralState,
+  type: ts.TypeNode,
+): void => {
+  const lastSpan = state.spans[state.spans.length - 1]
+
+  if (lastSpan === undefined) {
+    state.head = state.currentText
+  } else {
+    lastSpan.text = state.currentText
   }
 
-  if (restTypes.length === 0) {
-    return toTypeNode(firstType)
+  state.spans.push({ type, text: "" })
+  state.currentText = ""
+}
+
+const visitTemplateLiteralPart = (
+  state: TemplateLiteralState,
+  ast: AST.AST,
+): void => {
+  switch (ast._tag) {
+    case "Literal":
+      state.currentText += literalText(ast.literal)
+      return
+    case "TemplateLiteral":
+      for (const part of ast.parts) {
+        visitTemplateLiteralPart(state, part)
+      }
+      return
+    default:
+      pushTemplateLiteralInterpolation(state, toTypeNode(ast))
+  }
+}
+
+const templateLiteralTypeNode = (ast: AST.TemplateLiteral): ts.TypeNode => {
+  const state: TemplateLiteralState = {
+    head: "",
+    currentText: "",
+    spans: [],
   }
 
-  return ts.factory.createUnionTypeNode(ast.types.map(toTypeNode))
+  for (const part of ast.parts) {
+    visitTemplateLiteralPart(state, part)
+  }
+
+  if (state.spans.length === 0) {
+    return stringLiteralTypeNode(state.currentText)
+  }
+
+  const lastSpan = state.spans[state.spans.length - 1]
+
+  if (lastSpan !== undefined) {
+    lastSpan.text = state.currentText
+  }
+
+  return ts.factory.createTemplateLiteralType(
+    ts.factory.createTemplateHead(state.head),
+    state.spans.map((span, index) =>
+      ts.factory.createTemplateLiteralTypeSpan(
+        span.type,
+        index === state.spans.length - 1
+          ? ts.factory.createTemplateTail(span.text)
+          : ts.factory.createTemplateMiddle(span.text),
+      ),
+    ),
+  )
 }
 
 const stripOptionalTupleUndefined = (ast: AST.AST): AST.AST => {
@@ -282,6 +374,10 @@ const toTypeNode = (ast: AST.AST): ts.TypeNode => {
       return literalTypeNode(ast)
     case "UniqueSymbol":
       return uniqueSymbolTypeNode(ast)
+    case "Enum":
+      return enumTypeNode(ast)
+    case "TemplateLiteral":
+      return templateLiteralTypeNode(ast)
     case "Objects":
       return objectsTypeNode(ast)
     case "Arrays":

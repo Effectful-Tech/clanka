@@ -190,6 +190,76 @@ describe("TypeBuilder", () => {
     ).toBe("string | number")
   })
 
+  it("renders empty unions as never", () => {
+    expect(TypeBuilder.render(Schema.Union([]))).toBe("never")
+  })
+
+  it("renders single-member unions without separators", () => {
+    expect(TypeBuilder.render(Schema.Union([Schema.String]))).toBe("string")
+  })
+
+  it("renders literal unions", () => {
+    expect(TypeBuilder.render(Schema.Literals(["a", "b"]))).toBe('"a" | "b"')
+  })
+
+  it("renders enums as unions of member values", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.Enum({
+          Apple: "apple",
+          Banana: "banana",
+        }),
+      ),
+    ).toBe('"apple" | "banana"')
+  })
+
+  it("renders numeric enums as literal unions", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.Enum({
+          Ok: 200,
+          NotFound: 404,
+        }),
+      ),
+    ).toBe("200 | 404")
+  })
+
+  it("renders template literals with interpolations", () => {
+    expect(
+      TypeBuilder.render(Schema.TemplateLiteral(["user_", Schema.String])),
+    ).toBe("`user_${string}`")
+  })
+
+  it("renders all-literal template literals as string literals", () => {
+    expect(
+      TypeBuilder.render(Schema.TemplateLiteral(["user_", 42n, "_", 7])),
+    ).toBe('"user_42_7"')
+  })
+
+  it("flattens nested template literals", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.TemplateLiteral([
+          "a",
+          Schema.TemplateLiteral(["b", Schema.Number]),
+          "c",
+        ]),
+      ),
+    ).toBe("`ab${number}c`")
+  })
+
+  it("renders unions inside template literal interpolations", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.TemplateLiteral([
+          Schema.String,
+          Schema.Union([Schema.Literal("-"), Schema.Literal("_")]),
+          Schema.Number,
+        ]),
+      ),
+    ).toBe('`${string}${"-" | "_"}${number}`')
+  })
+
   it("renders optional tuple elements with union members", () => {
     expect(
       TypeBuilder.render(

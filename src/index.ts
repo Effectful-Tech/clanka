@@ -1,3 +1,4 @@
+export * as Codex from "./Codex.ts"
 export {
   CLIENT_ID,
   CodexAuth,

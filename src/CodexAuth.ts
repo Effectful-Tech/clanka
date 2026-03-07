@@ -31,6 +31,7 @@ const DEVICE_REDIRECT_URI = `${ISSUER}/deviceauth/callback`
 const DEVICE_VERIFICATION_URL = `${ISSUER}/codex/device`
 const DEFAULT_DEVICE_POLL_INTERVAL_SECONDS = 5
 const DEFAULT_TOKEN_EXPIRY_SECONDS = 3600
+const ACCOUNT_ID_HEADER = "ChatGPT-Account-Id"
 
 export class TokenData extends Schema.Class<TokenData>(
   "clanka/CodexAuth/TokenData",
@@ -174,6 +175,47 @@ const extractAccountIdFromTokens = (
 
   return extractAccountIdFromToken(token.access_token)
 }
+
+const applyTokenHeaders = (
+  request: HttpClientRequest.HttpClientRequest,
+  token: TokenData,
+): HttpClientRequest.HttpClientRequest => {
+  const authenticatedRequest = request.pipe(
+    HttpClientRequest.bearerToken(token.access),
+  )
+
+  return Option.match(token.accountId, {
+    onNone: () => authenticatedRequest,
+    onSome: (accountId) =>
+      authenticatedRequest.pipe(
+        HttpClientRequest.setHeader(ACCOUNT_ID_HEADER, accountId),
+      ),
+  })
+}
+
+const injectAuthHeaders = (
+  request: HttpClientRequest.HttpClientRequest,
+  auth: CodexAuth["Service"],
+): Effect.Effect<HttpClientRequest.HttpClientRequest> =>
+  auth.get.pipe(
+    Effect.map((token) => applyTokenHeaders(request, token)),
+    Effect.catch((error: CodexAuthError) =>
+      Effect.die(
+        new Error(
+          `Failed to inject Codex auth headers for ${request.method} ${request.url}: ${error.message}`,
+          { cause: error },
+        ),
+      ),
+    ),
+  )
+
+const makeLayerClient = (
+  httpClient: HttpClient.HttpClient,
+  auth: CodexAuth["Service"],
+): HttpClient.HttpClient =>
+  httpClient.pipe(
+    HttpClient.mapRequestEffect((request) => injectAuthHeaders(request, auth)),
+  )
 
 const toTokenDataFromResponse = (token: TokenResponse): TokenData =>
   new TokenData({
@@ -498,4 +540,14 @@ export class CodexAuth extends ServiceMap.Service<CodexAuth>()(
   },
 ) {
   static readonly layer = Layer.effect(this, this.make)
+
+  static readonly layerClient = Layer.effect(
+    HttpClient.HttpClient,
+    Effect.gen(function* () {
+      const auth = yield* CodexAuth
+      const httpClient = yield* HttpClient.HttpClient
+
+      return makeLayerClient(httpClient, auth)
+    }),
+  )
 }

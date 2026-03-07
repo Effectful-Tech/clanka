@@ -409,4 +409,29 @@ describe("TypeBuilder", () => {
       ),
     ).toBe(lines("/** Token list */", "readonly string[]"))
   })
+
+  it("renders documented recursive schemas at the top level", () => {
+    type Category = {
+      readonly child?: Category
+    }
+
+    const Category: Schema.Schema<Category> = Schema.suspend(
+      (): Schema.Schema<Category> =>
+        Schema.Struct({
+          child: Schema.optionalKey(Category),
+        }).annotate({
+          documentation: "Recursive category",
+          identifier: "Category",
+        }),
+    )
+
+    expect(TypeBuilder.render(Category)).toBe(
+      lines(
+        "/** Recursive category */",
+        "{",
+        "    readonly child?: Category;",
+        "}",
+      ),
+    )
+  })
 })

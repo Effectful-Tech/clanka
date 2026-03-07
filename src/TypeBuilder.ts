@@ -498,8 +498,14 @@ export const printNode = (
 export const render = (
   schema: Schema.Top,
   options?: ts.PrinterOptions,
-): string =>
-  printNode(
-    toTypeNode(AST.toType(schema.ast), { activeNodes: new Set() }),
+): string => {
+  const ast = AST.toType(schema.ast)
+
+  return printNode(
+    withJsDoc(
+      toTypeNode(ast, { activeNodes: new Set() }),
+      resolveDocumentation(ast),
+    ),
     options,
   )
+}

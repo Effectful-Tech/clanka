@@ -381,4 +381,32 @@ describe("TypeBuilder", () => {
       ),
     )
   })
+
+  it("renders documented primitive schemas at the top level", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.String.annotate({ documentation: "Primary token" }),
+      ),
+    ).toBe(lines("/** Primary token */", "string"))
+  })
+
+  it("renders documented object schemas at the top level", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.Struct({
+          token: Schema.String,
+        }).annotate({ documentation: "Token payload" }),
+      ),
+    ).toBe(
+      lines("/** Token payload */", "{", "    readonly token: string;", "}"),
+    )
+  })
+
+  it("renders documented array schemas at the top level", () => {
+    expect(
+      TypeBuilder.render(
+        Schema.Array(Schema.String).annotate({ documentation: "Token list" }),
+      ),
+    ).toBe(lines("/** Token list */", "readonly string[]"))
+  })
 })

@@ -12,6 +12,8 @@ import { Tool, Toolkit } from "effect/unstable/ai"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import * as Glob from "glob"
 import * as Rg from "@vscode/ripgrep"
+import * as Path from "node:path"
+import { patchContent } from "./ApplyPatch.ts"
 
 export const AgentTools = Toolkit.make(
   Tool.make("readFile", {
@@ -51,6 +53,18 @@ export const AgentTools = Toolkit.make(
     }),
     success: Schema.String,
   }),
+  Tool.make("applyPatch", {
+    description:
+      "Apply an opencode-style patch to a single file using raw @@ hunks or a wrapped patch block.",
+    parameters: Schema.Struct({
+      path: Schema.String,
+      patchText: Schema.String.annotate({
+        documentation:
+          "Use raw @@ hunks for the target file, or a full *** Begin Patch block with one *** Update File section.",
+      }),
+    }),
+    success: Schema.String,
+  }),
   Tool.make("taskComplete", {
     description:
       "Call this when you have fully completed the user's task, completely ending the session",
@@ -76,11 +90,12 @@ export const AgentToolHandlers = AgentTools.toLayer(
     const cwd = yield* CurrentDirectory
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const fs = yield* FileSystem.FileSystem
+    const resolve = (path: string) => Path.resolve(cwd, path)
 
     return AgentTools.of({
       readFile: Effect.fn("AgentTools.readFile")((options) => {
         let stream = pipe(
-          fs.stream(options.path),
+          fs.stream(resolve(options.path)),
           Stream.decodeText,
           Stream.splitLines,
         )
@@ -135,6 +150,24 @@ export const AgentToolHandlers = AgentTools.toLayer(
           stdin: "ignore",
         })
         return yield* spawner.string(cmd).pipe(Effect.orDie)
+      }),
+      applyPatch: Effect.fn("AgentTools.applyPatch")(function* (options) {
+        const file = resolve(options.path)
+        const input = yield* fs.readFileString(file).pipe(
+          Effect.mapError(
+            () =>
+              new Error(
+                `applyPatch verification failed: Failed to read file to update: ${file}`,
+              ),
+          ),
+          Effect.orDie,
+        )
+        const next = yield* Effect.sync(() =>
+          patchContent(file, input, options.patchText),
+        ).pipe(Effect.orDie)
+        yield* fs.writeFileString(file, next).pipe(Effect.orDie)
+        const path = Path.relative(cwd, file).replaceAll("\\", "/")
+        return `Success. Updated the following files:\nM ${path}`
       }),
       taskComplete: Effect.fn("AgentTools.taskComplete")((message) =>
         Deferred.succeed(deferred, message),

@@ -1,6 +1,6 @@
 import { Generated, OpenAiClient } from "@effect/ai-openai"
 import { assert, describe, it } from "@effect/vitest"
-import { Effect, Encoding, Layer, Option, Ref } from "effect"
+import { Cause, Effect, Encoding, Layer, Option, Ref, Result } from "effect"
 import { LanguageModel } from "effect/unstable/ai"
 import {
   HttpClient,
@@ -9,7 +9,7 @@ import {
 } from "effect/unstable/http"
 import { KeyValueStore } from "effect/unstable/persistence"
 import * as Codex from "./Codex.ts"
-import { CodexAuth, ISSUER, TokenData } from "./CodexAuth.ts"
+import { CodexAuth, CodexAuthError, ISSUER, TokenData } from "./CodexAuth.ts"
 import * as PublicApi from "./index.ts"
 
 const DEFAULT_MODEL = "gpt-5.3-codex"
@@ -133,6 +133,105 @@ describe("Codex", () => {
       }),
   )
 
+  it.effect("omits the account header when CodexAuth has no account id", () =>
+    Effect.gen(function* () {
+      const { client, requests } = yield* makeClient(
+        () => new Response(null, { status: 204 }),
+      )
+
+      const layer = CodexAuth.layerClient.pipe(
+        Layer.provide(
+          Layer.succeed(
+            CodexAuth,
+            CodexAuth.of({
+              get: Effect.succeed(
+                new TokenData({
+                  access: "access-token",
+                  refresh: "refresh-token",
+                  expires: Date.now() + 60_000,
+                  accountId: Option.none(),
+                }),
+              ),
+              authenticate: Effect.die(
+                new Error("unexpected authenticate call"),
+              ),
+              logout: Effect.succeed(void 0),
+            }),
+          ),
+        ),
+        Layer.provide(Layer.succeed(HttpClient.HttpClient, client)),
+      )
+
+      yield* HttpClientRequest.get("https://example.com/test").pipe(
+        HttpClient.execute,
+        Effect.provide(layer),
+      )
+
+      const request = (yield* Ref.get(requests))[0]
+      assert.notStrictEqual(request, undefined)
+      if (request === undefined) {
+        return
+      }
+
+      assert.strictEqual(
+        request.headers["authorization"],
+        "Bearer access-token",
+      )
+      assert.strictEqual(request.headers["chatgpt-account-id"], undefined)
+    }),
+  )
+
+  it.effect("defects with context when auth header injection fails", () =>
+    Effect.gen(function* () {
+      const { client } = yield* makeClient(
+        () => new Response(null, { status: 204 }),
+      )
+      const authError = new CodexAuthError({
+        reason: "DeviceFlowFailed",
+        message: "device flow broke",
+      })
+
+      const layer = CodexAuth.layerClient.pipe(
+        Layer.provide(
+          Layer.succeed(
+            CodexAuth,
+            CodexAuth.of({
+              get: Effect.fail(authError),
+              authenticate: Effect.die(
+                new Error("unexpected authenticate call"),
+              ),
+              logout: Effect.succeed(void 0),
+            }),
+          ),
+        ),
+        Layer.provide(Layer.succeed(HttpClient.HttpClient, client)),
+      )
+
+      const cause = yield* HttpClientRequest.get(
+        "https://example.com/test",
+      ).pipe(
+        HttpClient.execute,
+        Effect.provide(layer),
+        Effect.sandbox,
+        Effect.flip,
+      )
+
+      assert.strictEqual(Cause.hasDies(cause), true)
+
+      const defect = Result.getOrUndefined(Cause.findDefect(cause))
+      assert.notStrictEqual(defect, undefined)
+      if (!(defect instanceof Error)) {
+        assert.fail("Expected the defect to be an Error")
+      }
+
+      assert.strictEqual(
+        defect.message,
+        "Failed to inject Codex auth headers for GET https://example.com/test: device flow broke",
+      )
+      assert.strictEqual(defect.cause, authError)
+    }),
+  )
+
   it.effect("provides OpenAiClient and LanguageModel through Codex.layer", () =>
     Effect.gen(function* () {
       const accessToken = createTestJwt({ chatgpt_account_id: "account-123" })
@@ -202,7 +301,10 @@ describe("Codex", () => {
           responseRequest.headers["chatgpt-account-id"],
           "account-123",
         )
-        assert.strictEqual(seenRequests[0]?.headers["authorization"], undefined)
+        for (const request of seenRequests.slice(0, 3)) {
+          assert.strictEqual(request?.headers["authorization"], undefined)
+          assert.strictEqual(request?.headers["chatgpt-account-id"], undefined)
+        }
         assert.strictEqual(
           JSON.parse(getBody(responseRequest)).model,
           DEFAULT_MODEL,

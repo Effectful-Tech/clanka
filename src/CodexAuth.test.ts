@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Effect, Option } from "effect"
+import { Effect, Encoding, Option } from "effect"
 import { KeyValueStore } from "effect/unstable/persistence"
 import {
   CLIENT_ID,
@@ -11,10 +11,19 @@ import {
   STORE_TOKEN_KEY,
   TOKEN_EXPIRY_BUFFER_MS,
   TokenData,
+  extractAccountIdFromClaims,
+  extractAccountIdFromToken,
+  parseJwtClaims,
   toCodexAuthKeyValueStore,
   toTokenStore,
 } from "./CodexAuth.ts"
 import * as PublicApi from "./index.ts"
+
+const createJwt = (payload: string): string =>
+  `${Encoding.encodeBase64Url(JSON.stringify({ alg: "none" }))}.${Encoding.encodeBase64Url(payload)}.sig`
+
+const createTestJwt = (payload: Record<string, unknown>): string =>
+  createJwt(JSON.stringify(payload))
 
 describe("CodexAuth", () => {
   it.effect(
@@ -116,6 +125,106 @@ describe("CodexAuth", () => {
     assert.strictEqual(error.message, "Could not decode token claims")
   })
 
+  it("parses valid JWT claims from a base64url payload", () => {
+    assert.deepStrictEqual(
+      Option.getOrUndefined(
+        parseJwtClaims(
+          createTestJwt({
+            email: "test@example.com",
+            chatgpt_account_id: "acc-123",
+          }),
+        ),
+      ),
+      {
+        chatgpt_account_id: "acc-123",
+      },
+    )
+  })
+
+  it("returns none for JWTs without three parts", () => {
+    assert.strictEqual(Option.isNone(parseJwtClaims("invalid")), true)
+    assert.strictEqual(Option.isNone(parseJwtClaims("only.two")), true)
+  })
+
+  it("returns none for invalid base64url payloads", () => {
+    assert.strictEqual(Option.isNone(parseJwtClaims("a.!!!invalid!!!.b")), true)
+  })
+
+  it("returns none for invalid JSON payloads", () => {
+    assert.strictEqual(
+      Option.isNone(parseJwtClaims(createJwt("not json"))),
+      true,
+    )
+  })
+
+  it("returns none when decoded claims fail the schema", () => {
+    assert.strictEqual(
+      Option.isNone(parseJwtClaims(createTestJwt({ chatgpt_account_id: 123 }))),
+      true,
+    )
+  })
+
+  it("extracts account ids from the documented claim locations", () => {
+    assert.strictEqual(
+      Option.getOrUndefined(
+        extractAccountIdFromClaims({ chatgpt_account_id: "acc-root" }),
+      ),
+      "acc-root",
+    )
+    assert.strictEqual(
+      Option.getOrUndefined(
+        extractAccountIdFromClaims({
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "acc-nested",
+          },
+        }),
+      ),
+      "acc-nested",
+    )
+    assert.strictEqual(
+      Option.getOrUndefined(
+        extractAccountIdFromClaims({
+          organizations: [{ id: "org-123" }, { id: "org-456" }],
+        }),
+      ),
+      "org-123",
+    )
+  })
+
+  it("prefers root claims over nested and organization fallbacks", () => {
+    assert.strictEqual(
+      Option.getOrUndefined(
+        extractAccountIdFromClaims({
+          chatgpt_account_id: "acc-root",
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "acc-nested",
+          },
+          organizations: [{ id: "org-123" }],
+        }),
+      ),
+      "acc-root",
+    )
+  })
+
+  it("extracts account ids directly from JWTs", () => {
+    assert.strictEqual(
+      Option.getOrUndefined(
+        extractAccountIdFromToken(
+          createTestJwt({
+            "https://api.openai.com/auth": {
+              chatgpt_account_id: "acc-token",
+            },
+          }),
+        ),
+      ),
+      "acc-token",
+    )
+    assert.strictEqual(
+      Option.isNone(extractAccountIdFromToken("invalid")),
+      true,
+    )
+  })
+
   it("re-exports the public Codex auth surface without storage helpers", () => {
     assert.strictEqual(PublicApi.CLIENT_ID, CLIENT_ID)
     assert.strictEqual(PublicApi.CODEX_API_BASE, CODEX_API_BASE)
@@ -129,6 +238,9 @@ describe("CodexAuth", () => {
     assert.strictEqual(PublicApi.TOKEN_EXPIRY_BUFFER_MS, TOKEN_EXPIRY_BUFFER_MS)
     assert.strictEqual(PublicApi.TokenData, TokenData)
     assert.strictEqual(PublicApi.CodexAuthError, CodexAuthError)
+    assert.strictEqual("extractAccountIdFromClaims" in PublicApi, false)
+    assert.strictEqual("extractAccountIdFromToken" in PublicApi, false)
+    assert.strictEqual("parseJwtClaims" in PublicApi, false)
     assert.strictEqual("toCodexAuthKeyValueStore" in PublicApi, false)
     assert.strictEqual("toTokenStore" in PublicApi, false)
   })

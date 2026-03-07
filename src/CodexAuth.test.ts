@@ -688,6 +688,63 @@ describe("CodexAuth", () => {
       }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   )
 
+  it.effect("clears corrupted persisted tokens before re-authenticating", () =>
+    Effect.gen(function* () {
+      const kvs = yield* KeyValueStore.KeyValueStore
+      yield* Effect.orDie(
+        kvs.set(`${STORE_PREFIX}${STORE_TOKEN_KEY}`, "not-json"),
+      )
+
+      const { attempts, client } = yield* makeClient((request) => {
+        if (request.url === `${ISSUER}/api/accounts/deviceauth/usercode`) {
+          return jsonResponse({
+            device_auth_id: "device-auth-id",
+            user_code: "ABCD-EFGH",
+            interval: "1",
+          })
+        }
+
+        if (request.url === `${ISSUER}/api/accounts/deviceauth/token`) {
+          return jsonResponse({
+            authorization_code: "authorization-code",
+            code_verifier: "code-verifier",
+          })
+        }
+
+        if (request.url === `${ISSUER}/oauth/token`) {
+          return jsonResponse({
+            access_token: createTestJwt({
+              chatgpt_account_id: "fresh-account",
+            }),
+            refresh_token: "fresh-refresh-token",
+            expires_in: 120,
+          })
+        }
+
+        return new Response(null, { status: 500 })
+      })
+
+      const auth = yield* CodexAuth.make.pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+      )
+
+      assert.strictEqual(
+        yield* Effect.orDie(kvs.get(`${STORE_PREFIX}${STORE_TOKEN_KEY}`)),
+        undefined,
+      )
+      assert.strictEqual(yield* Ref.get(attempts), 0)
+
+      const token = yield* auth.get
+
+      assert.strictEqual(token.refresh, "fresh-refresh-token")
+      assert.strictEqual(
+        Option.getOrUndefined(token.accountId),
+        "fresh-account",
+      )
+      assert.strictEqual(yield* Ref.get(attempts), 3)
+    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  )
+
   it.effect("serializes concurrent get calls behind one refresh", () =>
     Effect.gen(function* () {
       const kvs = yield* KeyValueStore.KeyValueStore

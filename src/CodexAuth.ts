@@ -404,7 +404,17 @@ export class CodexAuth extends ServiceMap.Service<CodexAuth>()(
       const httpClient = yield* HttpClient.HttpClient
       const semaphore = Semaphore.makeUnsafe(1)
 
-      let currentToken = yield* Effect.orDie(tokenStore.get(STORE_TOKEN_KEY))
+      let currentToken = yield* tokenStore.get(STORE_TOKEN_KEY).pipe(
+        Effect.catchTag("SchemaError", (error) =>
+          Console.warn(
+            `Failed to decode persisted Codex token, clearing it: ${error.message}`,
+          ).pipe(
+            Effect.andThen(tokenStore.remove(STORE_TOKEN_KEY)),
+            Effect.as(Option.none()),
+          ),
+        ),
+        Effect.orDie,
+      )
 
       const withHttpClient = <A, E>(
         effect: Effect.Effect<A, E, HttpClient.HttpClient>,

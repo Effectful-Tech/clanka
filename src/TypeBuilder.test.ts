@@ -24,6 +24,7 @@ const literalCases = [
   ["number literals", Schema.Literal(42), "42"],
   ["boolean literals", Schema.Literal(true), "true"],
   ["bigint literals", Schema.Literal(42n), "42n"],
+  ["negative zero literals", Schema.Literal(-0), "-0"],
   ["negative number literals", Schema.Literal(-42), "-42"],
   ["negative bigint literals", Schema.Literal(-42n), "-42n"],
 ] as const satisfies ReadonlyArray<

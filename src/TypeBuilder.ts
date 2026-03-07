@@ -12,7 +12,7 @@ const nullTypeNode = (): ts.LiteralTypeNode =>
   ts.factory.createLiteralTypeNode(ts.factory.createNull())
 
 const numberLiteralTypeNode = (value: number): ts.LiteralTypeNode => {
-  if (value < 0) {
+  if (Object.is(value, -0) || value < 0) {
     return ts.factory.createLiteralTypeNode(
       ts.factory.createPrefixUnaryExpression(
         ts.SyntaxKind.MinusToken,

@@ -1,5 +1,5 @@
 import { Schema, SchemaAST as AST } from "effect"
-import * as ts from "typescript"
+import ts from "typescript"
 
 const resolveDocumentation = AST.resolveAt<string>("documentation")
 const identifierPattern = /^[$A-Z_a-z][$0-9A-Z_a-z]*$/u

@@ -338,6 +338,23 @@ describe("TypeBuilder", () => {
     )
   })
 
+  it("renders recursive arrays using identifier annotations", () => {
+    type Category = {
+      readonly children: ReadonlyArray<Category>
+    }
+
+    const Category: Schema.Schema<Category> = Schema.suspend(
+      (): Schema.Schema<Category> =>
+        Schema.Struct({
+          children: Schema.Array(Category),
+        }).annotate({ identifier: "Category" }),
+    )
+
+    expect(TypeBuilder.render(Category)).toBe(
+      lines("{", "    readonly children: readonly Category[];", "}"),
+    )
+  })
+
   it("renders transformed schemas from the decoded side", () => {
     expect(TypeBuilder.render(Schema.NumberFromString)).toBe("number")
   })

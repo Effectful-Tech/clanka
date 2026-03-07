@@ -33,12 +33,24 @@ const referenceTypeNode = (
     typeArguments,
   )
 
-const identifierTypeNode = (ast: AST.AST): ts.TypeNode => {
-  const identifier = AST.resolveIdentifier(ast)
+const cycleTypeNode = (ast: AST.AST): ts.TypeNode => {
+  const visitedSuspends = new Set<AST.Suspend>()
+  let current: AST.AST = ast
 
-  return identifier === undefined
-    ? unknownTypeNode()
-    : referenceTypeNode(identifier)
+  while (true) {
+    const identifier = AST.resolveIdentifier(current)
+
+    if (identifier !== undefined) {
+      return referenceTypeNode(identifier)
+    }
+
+    if (current._tag !== "Suspend" || visitedSuspends.has(current)) {
+      return unknownTypeNode()
+    }
+
+    visitedSuspends.add(current)
+    current = current.thunk()
+  }
 }
 
 const literalText = (value: AST.Literal["literal"]): string => String(value)
@@ -410,7 +422,7 @@ const suspendTypeNode = (
 
 const toTypeNode = (ast: AST.AST, context: RenderContext): ts.TypeNode => {
   if (context.activeNodes.has(ast)) {
-    return identifierTypeNode(ast)
+    return cycleTypeNode(ast)
   }
 
   context.activeNodes.add(ast)

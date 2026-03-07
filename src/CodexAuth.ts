@@ -53,7 +53,6 @@ export class CodexAuthError extends Schema.TaggedErrorClass<CodexAuthError>()(
       "DeviceFlowFailed",
       "TokenExchangeFailed",
       "RefreshFailed",
-      "JwtParseFailed",
     ]),
     message: Schema.String,
     cause: Schema.optional(Schema.Defect),

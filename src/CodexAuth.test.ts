@@ -197,13 +197,13 @@ describe("CodexAuth", () => {
 
   it("constructs CodexAuthError with the expected tagged shape", () => {
     const error = new CodexAuthError({
-      reason: "JwtParseFailed",
-      message: "Could not decode token claims",
+      reason: "RefreshFailed",
+      message: "Could not refresh the token",
     })
 
     assert.strictEqual(error._tag, "CodexAuthError")
-    assert.strictEqual(error.reason, "JwtParseFailed")
-    assert.strictEqual(error.message, "Could not decode token claims")
+    assert.strictEqual(error.reason, "RefreshFailed")
+    assert.strictEqual(error.message, "Could not refresh the token")
   })
 
   it("parses valid JWT claims from a base64url payload", () => {
@@ -578,6 +578,32 @@ describe("CodexAuth", () => {
         assert.strictEqual(body.get("grant_type"), "refresh_token")
         assert.strictEqual(body.get("refresh_token"), "refresh-token")
         assert.strictEqual(body.get("client_id"), CLIENT_ID)
+      }),
+  )
+
+  it.effect(
+    "ignores malformed id tokens and still derives account ids from the access token",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* makeClient(() =>
+          jsonResponse({
+            id_token: "invalid",
+            access_token: createTestJwt({
+              chatgpt_account_id: "from-access-token",
+            }),
+            refresh_token: "next-refresh-token",
+          }),
+        )
+
+        const token = yield* refreshToken("refresh-token").pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+        )
+
+        assert.strictEqual(token.refresh, "next-refresh-token")
+        assert.strictEqual(
+          Option.getOrUndefined(token.accountId),
+          "from-access-token",
+        )
       }),
   )
 

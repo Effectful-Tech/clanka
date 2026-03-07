@@ -183,13 +183,16 @@ class CodexAuthError extends Schema.TaggedErrorClass<CodexAuthError>()(
       "DeviceFlowFailed",
       "TokenExchangeFailed",
       "RefreshFailed",
-      "JwtParseFailed",
     ),
     message: Schema.String,
     cause: Schema.optional(Schema.Defect),
   },
 ) {}
 ```
+
+JWT claim parsing is best-effort metadata extraction for the optional
+`ChatGPT-Account-Id` header. Malformed JWTs should stay on the
+`Option.none()` path and must not surface a separate auth error.
 
 ### Service shape
 
@@ -358,7 +361,7 @@ Implement pure JWT parsing/account extraction helpers using
 **Acceptance criteria**
 
 - All account-id claim shapes supported
-- Malformed tokens safely return none/error path
+- Malformed tokens safely return `Option.none()` without entering the auth error channel
 - No `any` usage
 - `pnpm check && pnpm vitest run` passes
 

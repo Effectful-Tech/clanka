@@ -1,12 +1,23 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Effect, Encoding, Option } from "effect"
+import { Effect, Encoding, Fiber, Option, Ref } from "effect"
+import { TestClock } from "effect/testing"
+import {
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/unstable/http"
 import { KeyValueStore } from "effect/unstable/persistence"
 import {
+  exchangeAuthorizationCode,
   CLIENT_ID,
   CodexAuthError,
   CODEX_API_BASE,
   ISSUER,
   POLLING_SAFETY_MARGIN_MS,
+  pollAuthorization,
+  refreshToken,
+  requestDeviceCode,
   STORE_PREFIX,
   STORE_TOKEN_KEY,
   TOKEN_EXPIRY_BUFFER_MS,
@@ -24,6 +35,47 @@ const createJwt = (payload: string): string =>
 
 const createTestJwt = (payload: Record<string, unknown>): string =>
   createJwt(JSON.stringify(payload))
+
+const jsonResponse = (body: unknown, status = 200): Response =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json",
+    },
+  })
+
+const getBody = (request: HttpClientRequest.HttpClientRequest): string => {
+  if (request.body._tag !== "Uint8Array") {
+    throw new Error("Expected request body to be a Uint8Array payload")
+  }
+
+  return new TextDecoder().decode(request.body.body)
+}
+
+const makeClient = Effect.fn("makeClient")(function* (
+  handler: (
+    request: HttpClientRequest.HttpClientRequest,
+    attempt: number,
+  ) => Response,
+) {
+  const attempts = yield* Ref.make(0)
+  const requests = yield* Ref.make<Array<HttpClientRequest.HttpClientRequest>>(
+    [],
+  )
+  const client = HttpClient.make((request) =>
+    Effect.gen(function* () {
+      const attempt = yield* Ref.updateAndGet(attempts, (count) => count + 1)
+      yield* Ref.update(requests, (current) => [...current, request])
+      return HttpClientResponse.fromWeb(request, handler(request, attempt))
+    }),
+  )
+
+  return {
+    attempts,
+    client,
+    requests,
+  } as const
+})
 
 describe("CodexAuth", () => {
   it.effect(
@@ -262,6 +314,264 @@ describe("CodexAuth", () => {
     )
   })
 
+  it.effect("requests a device code with the documented JSON payload", () =>
+    Effect.gen(function* () {
+      const { client, requests } = yield* makeClient(() =>
+        jsonResponse({
+          device_auth_id: "device-auth-id",
+          user_code: "ABCD-EFGH",
+          interval: "0",
+        }),
+      )
+
+      const device = yield* requestDeviceCode().pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+      )
+
+      assert.deepStrictEqual(device, {
+        deviceAuthId: "device-auth-id",
+        userCode: "ABCD-EFGH",
+        intervalMs: 5_000,
+      })
+
+      const request = (yield* Ref.get(requests))[0]
+      assert.notStrictEqual(request, undefined)
+      if (request === undefined) {
+        return
+      }
+
+      assert.strictEqual(request.method, "POST")
+      assert.strictEqual(
+        request.url,
+        `${ISSUER}/api/accounts/deviceauth/usercode`,
+      )
+      assert.deepStrictEqual(JSON.parse(getBody(request)), {
+        client_id: CLIENT_ID,
+      })
+    }),
+  )
+
+  it.effect("captures transport failures when requesting a device code", () =>
+    Effect.gen(function* () {
+      const cause = new Error("boom")
+      const client = HttpClient.make((request) =>
+        Effect.fail(
+          new HttpClientError.HttpClientError({
+            reason: new HttpClientError.TransportError({
+              request,
+              cause,
+            }),
+          }),
+        ),
+      )
+
+      const error = yield* requestDeviceCode().pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.flip,
+      )
+
+      assert.strictEqual(error.reason, "DeviceFlowFailed")
+      assert.strictEqual(
+        error.message,
+        "Failed to request a Codex device authorization code",
+      )
+      assert.strictEqual(HttpClientError.isHttpClientError(error.cause), true)
+      if (!HttpClientError.isHttpClientError(error.cause)) {
+        assert.fail("Expected an HttpClientError cause")
+      }
+      assert.strictEqual(error.cause.cause, cause)
+    }),
+  )
+
+  it.effect(
+    "treats 404 and 403 poll responses as pending with the safety delay",
+    () =>
+      Effect.gen(function* () {
+        const { attempts, client, requests } = yield* makeClient(
+          (_request, attempt) => {
+            if (attempt === 1) {
+              return new Response(null, { status: 404 })
+            }
+
+            if (attempt === 2) {
+              return new Response(null, { status: 403 })
+            }
+
+            return jsonResponse({
+              authorization_code: "authorization-code",
+              code_verifier: "code-verifier",
+            })
+          },
+        )
+
+        const fiber = yield* pollAuthorization({
+          deviceAuthId: "device-auth-id",
+          userCode: "ABCD-EFGH",
+          intervalMs: 2_000,
+        }).pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+          Effect.forkChild({ startImmediately: true }),
+        )
+
+        assert.strictEqual(yield* Ref.get(attempts), 1)
+
+        yield* TestClock.adjust(2_000 + POLLING_SAFETY_MARGIN_MS - 1)
+        assert.strictEqual(yield* Ref.get(attempts), 1)
+
+        yield* TestClock.adjust(1)
+        assert.strictEqual(yield* Ref.get(attempts), 2)
+
+        yield* TestClock.adjust(2_000 + POLLING_SAFETY_MARGIN_MS)
+
+        assert.deepStrictEqual(yield* Fiber.join(fiber), {
+          authorizationCode: "authorization-code",
+          codeVerifier: "code-verifier",
+        })
+        assert.strictEqual(yield* Ref.get(attempts), 3)
+
+        const request = (yield* Ref.get(requests))[0]
+        assert.notStrictEqual(request, undefined)
+        if (request === undefined) {
+          return
+        }
+
+        assert.deepStrictEqual(JSON.parse(getBody(request)), {
+          device_auth_id: "device-auth-id",
+          user_code: "ABCD-EFGH",
+        })
+      }),
+  )
+
+  it.effect("fails polling on terminal statuses outside the pending set", () =>
+    Effect.gen(function* () {
+      const { client } = yield* makeClient(
+        () => new Response(null, { status: 500 }),
+      )
+
+      const error = yield* pollAuthorization({
+        deviceAuthId: "device-auth-id",
+        userCode: "ABCD-EFGH",
+        intervalMs: 1_000,
+      }).pipe(Effect.provideService(HttpClient.HttpClient, client), Effect.flip)
+
+      assert.strictEqual(error.reason, "DeviceFlowFailed")
+      assert.strictEqual(
+        error.message,
+        "Codex device authorization failed while polling: 500",
+      )
+    }),
+  )
+
+  it.effect(
+    "exchanges authorization codes with urlencoded payloads and id token precedence",
+    () =>
+      Effect.gen(function* () {
+        const before = Date.now()
+        const { client, requests } = yield* makeClient(() =>
+          jsonResponse({
+            id_token: createTestJwt({ chatgpt_account_id: "from-id-token" }),
+            access_token: createTestJwt({
+              chatgpt_account_id: "from-access-token",
+            }),
+            refresh_token: "refresh-token",
+            expires_in: 42,
+          }),
+        )
+
+        const token = yield* exchangeAuthorizationCode({
+          authorizationCode: "authorization-code",
+          codeVerifier: "code-verifier",
+        }).pipe(Effect.provideService(HttpClient.HttpClient, client))
+
+        assert.strictEqual(token.access.includes("."), true)
+        assert.strictEqual(token.refresh, "refresh-token")
+        assert.strictEqual(
+          Option.getOrUndefined(token.accountId),
+          "from-id-token",
+        )
+        assert.strictEqual(token.expires >= before + 42_000, true)
+        assert.strictEqual(token.expires <= Date.now() + 42_000, true)
+
+        const request = (yield* Ref.get(requests))[0]
+        assert.notStrictEqual(request, undefined)
+        if (request === undefined) {
+          return
+        }
+
+        assert.strictEqual(request.method, "POST")
+        assert.strictEqual(request.url, `${ISSUER}/oauth/token`)
+
+        const body = new URLSearchParams(getBody(request))
+        assert.strictEqual(body.get("grant_type"), "authorization_code")
+        assert.strictEqual(body.get("code"), "authorization-code")
+        assert.strictEqual(
+          body.get("redirect_uri"),
+          `${ISSUER}/deviceauth/callback`,
+        )
+        assert.strictEqual(body.get("client_id"), CLIENT_ID)
+        assert.strictEqual(body.get("code_verifier"), "code-verifier")
+      }),
+  )
+
+  it.effect(
+    "refreshes tokens with urlencoded payloads and access token fallback",
+    () =>
+      Effect.gen(function* () {
+        const { client, requests } = yield* makeClient(() =>
+          jsonResponse({
+            id_token: createTestJwt({ email: "test@example.com" }),
+            access_token: createTestJwt({
+              "https://api.openai.com/auth": {
+                chatgpt_account_id: "from-access-token",
+              },
+            }),
+            refresh_token: "next-refresh-token",
+          }),
+        )
+
+        const token = yield* refreshToken("refresh-token").pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+        )
+
+        assert.strictEqual(token.refresh, "next-refresh-token")
+        assert.strictEqual(
+          Option.getOrUndefined(token.accountId),
+          "from-access-token",
+        )
+
+        const request = (yield* Ref.get(requests))[0]
+        assert.notStrictEqual(request, undefined)
+        if (request === undefined) {
+          return
+        }
+
+        const body = new URLSearchParams(getBody(request))
+        assert.strictEqual(body.get("grant_type"), "refresh_token")
+        assert.strictEqual(body.get("refresh_token"), "refresh-token")
+        assert.strictEqual(body.get("client_id"), CLIENT_ID)
+      }),
+  )
+
+  it.effect("captures decode failures when refreshing tokens", () =>
+    Effect.gen(function* () {
+      const { client } = yield* makeClient(() =>
+        jsonResponse({ access_token: "access-token" }),
+      )
+
+      const error = yield* refreshToken("refresh-token").pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.flip,
+      )
+
+      assert.strictEqual(error.reason, "RefreshFailed")
+      assert.strictEqual(
+        error.message,
+        "Failed to decode the Codex refresh token response",
+      )
+      assert.notStrictEqual(error.cause, undefined)
+    }),
+  )
+
   it("re-exports the public Codex auth surface without storage helpers", () => {
     assert.strictEqual(PublicApi.CLIENT_ID, CLIENT_ID)
     assert.strictEqual(PublicApi.CODEX_API_BASE, CODEX_API_BASE)
@@ -275,9 +585,13 @@ describe("CodexAuth", () => {
     assert.strictEqual(PublicApi.TOKEN_EXPIRY_BUFFER_MS, TOKEN_EXPIRY_BUFFER_MS)
     assert.strictEqual(PublicApi.TokenData, TokenData)
     assert.strictEqual(PublicApi.CodexAuthError, CodexAuthError)
+    assert.strictEqual("exchangeAuthorizationCode" in PublicApi, false)
     assert.strictEqual("extractAccountIdFromClaims" in PublicApi, false)
     assert.strictEqual("extractAccountIdFromToken" in PublicApi, false)
     assert.strictEqual("parseJwtClaims" in PublicApi, false)
+    assert.strictEqual("pollAuthorization" in PublicApi, false)
+    assert.strictEqual("refreshToken" in PublicApi, false)
+    assert.strictEqual("requestDeviceCode" in PublicApi, false)
     assert.strictEqual("toCodexAuthKeyValueStore" in PublicApi, false)
     assert.strictEqual("toTokenStore" in PublicApi, false)
   })

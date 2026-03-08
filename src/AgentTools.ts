@@ -222,17 +222,37 @@ export const AgentToolHandlers = AgentTools.toLayer(
         const cwd = yield* CurrentDirectory
         return yield* Effect.promise(() => Glob.glob(pattern, { cwd }))
       }),
-      bash: Effect.fn("AgentTools.bash")(function* (command) {
-        yield* Effect.logInfo(`Calling "bash"`).pipe(
-          Effect.annotateLogs({ command }),
-        )
-        const cwd = yield* CurrentDirectory
-        const cmd = ChildProcess.make("bash", ["-c", command], {
-          cwd,
-          stdin: "ignore",
-        })
-        return yield* spawner.string(cmd).pipe(Effect.orDie)
-      }),
+      bash: Effect.fn("AgentTools.bash")(
+        function* (command) {
+          yield* Effect.logInfo(`Calling "bash"`).pipe(
+            Effect.annotateLogs({ command }),
+          )
+          const cwd = yield* CurrentDirectory
+          const cmd = ChildProcess.make("bash", ["-c", command], {
+            cwd,
+            stdin: "ignore",
+          })
+          const handle = yield* spawner.spawn(cmd)
+          return yield* handle.all.pipe(
+            Stream.decodeText,
+            Stream.mkString,
+            Effect.flatMap(
+              Effect.fnUntraced(function* (output) {
+                const exitCode = yield* handle.exitCode
+                if (exitCode === 0) return output
+                // @effect-diagnostics-next-line globalErrorInEffectFailure:off
+                return yield* Effect.fail(
+                  new Error(
+                    `Command failed with exit code ${exitCode}: ${output}`,
+                  ),
+                )
+              }),
+            ),
+          )
+        },
+        Effect.scoped,
+        Effect.orDie,
+      ),
       httpGet: Effect.fn("AgentTools.httpGet")(function* (options) {
         yield* Effect.logInfo(`Calling "httpGet"`).pipe(
           Effect.annotateLogs({ url: options.url }),
@@ -243,8 +263,8 @@ export const AgentToolHandlers = AgentTools.toLayer(
             : { headers: options.headers }
         const response = yield* Effect.promise(() =>
           fetch(options.url, init),
-        ).pipe(Effect.orDie)
-        return yield* Effect.promise(() => response.text()).pipe(Effect.orDie)
+        )
+        return yield* Effect.promise(() => response.text())
       }),
       sleep: Effect.fn("AgentTools.sleep")(function* (ms) {
         yield* Effect.logInfo(`Calling "sleep" for ${ms}ms`)

@@ -35,7 +35,7 @@
   },
   "peerDependencies": {
     "effect": "4.0.0-beta.29",
-    "@effect/ai-openai": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-openai@f732f15"
+    "@effect/ai-openai": "4.0.0-beta.29"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.5.2",

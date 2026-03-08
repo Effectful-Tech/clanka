@@ -46,6 +46,19 @@ Effect.gen(function* () {
       }
       yield* pipe(
         chat.streamText({ prompt }),
+        Stream.map((part) => {
+          switch (part.type) {
+            case "text-delta":
+            case "reasoning-delta":
+              break
+            case "reasoning-end":
+              break
+            default:
+              console.log(part.type)
+              break
+          }
+          return part
+        }),
         Stream.takeUntil((part) => part.type === "text-end"),
         Stream.runForEach((part) => {
           switch (part.type) {
@@ -64,8 +77,10 @@ Effect.gen(function* () {
           }
           return Effect.void
         }),
+        Effect.tapCause(Effect.logError),
       )
       output = output.trim()
+      console.log(...(yield* Ref.get(chat.history)).content)
     }
   }).pipe(
     Effect.race(Deferred.await(deferred)),
@@ -77,10 +92,13 @@ Effect.gen(function* () {
 - You only add comments when necessary.
 - You do the research before making changes.
 
-From now on only respond with javascript code, using the function below.
-DO NOT add any markdown formatting, just code.
-Use \`console.log\` to print any output you need.
-Top level await is supported.
+From now on only respond with javascript code.
+
+- DO NOT add any markdown formatting, just code.
+- Use \`console.log\` to print any output you need.
+- Top level await is supported.
+- AVOID writing python or using bash to execute python
+
 You have the following functions available to you:
 
 \`\`\`ts
@@ -98,7 +116,11 @@ const content = await readFile({
 console.log(content)
 \`\`\`
 
-## AGENTS.md
+# Information from the user
+
+**CRITICAL**: Always consider the following information when making decisions:
+
+---
 
 ${agentsMd}`,
     }),
@@ -113,7 +135,7 @@ ${agentsMd}`,
     OpenAiLanguageModel.model("gpt-5.4", {
       store: false,
       reasoning: {
-        effort: "xhigh",
+        effort: "high",
         summary: "auto",
       },
     }).pipe(Layer.provide(ClientLayer)),

@@ -25,17 +25,17 @@ importers:
         specifier: ^2.29.8
         version: 2.30.0(@types/node@25.3.5)
       '@effect/ai-openai':
-        specifier: 4.0.0-beta.28
-        version: 4.0.0-beta.28(effect@4.0.0-beta.28)
+        specifier: https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-openai@f732f15
+        version: https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-openai@f732f15(effect@4.0.0-beta.29)
       '@effect/language-service':
         specifier: ^0.75.1
         version: 0.75.1
       '@effect/platform-node':
-        specifier: 4.0.0-beta.28
-        version: 4.0.0-beta.28(effect@4.0.0-beta.28)(ioredis@5.10.0)
+        specifier: 4.0.0-beta.29
+        version: 4.0.0-beta.29(effect@4.0.0-beta.29)(ioredis@5.10.0)
       '@effect/vitest':
-        specifier: 4.0.0-beta.28
-        version: 4.0.0-beta.28(effect@4.0.0-beta.28)(vitest@4.0.18(@types/node@25.3.5)(yaml@2.8.2))
+        specifier: 4.0.0-beta.29
+        version: 4.0.0-beta.29(effect@4.0.0-beta.29)(vitest@4.0.18(@types/node@25.3.5)(yaml@2.8.2))
       '@linear/sdk':
         specifier: ^75.0.0
         version: 75.0.0(graphql@16.13.1)
@@ -46,8 +46,8 @@ importers:
         specifier: 7.0.0-dev.20260219.1
         version: 7.0.0-dev.20260219.1
       effect:
-        specifier: 4.0.0-beta.28
-        version: 4.0.0-beta.28
+        specifier: 4.0.0-beta.29
+        version: 4.0.0-beta.29
       husky:
         specifier: ^9.1.7
         version: 9.1.7
@@ -155,32 +155,33 @@ packages:
   '@changesets/write@0.4.0':
     resolution: {integrity: sha512-CdTLvIOPiCNuH71pyDu3rA+Q0n65cmAbXnwWH84rKGiFumFzkmHNT8KHTMEchcxN+Kl8I54xGUhJ7l3E7X396Q==}
 
-  '@effect/ai-openai@4.0.0-beta.28':
-    resolution: {integrity: sha512-+C9Sd5qV3jQBSSthNSvTV/yDeT9PFol2T0QYjRiqnZ2PFdr5GQlMbb5yClIMVUQ31TqZmaBX0FYpKRRUEv7Wjw==}
+  '@effect/ai-openai@https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-openai@f732f15':
+    resolution: {integrity: sha512-Tad3KVElYuxEW4riJt0TtZeMSmsE2mL+DpaJF4LeDBRJAJPm4D6zZNqTmAF3bJnVpYKm0N2lNRTP52u7LPzk1g==, tarball: https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-openai@f732f15}
+    version: 4.0.0-beta.29
     peerDependencies:
-      effect: ^4.0.0-beta.28
+      effect: ^4.0.0-beta.29
 
   '@effect/language-service@0.75.1':
     resolution: {integrity: sha512-g9xD2tAQgRFpYC2YgpZq02VeSL5fBbFJ0B/g1o+14NuNmwtaYJc7SjiLWAA9eyhJHosNrn6h1Ye+Kx6j5mN0AA==}
     hasBin: true
 
-  '@effect/platform-node-shared@4.0.0-beta.28':
-    resolution: {integrity: sha512-k3HAbzlUEA7pEtfmMr8lTWzhamn7a1jEmg4Te+p/rJwu2ZjYBg2vSa/FoIjQQPXo+morqLUIUqosY3vDub/+XQ==}
+  '@effect/platform-node-shared@4.0.0-beta.29':
+    resolution: {integrity: sha512-6nV/yI1LgYJ1PzTjb20Ar4a+Z9dBltd2QCNzLj9NmdBQusJO9ve7qk0GBa3IFkmAVAqUfCVXEwhYz3TjnP+lrA==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
-      effect: ^4.0.0-beta.28
+      effect: ^4.0.0-beta.29
 
-  '@effect/platform-node@4.0.0-beta.28':
-    resolution: {integrity: sha512-AIna99z2G9thtbMzjT3jwonn4cLvk/MSP2b3Emmaa+Rifrn58tC7oohdVYdA0eLH2whddi8i9TvMMoeirZf1qA==}
+  '@effect/platform-node@4.0.0-beta.29':
+    resolution: {integrity: sha512-lAJZrx/PnBWkf+X/iox0MRDnc+XpEIbVJEmiLhR7KrpuyzwNrlUmgRy9fHoGJMbcxqkHrXUh+rj9g7UGPYX3rQ==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
-      effect: ^4.0.0-beta.28
+      effect: ^4.0.0-beta.29
       ioredis: ^5.7.0
 
-  '@effect/vitest@4.0.0-beta.28':
-    resolution: {integrity: sha512-18Li/g0dtJ9w74dQXWcDsiJS4t+NJJoQy7Naf6iFrdMUEFkxEM7uc+2XGoO97NNV9/4UQdzbKtU4VLdrDRuf+g==}
+  '@effect/vitest@4.0.0-beta.29':
+    resolution: {integrity: sha512-5HoZOUd82lpEoiTuWUw0lWxudaT1xY6kKd3KFNI1Kpg12uKd4Oh9gXrMncIuHxDKhrvVP6yerEIg13L3gZNshQ==}
     peerDependencies:
-      effect: ^4.0.0-beta.28
+      effect: ^4.0.0-beta.29
       vitest: ^3.0.0 || ^4.0.0
 
   '@emnapi/core@1.8.1':
@@ -1097,8 +1098,8 @@ packages:
       oxc-resolver:
         optional: true
 
-  effect@4.0.0-beta.28:
-    resolution: {integrity: sha512-9T/LPIF/t54DN/z1gTnJ3Jwv4s6iWlN3w8Jvg7koDLI4whLXDEsnXWhMf05yQZUSNRJ0naVV1Ltwr2+cEj0HZA==}
+  effect@4.0.0-beta.29:
+    resolution: {integrity: sha512-7UoBAEiktoS81XLMX/39Mq/Ymq8whxmqFpsI0MEYdMlbDcbytzQlyuyhvrwEIdrd9qrqa8DZ5mKblWasamryqw==}
 
   emoji-regex@10.6.0:
     resolution: {integrity: sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A==}
@@ -2035,25 +2036,25 @@ snapshots:
       human-id: 4.1.3
       prettier: 2.8.8
 
-  '@effect/ai-openai@4.0.0-beta.28(effect@4.0.0-beta.28)':
+  '@effect/ai-openai@https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-openai@f732f15(effect@4.0.0-beta.29)':
     dependencies:
-      effect: 4.0.0-beta.28
+      effect: 4.0.0-beta.29
 
   '@effect/language-service@0.75.1': {}
 
-  '@effect/platform-node-shared@4.0.0-beta.28(effect@4.0.0-beta.28)':
+  '@effect/platform-node-shared@4.0.0-beta.29(effect@4.0.0-beta.29)':
     dependencies:
       '@types/ws': 8.18.1
-      effect: 4.0.0-beta.28
+      effect: 4.0.0-beta.29
       ws: 8.19.0
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@effect/platform-node@4.0.0-beta.28(effect@4.0.0-beta.28)(ioredis@5.10.0)':
+  '@effect/platform-node@4.0.0-beta.29(effect@4.0.0-beta.29)(ioredis@5.10.0)':
     dependencies:
-      '@effect/platform-node-shared': 4.0.0-beta.28(effect@4.0.0-beta.28)
-      effect: 4.0.0-beta.28
+      '@effect/platform-node-shared': 4.0.0-beta.29(effect@4.0.0-beta.29)
+      effect: 4.0.0-beta.29
       ioredis: 5.10.0
       mime: 4.1.0
       undici: 7.22.0
@@ -2061,9 +2062,9 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@effect/vitest@4.0.0-beta.28(effect@4.0.0-beta.28)(vitest@4.0.18(@types/node@25.3.5)(yaml@2.8.2))':
+  '@effect/vitest@4.0.0-beta.29(effect@4.0.0-beta.29)(vitest@4.0.18(@types/node@25.3.5)(yaml@2.8.2))':
     dependencies:
-      effect: 4.0.0-beta.28
+      effect: 4.0.0-beta.29
       vitest: 4.0.18(@types/node@25.3.5)(yaml@2.8.2)
 
   '@emnapi/core@1.8.1':
@@ -2684,7 +2685,7 @@ snapshots:
 
   dts-resolver@2.1.3: {}
 
-  effect@4.0.0-beta.28:
+  effect@4.0.0-beta.29:
     dependencies:
       '@standard-schema/spec': 1.1.0
       fast-check: 4.5.3

@@ -98,14 +98,6 @@ export const AgentTools = Toolkit.make(
     success: Schema.String,
     dependencies: [CurrentDirectory],
   }),
-  Tool.make("python", {
-    description: "Run Python code and return the output.",
-    parameters: Schema.String.annotate({
-      identifier: "script",
-    }),
-    success: Schema.String,
-    dependencies: [CurrentDirectory],
-  }),
   Tool.make("httpGet", {
     description: "Fetch a URL and return its text response.",
     parameters: Schema.String.annotate({
@@ -235,17 +227,6 @@ export const AgentToolHandlers = AgentTools.toLayer(
         )
         const cwd = yield* CurrentDirectory
         const cmd = ChildProcess.make("bash", ["-c", command], {
-          cwd,
-          stdin: "ignore",
-        })
-        return yield* spawner.string(cmd).pipe(Effect.orDie)
-      }),
-      python: Effect.fn("AgentTools.python")(function* (script) {
-        yield* Effect.logInfo(`Calling "python"`).pipe(
-          Effect.annotateLogs({ script }),
-        )
-        const cwd = yield* CurrentDirectory
-        const cmd = ChildProcess.make("python3", ["-c", script], {
           cwd,
           stdin: "ignore",
         })

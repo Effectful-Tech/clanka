@@ -82,10 +82,10 @@ Effect.gen(function* () {
 
 From now on only respond with javascript code.
 
-- DO NOT add any markdown formatting, just code.
+- Do not add any markdown formatting, just code.
 - Use \`console.log\` to print any output you need.
 - Top level await is supported.
-- AVOID writing python or using bash to execute python
+- Avoid writing python or using bash to execute python
 
 You have the following functions available to you:
 
@@ -108,7 +108,7 @@ console.log(content)
 
 # Information from the user
 
-**CRITICAL**: Always consider the following information when making decisions:
+**Always consider** the following information when making decisions:
 
 ---
 

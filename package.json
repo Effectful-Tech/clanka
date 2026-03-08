@@ -16,7 +16,6 @@
   "scripts": {
     "prepare": "husky && effect-language-service patch",
     "check": "oxlint -c .oxlintrc.json --fix && pnpm tsgo --noEmit",
-    "build": "tsdown",
     "test": "vitest run",
     "prepublishOnly": "pnpm build"
   },
@@ -52,7 +51,6 @@
     "lint-staged": "^16.2.7",
     "oxlint": "^1.49.0",
     "prettier": "^3.8.1",
-    "tsdown": "^0.20.3",
     "vitest": "^4.0.18"
   },
   "lint-staged": {

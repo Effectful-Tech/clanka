@@ -50,10 +50,9 @@ export const AgentTools = Toolkit.make(
     dependencies: [CurrentDirectory],
   }),
   Tool.make("applyPatch", {
-    description:
-      "Apply a patch across one or more files. Use this to edit file(s). Provide a wrapped patch with Add/Delete/Update sections.",
+    description: "Apply a wrapped patch with Add/Delete/Update sections.",
     parameters: Schema.String.annotate({
-      identifier: "patchText",
+      identifier: "patch",
     }),
     success: Schema.String,
     dependencies: [CurrentDirectory],
@@ -118,8 +117,7 @@ export const AgentTools = Toolkit.make(
     }),
   }),
   Tool.make("taskComplete", {
-    description:
-      "Only call this when you have fully completed the user's task, completely ending the session",
+    description: "Only call this when you have fully completed the user's task",
     parameters: Schema.String.annotate({
       identifier: "message",
     }),

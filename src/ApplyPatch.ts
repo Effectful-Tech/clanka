@@ -1,4 +1,4 @@
-type Chunk = {
+export type Chunk = {
   readonly old: ReadonlyArray<string>
   readonly next: ReadonlyArray<string>
   readonly ctx?: string
@@ -10,8 +10,29 @@ type Wrapped = {
   readonly chunks: ReadonlyArray<Chunk>
 }
 
+export type FilePatch =
+  | {
+      readonly type: "add"
+      readonly path: string
+      readonly content: string
+    }
+  | {
+      readonly type: "delete"
+      readonly path: string
+    }
+  | {
+      readonly type: "update"
+      readonly path: string
+      readonly chunks: ReadonlyArray<Chunk>
+      readonly movePath?: string
+    }
+
 const BEGIN = "*** Begin Patch"
 const END = "*** End Patch"
+const ADD = "*** Add File:"
+const DELETE = "*** Delete File:"
+const MOVE = "*** Move to:"
+const UPDATE = "*** Update File:"
 
 const stripHeredoc = (input: string): string => {
   const match = input.match(
@@ -25,6 +46,20 @@ const normalize = (input: string): string =>
 
 const fail = (message: string): never => {
   throw new Error(`applyPatch verification failed: ${message}`)
+}
+
+const locate = (text: string) => {
+  const lines = text.split("\n")
+  const begin = lines.findIndex((line) => line.trim() === BEGIN)
+  const end = lines.findIndex((line) => line.trim() === END)
+  if (begin === -1 || end === -1 || begin >= end) {
+    fail("Invalid patch format: missing Begin/End markers")
+  }
+  return {
+    lines,
+    begin,
+    end,
+  }
 }
 
 const parseChunks = (
@@ -88,12 +123,7 @@ const parseChunks = (
 }
 
 const parseWrapped = (text: string): Wrapped => {
-  const lines = text.split("\n")
-  const begin = lines.findIndex((line) => line.trim() === BEGIN)
-  const end = lines.findIndex((line) => line.trim() === END)
-  if (begin === -1 || end === -1 || begin >= end) {
-    fail("Invalid patch format: missing Begin/End markers")
-  }
+  const { lines, begin, end } = locate(text)
 
   let i = begin + 1
   while (i < end && lines[i]!.trim() === "") {
@@ -102,16 +132,16 @@ const parseWrapped = (text: string): Wrapped => {
   if (i === end) {
     throw new Error("patch rejected: empty patch")
   }
-  if (!lines[i]!.startsWith("*** Update File:")) {
+  if (!lines[i]!.startsWith(UPDATE)) {
     fail("only single-file update patches are supported")
   }
-  const path = lines[i]!.slice("*** Update File:".length).trim()
+  const path = lines[i]!.slice(UPDATE.length).trim()
   if (path.length === 0) {
     fail("missing update file path")
   }
 
   i++
-  if (i < end && lines[i]!.startsWith("*** Move to:")) {
+  if (i < end && lines[i]!.startsWith(MOVE)) {
     fail("move patches are not supported")
   }
 
@@ -132,6 +162,116 @@ const parseWrapped = (text: string): Wrapped => {
     path,
     chunks: parsed.chunks,
   }
+}
+
+const parseAdd = (lines: ReadonlyArray<string>, start: number, end: number) => {
+  const out = Array<string>()
+  let i = start
+
+  while (i < end) {
+    const line = lines[i]!
+    if (line.startsWith("***")) {
+      break
+    }
+    if (line.startsWith("+")) {
+      out.push(line.slice(1))
+    }
+    i++
+  }
+
+  return {
+    content: out.join("\n"),
+    next: i,
+  }
+}
+
+export const parsePatch = (input: string): ReadonlyArray<FilePatch> => {
+  const text = normalize(input)
+  if (text.length === 0) {
+    throw new Error("patchText is required")
+  }
+  if (text === `${BEGIN}\n${END}`) {
+    throw new Error("patch rejected: empty patch")
+  }
+
+  const { lines, begin, end } = locate(text)
+  const out = Array<FilePatch>()
+  let i = begin + 1
+
+  while (i < end) {
+    while (i < end && lines[i]!.trim() === "") {
+      i++
+    }
+    if (i === end) {
+      break
+    }
+
+    const line = lines[i]!
+    if (line.startsWith(ADD)) {
+      const path = line.slice(ADD.length).trim()
+      if (path.length === 0) {
+        fail("missing add file path")
+      }
+      const parsed = parseAdd(lines, i + 1, end)
+      out.push({
+        type: "add",
+        path,
+        content: parsed.content,
+      })
+      i = parsed.next
+      continue
+    }
+    if (line.startsWith(DELETE)) {
+      const path = line.slice(DELETE.length).trim()
+      if (path.length === 0) {
+        fail("missing delete file path")
+      }
+      out.push({
+        type: "delete",
+        path,
+      })
+      i++
+      continue
+    }
+    if (line.startsWith(UPDATE)) {
+      const path = line.slice(UPDATE.length).trim()
+      if (path.length === 0) {
+        fail("missing update file path")
+      }
+
+      i++
+      let movePath: string | undefined
+      if (i < end && lines[i]!.startsWith(MOVE)) {
+        movePath = lines[i]!.slice(MOVE.length).trim()
+        if (movePath.length === 0) {
+          fail("missing move file path")
+        }
+        i++
+      }
+
+      const parsed = parseChunks(lines, i, end)
+      if (parsed.chunks.length === 0) {
+        fail("no hunks found")
+      }
+
+      out.push({
+        type: "update",
+        path,
+        chunks: parsed.chunks,
+        ...(movePath === undefined ? {} : { movePath }),
+      })
+      i = parsed.next
+      continue
+    }
+
+    fail(`unexpected line in wrapped patch: ${line}`)
+  }
+
+  if (out.length === 0) {
+    fail("no hunks found")
+  }
+
+  return out
 }
 
 export const wrappedPath = (input: string): string | undefined => {
@@ -298,10 +438,10 @@ const compute = (
   return out
 }
 
-export const patchContent = (
+export const patchChunks = (
   file: string,
   input: string,
-  patchText: string,
+  chunks: ReadonlyArray<Chunk>,
 ): string => {
   const eol = input.includes("\r\n") ? "\r\n" : "\n"
   const lines = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n")
@@ -310,11 +450,7 @@ export const patchContent = (
   }
 
   const out = [...lines]
-  for (const [at, size, next] of compute(
-    file,
-    lines,
-    parse(patchText),
-  ).reverse()) {
+  for (const [at, size, next] of compute(file, lines, chunks).reverse()) {
     out.splice(at, size, ...next)
   }
 
@@ -325,3 +461,9 @@ export const patchContent = (
   const text = out.join("\n")
   return eol === "\r\n" ? text.replace(/\n/g, "\r\n") : text
 }
+
+export const patchContent = (
+  file: string,
+  input: string,
+  patchText: string,
+): string => patchChunks(file, input, parse(patchText))

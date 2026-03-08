@@ -1,39 +1,149 @@
 import { Schema, SchemaAST as AST } from "effect"
-import ts from "typescript"
 
 const resolveDocumentation = AST.resolveAt<string>("documentation")
 const identifierPattern = /^[$A-Z_a-z][$0-9A-Z_a-z]*$/u
 
-const unknownTypeNode = (): ts.KeywordTypeNode =>
-  ts.factory.createKeywordTypeNode(ts.SyntaxKind.UnknownKeyword)
+const Precedence = {
+  Union: 0,
+  Postfix: 1,
+  Primary: 2,
+} as const
 
-const primitiveTypeNode = (
-  kind: ts.KeywordTypeSyntaxKind,
-): ts.KeywordTypeNode => ts.factory.createKeywordTypeNode(kind)
+type Precedence = (typeof Precedence)[keyof typeof Precedence]
+
+export type PrinterOptions = {
+  readonly newLine?: "\n" | "\r\n"
+  readonly omitTrailingSemicolon?: boolean
+}
+
+export type PrintableNode = {
+  readonly text: string
+}
 
 type RenderContext = {
   activeNodes: Set<AST.AST>
+  options: Required<PrinterOptions>
 }
 
-const readonlyTypeNode = (type: ts.TypeNode): ts.TypeOperatorNode =>
-  ts.factory.createTypeOperatorNode(ts.SyntaxKind.ReadonlyKeyword, type)
+type RenderedType = PrintableNode & {
+  readonly precedence: Precedence
+}
 
-const nullTypeNode = (): ts.LiteralTypeNode =>
-  ts.factory.createLiteralTypeNode(ts.factory.createNull())
+type TemplateLiteralSpan = {
+  readonly type: string
+  text: string
+}
 
-const stringLiteralTypeNode = (value: string): ts.LiteralTypeNode =>
-  ts.factory.createLiteralTypeNode(ts.factory.createStringLiteral(value))
+type TemplateLiteralState = {
+  head: string
+  currentText: string
+  spans: Array<TemplateLiteralSpan>
+}
+
+const normalizeOptions = (
+  options?: PrinterOptions,
+): Required<PrinterOptions> => ({
+  newLine: options?.newLine ?? "\n",
+  omitTrailingSemicolon: options?.omitTrailingSemicolon ?? false,
+})
+
+const indent = (level: number): string => "    ".repeat(level)
+
+const prefixFirstLine = (
+  text: string,
+  prefix: string,
+  newLine: string,
+): string => {
+  const lines = text.split(newLine)
+  const [firstLine, ...restLines] = lines
+
+  return [prefix + (firstLine ?? ""), ...restLines].join(newLine)
+}
+
+const appendSuffix = (
+  text: string,
+  suffix: string,
+  newLine: string,
+): string => {
+  if (suffix.length === 0) {
+    return text
+  }
+
+  const lines = text.split(newLine)
+  const lastIndex = lines.length - 1
+
+  lines[lastIndex] = `${lines[lastIndex] ?? ""}${suffix}`
+
+  return lines.join(newLine)
+}
+
+const renderJsDoc = (
+  documentation: string,
+  indentLevel: number,
+  options: Required<PrinterOptions>,
+): string => {
+  const safeDocumentation = documentation.replaceAll("*/", "*\\/")
+  const indentation = indent(indentLevel)
+  const lines = safeDocumentation.split(/\r?\n/u)
+
+  if (lines.length === 1) {
+    return `${indentation}/** ${lines[0]} */`
+  }
+
+  return [
+    `${indentation}/**`,
+    ...lines.map((line) => `${indentation} * ${line}`),
+    `${indentation} */`,
+  ].join(options.newLine)
+}
+
+const parenthesize = (text: string): string => `(${text})`
+
+const withParenthesesIfNeeded = (
+  rendered: RenderedType,
+  minimumPrecedence: Precedence,
+): string =>
+  rendered.precedence < minimumPrecedence
+    ? parenthesize(rendered.text)
+    : rendered.text
+
+const unknownTypeNode = (): RenderedType => ({
+  text: "unknown",
+  precedence: Precedence.Primary,
+})
+
+const primitiveTypeNode = (keyword: string): RenderedType => ({
+  text: keyword,
+  precedence: Precedence.Primary,
+})
+
+const readonlyTypeNode = (rendered: RenderedType, context: RenderContext) => ({
+  text: prefixFirstLine(rendered.text, "readonly ", context.options.newLine),
+  precedence: Precedence.Primary,
+})
+
+const nullTypeNode = (): RenderedType => ({
+  text: "null",
+  precedence: Precedence.Primary,
+})
+
+const stringLiteralTypeNode = (value: string): RenderedType => ({
+  text: JSON.stringify(value),
+  precedence: Precedence.Primary,
+})
 
 const referenceTypeNode = (
   identifier: string,
-  typeArguments?: ReadonlyArray<ts.TypeNode>,
-): ts.TypeReferenceNode =>
-  ts.factory.createTypeReferenceNode(
-    ts.factory.createIdentifier(identifier),
-    typeArguments,
-  )
+  typeArguments?: ReadonlyArray<RenderedType>,
+): RenderedType => ({
+  text:
+    typeArguments === undefined || typeArguments.length === 0
+      ? identifier
+      : `${identifier}<${typeArguments.map((type) => type.text).join(", ")}>`,
+  precedence: Precedence.Primary,
+})
 
-const cycleTypeNode = (ast: AST.AST): ts.TypeNode => {
+const cycleTypeNode = (ast: AST.AST): RenderedType => {
   const visitedSuspends = new Set<AST.Suspend>()
   let current: AST.AST = ast
 
@@ -55,136 +165,75 @@ const cycleTypeNode = (ast: AST.AST): ts.TypeNode => {
 
 const literalText = (value: AST.Literal["literal"]): string => String(value)
 
-const numberLiteralTypeNode = (value: number): ts.LiteralTypeNode => {
-  if (Object.is(value, -0) || value < 0) {
-    return ts.factory.createLiteralTypeNode(
-      ts.factory.createPrefixUnaryExpression(
-        ts.SyntaxKind.MinusToken,
-        ts.factory.createNumericLiteral(-value),
-      ),
-    )
-  }
+const numberLiteralTypeNode = (value: number): RenderedType => ({
+  text: Object.is(value, -0) || value < 0 ? `-${-value}` : `${value}`,
+  precedence: Precedence.Primary,
+})
 
-  return ts.factory.createLiteralTypeNode(
-    ts.factory.createNumericLiteral(value),
-  )
-}
+const bigintLiteralTypeNode = (value: bigint): RenderedType => ({
+  text: value < 0n ? `-${-value}n` : `${value}n`,
+  precedence: Precedence.Primary,
+})
 
-const bigintLiteralTypeNode = (value: bigint): ts.LiteralTypeNode => {
-  if (value < 0n) {
-    return ts.factory.createLiteralTypeNode(
-      ts.factory.createPrefixUnaryExpression(
-        ts.SyntaxKind.MinusToken,
-        ts.factory.createBigIntLiteral(`${-value}n`),
-      ),
-    )
-  }
-
-  return ts.factory.createLiteralTypeNode(
-    ts.factory.createBigIntLiteral(`${value}n`),
-  )
-}
-
-const literalTypeNode = (ast: AST.Literal): ts.LiteralTypeNode => {
+const literalTypeNode = (ast: AST.Literal): RenderedType => {
   switch (typeof ast.literal) {
     case "string":
       return stringLiteralTypeNode(ast.literal)
     case "number":
       return numberLiteralTypeNode(ast.literal)
     case "boolean":
-      return ts.factory.createLiteralTypeNode(
-        ast.literal ? ts.factory.createTrue() : ts.factory.createFalse(),
-      )
+      return primitiveTypeNode(ast.literal ? "true" : "false")
     case "bigint":
       return bigintLiteralTypeNode(ast.literal)
   }
 }
 
-const unionOfTypeNodes = (types: ReadonlyArray<ts.TypeNode>): ts.TypeNode => {
+const unionOfTypeNodes = (types: ReadonlyArray<RenderedType>): RenderedType => {
   const [firstType, ...restTypes] = types
 
   if (firstType === undefined) {
-    return primitiveTypeNode(ts.SyntaxKind.NeverKeyword)
+    return primitiveTypeNode("never")
   }
 
-  return restTypes.length === 0
-    ? firstType
-    : ts.factory.createUnionTypeNode(types)
+  return {
+    text:
+      restTypes.length === 0
+        ? firstType.text
+        : types.map((type) => type.text).join(" | "),
+    precedence:
+      restTypes.length === 0 ? firstType.precedence : Precedence.Union,
+  }
 }
 
-const uniqueSymbolTypeNode = (ast: AST.UniqueSymbol): ts.TypeNode => {
+const uniqueSymbolTypeNode = (ast: AST.UniqueSymbol): RenderedType => {
   const description = ast.symbol.description
 
-  if (description === undefined) {
-    return ts.factory.createTypeOperatorNode(
-      ts.SyntaxKind.UniqueKeyword,
-      primitiveTypeNode(ts.SyntaxKind.SymbolKeyword),
-    )
+  return {
+    text:
+      description === undefined
+        ? "unique symbol"
+        : `typeof Symbol.for(${JSON.stringify(description)})`,
+    precedence: Precedence.Primary,
   }
-
-  return ts.factory.createTypeQueryNode(
-    ts.factory.createIdentifier(`Symbol.for(${JSON.stringify(description)})`),
-  )
 }
 
-const symbolExpression = (symbol: symbol): ts.Expression => {
+const symbolExpression = (symbol: symbol): string => {
   const description = symbol.description
 
-  if (description === undefined) {
-    return ts.factory.createCallExpression(
-      ts.factory.createIdentifier("Symbol"),
-      undefined,
-      [],
-    )
-  }
-
-  return ts.factory.createCallExpression(
-    ts.factory.createPropertyAccessExpression(
-      ts.factory.createIdentifier("Symbol"),
-      "for",
-    ),
-    undefined,
-    [ts.factory.createStringLiteral(description)],
-  )
+  return description === undefined
+    ? "Symbol()"
+    : `Symbol.for(${JSON.stringify(description)})`
 }
 
-const propertyName = (name: PropertyKey): ts.PropertyName => {
+const propertyName = (name: PropertyKey): string => {
   switch (typeof name) {
     case "string":
-      return identifierPattern.test(name)
-        ? ts.factory.createIdentifier(name)
-        : ts.factory.createStringLiteral(name)
+      return identifierPattern.test(name) ? name : JSON.stringify(name)
     case "number":
-      return ts.factory.createNumericLiteral(name)
+      return `${name}`
     case "symbol":
-      return ts.factory.createComputedPropertyName(symbolExpression(name))
+      return `[${symbolExpression(name)}]`
   }
-}
-
-const jsDocText = (documentation: string): string => {
-  const lines = documentation.replaceAll("*/", "*\\/").split(/\r?\n/u)
-
-  return lines.length === 1
-    ? `* ${lines[0]} `
-    : `*\n * ${lines.join("\n * ")}\n `
-}
-
-const withJsDoc = <T extends ts.Node>(
-  node: T,
-  documentation: string | undefined,
-): T => {
-  if (documentation === undefined) {
-    return node
-  }
-
-  ts.addSyntheticLeadingComment(
-    node,
-    ts.SyntaxKind.MultiLineCommentTrivia,
-    jsDocText(documentation),
-    true,
-  )
-
-  return node
 }
 
 const rootDocumentation = (ast: AST.AST): string | undefined => {
@@ -210,57 +259,86 @@ const rootDocumentation = (ast: AST.AST): string | undefined => {
 const propertySignatureTypeElement = (
   propertySignature: AST.PropertySignature,
   context: RenderContext,
-): ts.PropertySignature =>
-  withJsDoc(
-    ts.factory.createPropertySignature(
-      propertySignature.type.context?.isMutable === true
-        ? undefined
-        : [ts.factory.createModifier(ts.SyntaxKind.ReadonlyKeyword)],
-      propertyName(propertySignature.name),
-      AST.isOptional(propertySignature.type)
-        ? ts.factory.createToken(ts.SyntaxKind.QuestionToken)
-        : undefined,
-      toTypeNode(propertySignature.type, context),
+  indentLevel: number,
+): string => {
+  const readonlyModifier =
+    propertySignature.type.context?.isMutable === true ? "" : "readonly "
+  const optionalMarker = AST.isOptional(propertySignature.type) ? "?" : ""
+  const propertyType = toTypeNode(propertySignature.type, context, indentLevel)
+  const propertyText = prefixFirstLine(
+    appendSuffix(
+      propertyType.text,
+      context.options.omitTrailingSemicolon ? "" : ";",
+      context.options.newLine,
     ),
-    resolveDocumentation(propertySignature.type),
+    `${indent(indentLevel)}${readonlyModifier}${propertyName(propertySignature.name)}${optionalMarker}: `,
+    context.options.newLine,
   )
+  const documentation = resolveDocumentation(propertySignature.type)
+
+  return documentation === undefined
+    ? propertyText
+    : `${renderJsDoc(documentation, indentLevel, context.options)}${context.options.newLine}${propertyText}`
+}
 
 const indexSignatureTypeElement = (
   indexSignature: AST.IndexSignature,
   context: RenderContext,
-): ts.IndexSignatureDeclaration =>
-  ts.factory.createIndexSignature(
-    undefined,
-    [
-      ts.factory.createParameterDeclaration(
-        undefined,
-        undefined,
-        "x",
-        undefined,
-        toTypeNode(indexSignature.parameter, context),
-        undefined,
-      ),
-    ],
-    toTypeNode(indexSignature.type, context),
+  indentLevel: number,
+): string => {
+  const parameterType = toTypeNode(
+    indexSignature.parameter,
+    context,
+    indentLevel,
   )
+  const valueType = toTypeNode(indexSignature.type, context, indentLevel)
+
+  return prefixFirstLine(
+    appendSuffix(
+      valueType.text,
+      context.options.omitTrailingSemicolon ? "" : ";",
+      context.options.newLine,
+    ),
+    `${indent(indentLevel)}[x: ${parameterType.text}]: `,
+    context.options.newLine,
+  )
+}
 
 const objectsTypeNode = (
   ast: AST.Objects,
   context: RenderContext,
-): ts.TypeLiteralNode =>
-  ts.factory.createTypeLiteralNode([
+  indentLevel: number,
+): RenderedType => {
+  const members = [
     ...ast.propertySignatures.map((propertySignature) =>
-      propertySignatureTypeElement(propertySignature, context),
+      propertySignatureTypeElement(propertySignature, context, indentLevel + 1),
     ),
     ...ast.indexSignatures.map((indexSignature) =>
-      indexSignatureTypeElement(indexSignature, context),
+      indexSignatureTypeElement(indexSignature, context, indentLevel + 1),
     ),
-  ])
+  ]
 
-const unionTypeNode = (ast: AST.Union, context: RenderContext): ts.TypeNode =>
-  unionOfTypeNodes(ast.types.map((type) => toTypeNode(type, context)))
+  return {
+    text:
+      members.length === 0
+        ? "{}"
+        : ["{", ...members, `${indent(indentLevel)}}`].join(
+            context.options.newLine,
+          ),
+    precedence: Precedence.Primary,
+  }
+}
 
-const enumTypeNode = (ast: AST.Enum): ts.TypeNode =>
+const unionTypeNode = (
+  ast: AST.Union,
+  context: RenderContext,
+  indentLevel: number,
+): RenderedType =>
+  unionOfTypeNodes(
+    ast.types.map((type) => toTypeNode(type, context, indentLevel)),
+  )
+
+const enumTypeNode = (ast: AST.Enum): RenderedType =>
   unionOfTypeNodes(
     ast.enums.map(([, value]) =>
       typeof value === "string"
@@ -269,20 +347,9 @@ const enumTypeNode = (ast: AST.Enum): ts.TypeNode =>
     ),
   )
 
-type TemplateLiteralSpan = {
-  type: ts.TypeNode
-  text: string
-}
-
-type TemplateLiteralState = {
-  head: string
-  currentText: string
-  spans: Array<TemplateLiteralSpan>
-}
-
 const pushTemplateLiteralInterpolation = (
   state: TemplateLiteralState,
-  type: ts.TypeNode,
+  type: string,
 ): void => {
   const lastSpan = state.spans[state.spans.length - 1]
 
@@ -300,6 +367,7 @@ const visitTemplateLiteralPart = (
   state: TemplateLiteralState,
   ast: AST.AST,
   context: RenderContext,
+  indentLevel: number,
 ): void => {
   switch (ast._tag) {
     case "Literal":
@@ -307,18 +375,25 @@ const visitTemplateLiteralPart = (
       return
     case "TemplateLiteral":
       for (const part of ast.parts) {
-        visitTemplateLiteralPart(state, part, context)
+        visitTemplateLiteralPart(state, part, context, indentLevel)
       }
       return
     default:
-      pushTemplateLiteralInterpolation(state, toTypeNode(ast, context))
+      pushTemplateLiteralInterpolation(
+        state,
+        toTypeNode(ast, context, indentLevel).text,
+      )
   }
 }
+
+const escapeTemplateLiteralText = (text: string): string =>
+  text.replaceAll("\\", "\\\\").replaceAll("`", "\\`").replaceAll("${", "\\${")
 
 const templateLiteralTypeNode = (
   ast: AST.TemplateLiteral,
   context: RenderContext,
-): ts.TypeNode => {
+  indentLevel: number,
+): RenderedType => {
   const state: TemplateLiteralState = {
     head: "",
     currentText: "",
@@ -326,7 +401,7 @@ const templateLiteralTypeNode = (
   }
 
   for (const part of ast.parts) {
-    visitTemplateLiteralPart(state, part, context)
+    visitTemplateLiteralPart(state, part, context, indentLevel)
   }
 
   if (state.spans.length === 0) {
@@ -339,17 +414,12 @@ const templateLiteralTypeNode = (
     lastSpan.text = state.currentText
   }
 
-  return ts.factory.createTemplateLiteralType(
-    ts.factory.createTemplateHead(state.head),
-    state.spans.map((span, index) =>
-      ts.factory.createTemplateLiteralTypeSpan(
-        span.type,
-        index === state.spans.length - 1
-          ? ts.factory.createTemplateTail(span.text)
-          : ts.factory.createTemplateMiddle(span.text),
-      ),
-    ),
-  )
+  return {
+    text: `\`${escapeTemplateLiteralText(state.head)}${state.spans
+      .map((span) => `\${${span.type}}${escapeTemplateLiteralText(span.text)}`)
+      .join("")}\``,
+    precedence: Precedence.Primary,
+  }
 }
 
 const stripOptionalTupleUndefined = (ast: AST.AST): AST.AST => {
@@ -379,16 +449,48 @@ const stripOptionalTupleUndefined = (ast: AST.AST): AST.AST => {
 const tupleElementTypeNode = (
   ast: AST.AST,
   context: RenderContext,
-): ts.TypeNode => {
-  const type = toTypeNode(stripOptionalTupleUndefined(ast), context)
+  indentLevel: number,
+): string => {
+  const type = toTypeNode(
+    stripOptionalTupleUndefined(ast),
+    context,
+    indentLevel,
+  )
+  const optionalSuffix = AST.isOptional(ast) ? "?" : ""
+  const typeText = AST.isOptional(ast)
+    ? withParenthesesIfNeeded(type, Precedence.Postfix)
+    : type.text
 
-  return AST.isOptional(ast) ? ts.factory.createOptionalTypeNode(type) : type
+  return prefixFirstLine(
+    appendSuffix(typeText, optionalSuffix, context.options.newLine),
+    indent(indentLevel),
+    context.options.newLine,
+  )
+}
+
+const restTupleElementTypeNode = (
+  ast: AST.AST,
+  context: RenderContext,
+  indentLevel: number,
+): string => {
+  const type = toTypeNode(ast, context, indentLevel)
+
+  return prefixFirstLine(
+    appendSuffix(
+      withParenthesesIfNeeded(type, Precedence.Postfix),
+      "[]",
+      context.options.newLine,
+    ),
+    `${indent(indentLevel)}...`,
+    context.options.newLine,
+  )
 }
 
 const arraysTypeNode = (
   ast: AST.Arrays,
   context: RenderContext,
-): ts.TypeNode => {
+  indentLevel: number,
+): RenderedType => {
   const [restHead, ...restTail] = ast.rest
 
   if (
@@ -396,32 +498,62 @@ const arraysTypeNode = (
     ast.rest.length === 1 &&
     restHead !== undefined
   ) {
-    const arrayType = ts.factory.createArrayTypeNode(
-      toTypeNode(restHead, context),
-    )
+    const arrayType = toTypeNode(restHead, context, indentLevel)
+    const renderedArray = {
+      text: appendSuffix(
+        withParenthesesIfNeeded(arrayType, Precedence.Postfix),
+        "[]",
+        context.options.newLine,
+      ),
+      precedence: Precedence.Postfix,
+    } satisfies RenderedType
 
-    return ast.isMutable ? arrayType : readonlyTypeNode(arrayType)
+    return ast.isMutable
+      ? renderedArray
+      : readonlyTypeNode(renderedArray, context)
   }
 
-  const tupleType = ts.factory.createTupleTypeNode([
-    ...ast.elements.map((element) => tupleElementTypeNode(element, context)),
+  const tupleMembers = [
+    ...ast.elements.map((element) =>
+      tupleElementTypeNode(element, context, indentLevel + 1),
+    ),
     ...(restHead === undefined
       ? []
       : [
-          ts.factory.createRestTypeNode(
-            ts.factory.createArrayTypeNode(toTypeNode(restHead, context)),
+          restTupleElementTypeNode(restHead, context, indentLevel + 1),
+          ...restTail.map((element) =>
+            tupleElementTypeNode(element, context, indentLevel + 1),
           ),
-          ...restTail.map((element) => tupleElementTypeNode(element, context)),
         ]),
-  ])
+  ]
+  const tupleLines = tupleMembers.map((member, index) =>
+    appendSuffix(
+      member,
+      index === tupleMembers.length - 1 ? "" : ",",
+      context.options.newLine,
+    ),
+  )
 
-  return ast.isMutable ? tupleType : readonlyTypeNode(tupleType)
+  return {
+    text:
+      tupleLines.length === 0
+        ? ast.isMutable
+          ? "[]"
+          : "readonly []"
+        : [
+            ast.isMutable ? "[" : "readonly [",
+            ...tupleLines,
+            `${indent(indentLevel)}]`,
+          ].join(context.options.newLine),
+    precedence: Precedence.Primary,
+  }
 }
 
 const declarationTypeNode = (
   ast: AST.Declaration,
   context: RenderContext,
-): ts.TypeNode => {
+  indentLevel: number,
+): RenderedType => {
   const identifier = AST.resolveIdentifier(ast)
 
   if (identifier === undefined) {
@@ -429,7 +561,7 @@ const declarationTypeNode = (
   }
 
   const typeArguments = ast.typeParameters.map((typeParameter) =>
-    toTypeNode(typeParameter, context),
+    toTypeNode(typeParameter, context, indentLevel),
   )
 
   return referenceTypeNode(identifier, typeArguments)
@@ -438,9 +570,14 @@ const declarationTypeNode = (
 const suspendTypeNode = (
   ast: AST.Suspend,
   context: RenderContext,
-): ts.TypeNode => toTypeNode(ast.thunk(), context)
+  indentLevel: number,
+): RenderedType => toTypeNode(ast.thunk(), context, indentLevel)
 
-const toTypeNode = (ast: AST.AST, context: RenderContext): ts.TypeNode => {
+const toTypeNode = (
+  ast: AST.AST,
+  context: RenderContext,
+  indentLevel: number,
+): RenderedType => {
   if (context.activeNodes.has(ast)) {
     return cycleTypeNode(ast)
   }
@@ -450,47 +587,47 @@ const toTypeNode = (ast: AST.AST, context: RenderContext): ts.TypeNode => {
   try {
     switch (ast._tag) {
       case "String":
-        return primitiveTypeNode(ts.SyntaxKind.StringKeyword)
+        return primitiveTypeNode("string")
       case "Number":
-        return primitiveTypeNode(ts.SyntaxKind.NumberKeyword)
+        return primitiveTypeNode("number")
       case "Boolean":
-        return primitiveTypeNode(ts.SyntaxKind.BooleanKeyword)
+        return primitiveTypeNode("boolean")
       case "BigInt":
-        return primitiveTypeNode(ts.SyntaxKind.BigIntKeyword)
+        return primitiveTypeNode("bigint")
       case "Symbol":
-        return primitiveTypeNode(ts.SyntaxKind.SymbolKeyword)
+        return primitiveTypeNode("symbol")
       case "Any":
-        return primitiveTypeNode(ts.SyntaxKind.AnyKeyword)
+        return primitiveTypeNode("any")
       case "Unknown":
         return unknownTypeNode()
       case "Void":
-        return primitiveTypeNode(ts.SyntaxKind.VoidKeyword)
+        return primitiveTypeNode("void")
       case "Never":
-        return primitiveTypeNode(ts.SyntaxKind.NeverKeyword)
+        return primitiveTypeNode("never")
       case "Undefined":
-        return primitiveTypeNode(ts.SyntaxKind.UndefinedKeyword)
+        return primitiveTypeNode("undefined")
       case "Null":
         return nullTypeNode()
       case "ObjectKeyword":
-        return primitiveTypeNode(ts.SyntaxKind.ObjectKeyword)
+        return primitiveTypeNode("object")
       case "Literal":
         return literalTypeNode(ast)
       case "UniqueSymbol":
         return uniqueSymbolTypeNode(ast)
       case "Declaration":
-        return declarationTypeNode(ast, context)
+        return declarationTypeNode(ast, context, indentLevel)
       case "Enum":
         return enumTypeNode(ast)
       case "TemplateLiteral":
-        return templateLiteralTypeNode(ast, context)
+        return templateLiteralTypeNode(ast, context, indentLevel)
       case "Objects":
-        return objectsTypeNode(ast, context)
+        return objectsTypeNode(ast, context, indentLevel)
       case "Arrays":
-        return arraysTypeNode(ast, context)
+        return arraysTypeNode(ast, context, indentLevel)
       case "Union":
-        return unionTypeNode(ast, context)
+        return unionTypeNode(ast, context, indentLevel)
       case "Suspend":
-        return suspendTypeNode(ast, context)
+        return suspendTypeNode(ast, context, indentLevel)
       default:
         return unknownTypeNode()
     }
@@ -500,32 +637,33 @@ const toTypeNode = (ast: AST.AST, context: RenderContext): ts.TypeNode => {
 }
 
 export const printNode = (
-  node: ts.Node,
-  options?: ts.PrinterOptions,
-): string => {
-  const sourceFile = ts.createSourceFile(
-    "print.ts",
-    "",
-    ts.ScriptTarget.Latest,
-    false,
-    ts.ScriptKind.TS,
-  )
-  const printer = ts.createPrinter(options)
-
-  return printer.printNode(ts.EmitHint.Unspecified, node, sourceFile)
-}
+  node: PrintableNode,
+  _options?: PrinterOptions,
+): string => node.text
 
 export const render = (
   schema: Schema.Top,
-  options?: ts.PrinterOptions,
+  options?: PrinterOptions,
 ): string => {
+  const printerOptions = normalizeOptions(options)
   const ast = AST.toType(schema.ast)
+  const rendered = toTypeNode(
+    ast,
+    {
+      activeNodes: new Set(),
+      options: printerOptions,
+    },
+    0,
+  )
+  const documentation = rootDocumentation(ast)
 
   return printNode(
-    withJsDoc(
-      toTypeNode(ast, { activeNodes: new Set() }),
-      rootDocumentation(ast),
-    ),
-    options,
+    {
+      text:
+        documentation === undefined
+          ? rendered.text
+          : `${renderJsDoc(documentation, 0, printerOptions)}${printerOptions.newLine}${rendered.text}`,
+    },
+    printerOptions,
   )
 }

@@ -14,9 +14,6 @@ importers:
       glob:
         specifier: ^13.0.6
         version: 13.0.6
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
     devDependencies:
       '@changesets/changelog-github':
         specifier: ^0.5.2
@@ -1359,11 +1356,6 @@ packages:
   tr46@0.0.3:
     resolution: {integrity: sha512-N3WMsuqV66lT30CrXNbEjx4GEwlow3v6rr4mCcv6prnfwhS01rkgyFdjPNBYd9br7LpXV1+Emh01fHnq2Gdgrw==}
 
-  typescript@5.9.3:
-    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
-    engines: {node: '>=14.17'}
-    hasBin: true
-
   undici-types@7.18.2:
     resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
 
@@ -2680,8 +2672,6 @@ snapshots:
   toml@3.0.0: {}
 
   tr46@0.0.3: {}
-
-  typescript@5.9.3: {}
 
   undici-types@7.18.2: {}
 

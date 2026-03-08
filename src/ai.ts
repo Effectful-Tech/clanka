@@ -134,7 +134,7 @@ ${renderer.render(AgentTools)}
 declare const fetch: typeof globalThis.fetch
 \`\`\`
 
-An example script to read a file:
+Here is how you would read a file:
 
 \`\`\`
 const content = await readFile({
@@ -145,7 +145,7 @@ const content = await readFile({
 console.log(content)
 \`\`\`
 
-Which would output:
+And the output would look like this:
 
 \`\`\`
 Javascript output:

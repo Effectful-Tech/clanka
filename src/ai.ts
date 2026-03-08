@@ -1,6 +1,14 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
-import { Deferred, Effect, FileSystem, Layer, pipe, Stream } from "effect"
-import { Chat, Prompt } from "effect/unstable/ai"
+import {
+  Array,
+  Deferred,
+  Effect,
+  FileSystem,
+  Layer,
+  pipe,
+  Stream,
+} from "effect"
+import { LanguageModel, Prompt } from "effect/unstable/ai"
 import { CodexAiClient } from "./Codex.ts"
 import { KeyValueStore } from "effect/unstable/persistence"
 import { OpenAiLanguageModel } from "@effect/ai-openai"
@@ -12,6 +20,7 @@ import {
   TaskCompleteDeferred,
 } from "./AgentTools.ts"
 import { Executor } from "./Executor.ts"
+import { StreamPart } from "effect/unstable/ai/Response"
 
 const ClientLayer = CodexAiClient.pipe(
   Layer.provide(KeyValueStore.layerFileSystem("data")),
@@ -19,19 +28,27 @@ const ClientLayer = CodexAiClient.pipe(
 )
 
 Effect.gen(function* () {
+  const ai = yield* LanguageModel.LanguageModel
   const fs = yield* FileSystem.FileSystem
   const renderer = yield* ToolkitRenderer
-  const chat = yield* Chat.fromPrompt(process.argv[2]!)
   const deferred = yield* Deferred.make<string>()
   const executor = yield* Executor
   const tools = yield* AgentTools
 
   const agentsMd = yield* fs.readFileString("AGENTS.md")
+  let prompt = Prompt.make([
+    { role: "user", content: process.argv[2]! },
+    {
+      role: "user",
+      content: `Here is a copy of ./AGENTS.md. ALWAYS follow these instructions when completing the above task:
+
+${agentsMd}`,
+    },
+  ])
 
   const result = yield* Effect.gen(function* () {
     let output = ""
     while (true) {
-      let prompt = Prompt.empty
       if (output.length > 0) {
         console.log("Executing script:\n", output, "\n\n")
         const result = yield* pipe(
@@ -43,39 +60,45 @@ Effect.gen(function* () {
         )
         console.log("Result:")
         console.log(result.slice(0, 1000))
-        prompt = Prompt.make([
-          { role: "user", content: `Javascript output:\n\n${result}` },
-        ])
+        prompt = Prompt.concat(prompt, `Javascript output:\n\n${result}`)
         output = ""
       }
+      let response = Array.empty<StreamPart<{}>>()
       yield* pipe(
-        chat.streamText({ prompt }),
+        ai.streamText({ prompt }),
         Stream.takeUntil((part) => part.type === "text-end"),
-        Stream.runForEach((part) => {
-          switch (part.type) {
-            case "text-start":
-              output = ""
-              break
-            case "text-delta":
-              output += part.delta
-              break
-            case "reasoning-delta":
-              process.stdout.write(part.delta)
-              break
-            case "reasoning-end":
-              console.log("\n")
-              break
-            case "finish":
-              console.log("Tokens used:", part.usage, "\n")
-              break
+        Stream.runForEachArray((parts) => {
+          response.push(...parts)
+          for (const part of parts) {
+            switch (part.type) {
+              case "text-start":
+                output = ""
+                break
+              case "text-delta":
+                output += part.delta
+                break
+              case "reasoning-delta":
+                process.stdout.write(part.delta)
+                break
+              case "reasoning-end":
+                console.log("\n")
+                break
+              case "finish":
+                console.log("Tokens used:", part.usage, "\n")
+                break
+            }
           }
           return Effect.void
         }),
         Effect.tapCause(Effect.logError),
         Effect.retry({
-          while: (err) => err.isRetryable,
+          while: (err) => {
+            response = []
+            return err.isRetryable
+          },
         }),
       )
+      prompt = Prompt.concat(prompt, Prompt.fromResponseParts(response))
       output = output.trim()
     }
   }).pipe(
@@ -114,13 +137,17 @@ const content = await readFile({
 console.log(content)
 \`\`\`
 
-# Information from the user
+Which would output:
 
-**Always consider** the following information when making decisions:
+\`\`\`
+Javascript output:
 
----
-
-${agentsMd}`,
+[22:44:53.054] INFO (#47): Calling "readFile" { path: 'package.json' }
+{
+  "name": "my-project",
+  "version": "1.0.0"
+}
+\`\`\``,
     }),
   )
 

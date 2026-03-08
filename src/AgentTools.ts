@@ -64,6 +64,15 @@ export const AgentTools = Toolkit.make(
     }),
     dependencies: [CurrentDirectory],
   }),
+  Tool.make("renameFile", {
+    description:
+      "Rename or move a file, creating parent directories if needed.",
+    parameters: Schema.Struct({
+      from: Schema.String,
+      to: Schema.String,
+    }),
+    dependencies: [CurrentDirectory],
+  }),
   Tool.make("mkdir", {
     description: "Make a directory, creating parent directories if needed.",
     parameters: Schema.String.annotate({
@@ -179,6 +188,18 @@ export const AgentToolHandlers = AgentTools.toLayer(
         )
         const cwd = yield* CurrentDirectory
         return yield* fs.remove(pathService.resolve(cwd, path), { force: true })
+      }, Effect.orDie),
+      renameFile: Effect.fn("AgentTools.renameFile")(function* (options) {
+        yield* Effect.logInfo(`Calling "renameFile"`).pipe(
+          Effect.annotateLogs(options),
+        )
+        const cwd = yield* CurrentDirectory
+        const from = pathService.resolve(cwd, options.from)
+        const to = pathService.resolve(cwd, options.to)
+        yield* fs.makeDirectory(pathService.dirname(to), {
+          recursive: true,
+        })
+        return yield* fs.rename(from, to)
       }, Effect.orDie),
       mkdir: Effect.fn("AgentTools.mkdir")(function* (path) {
         yield* Effect.logInfo(`Calling "mkdir"`).pipe(

@@ -248,4 +248,53 @@ describe("AgentTools", () => {
       await rm(tempRoot, { force: true, recursive: true })
     }
   })
+
+  it("renames a file", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "clanka-rename-file-"))
+
+    try {
+      await mkdir(join(tempRoot, "src"), { recursive: true })
+      await writeFile(join(tempRoot, "src", "app.txt"), "hello\n", "utf8")
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const executor = yield* Executor
+          const tools = yield* AgentTools
+
+          return yield* executor
+            .execute({
+              tools,
+              script: [
+                "await renameFile({",
+                '  from: "src/app.txt",',
+                '  to: "src/main.txt",',
+                "})",
+                'console.log("renamed")',
+              ].join("\n"),
+            })
+            .pipe(Stream.mkString)
+        }).pipe(
+          Effect.provide([
+            AgentToolHandlers,
+            Executor.layer,
+            ToolkitRenderer.layer,
+          ]),
+          Effect.provideService(CurrentDirectory, tempRoot),
+          Effect.provideServiceEffect(
+            TaskCompleteDeferred,
+            Deferred.make<string>(),
+          ),
+        ),
+      )
+
+      expect(await readFile(join(tempRoot, "src", "main.txt"), "utf8")).toBe(
+        "hello\n",
+      )
+      await expect(
+        readFile(join(tempRoot, "src", "app.txt"), "utf8"),
+      ).rejects.toThrow()
+    } finally {
+      await rm(tempRoot, { force: true, recursive: true })
+    }
+  })
 })

@@ -1,5 +1,6 @@
 import {
   Array,
+  Data,
   Deferred,
   Effect,
   FileSystem,
@@ -29,7 +30,8 @@ export class TaskCompleteDeferred extends ServiceMap.Service<
 
 export const AgentTools = Toolkit.make(
   Tool.make("applyPatch", {
-    description: "Apply a patch across one or more files.",
+    description:
+      "Apply a patch across one or more files. Use this to add, delete or update files.",
     parameters: Schema.String.annotate({
       identifier: "patchText",
       documentation: "Wrapped patch with Add/Delete/Update sections.",
@@ -46,14 +48,6 @@ export const AgentTools = Toolkit.make(
       endLine: Schema.optional(Schema.Number),
     }),
     success: Schema.NullOr(Schema.String),
-    dependencies: [CurrentDirectory],
-  }),
-  Tool.make("writeFile", {
-    description: "Write content to a file, replacing it if it already exists.",
-    parameters: Schema.Struct({
-      path: Schema.String,
-      content: Schema.String,
-    }),
     dependencies: [CurrentDirectory],
   }),
   Tool.make("ls", {
@@ -93,13 +87,6 @@ export const AgentTools = Toolkit.make(
       identifier: "command",
     }),
     success: Schema.String,
-    dependencies: [CurrentDirectory],
-  }),
-  Tool.make("removeFile", {
-    description: "Remove a file at the given path.",
-    parameters: Schema.String.annotate({
-      identifier: "path",
-    }),
     dependencies: [CurrentDirectory],
   }),
   Tool.make("sleep", {
@@ -152,23 +139,6 @@ export const AgentToolHandlers = AgentTools.toLayer(
           Effect.orDie,
         )
       }),
-      writeFile: Effect.fn("AgentTools.writeFile")(function* (options) {
-        yield* Effect.logInfo(`Calling "writeFile"`).pipe(
-          Effect.annotateLogs({ path: options.path }),
-        )
-        const cwd = yield* CurrentDirectory
-        yield* fs.writeFileString(
-          pathService.resolve(cwd, options.path),
-          options.content,
-        )
-      }, Effect.orDie),
-      removeFile: Effect.fn("AgentTools.removeFile")(function* (path) {
-        yield* Effect.logInfo(`Calling "removeFile"`).pipe(
-          Effect.annotateLogs({ path }),
-        )
-        const cwd = yield* CurrentDirectory
-        yield* fs.remove(pathService.resolve(cwd, path))
-      }, Effect.orDie),
       ls: Effect.fn("AgentTools.ls")(function* (path) {
         yield* Effect.logInfo(`Calling "readdir"`).pipe(
           Effect.annotateLogs({ path }),
@@ -249,13 +219,13 @@ export const AgentToolHandlers = AgentTools.toLayer(
       applyPatch: Effect.fn("AgentTools.applyPatch")(function* (patchText) {
         yield* Effect.logInfo(`Calling "applyPatch"`)
         const cwd = yield* CurrentDirectory
-        const err = (cause: unknown) =>
-          cause instanceof Error ? cause : new Error(String(cause))
+        // const err = (cause: unknown) =>
+        //   cause instanceof Error ? cause : new Error(String(cause))
         const fail = (path: string, reason: "delete" | "update") =>
           Effect.fail(
-            new Error(
-              `applyPatch verification failed: Failed to read file to ${reason}: ${path}`,
-            ),
+            new ApplyPatchError({
+              message: `verification failed: Failed to read file to ${reason}: ${path}`,
+            }),
           )
         const state = new Map<string, string | null>()
         const steps = [] as Array<
@@ -290,24 +260,12 @@ export const AgentToolHandlers = AgentTools.toLayer(
             return input!
           }
 
-          const input = yield* fs
-            .readFileString(path)
-            .pipe(
-              Effect.mapError(
-                () =>
-                  new Error(
-                    `applyPatch verification failed: Failed to read file to ${reason}: ${path}`,
-                  ),
-              ),
-            )
+          const input = yield* fs.readFileString(path)
           state.set(path, input)
           return input
         })
 
-        for (const patch of yield* Effect.try({
-          try: () => parsePatch(patchText),
-          catch: err,
-        })) {
+        for (const patch of parsePatch(patchText)) {
           const path = pathService.resolve(cwd, patch.path)
           switch (patch.type) {
             case "add": {
@@ -336,10 +294,7 @@ export const AgentToolHandlers = AgentTools.toLayer(
             }
             case "update": {
               const input = yield* load(path, "update")
-              const next = yield* Effect.try({
-                try: () => patchChunks(path, input, patch.chunks),
-                catch: err,
-              })
+              const next = patchChunks(path, input, patch.chunks)
               const movePath =
                 patch.movePath === undefined
                   ? undefined
@@ -404,3 +359,7 @@ export const AgentToolHandlers = AgentTools.toLayer(
     })
   }),
 ).pipe(Layer.provide(NodeServices.layer))
+
+export class ApplyPatchError extends Data.TaggedClass("ApplyPatchError")<{
+  readonly message: string
+}> {}

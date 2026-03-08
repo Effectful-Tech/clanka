@@ -6,9 +6,10 @@ import {
   FileSystem,
   Layer,
   pipe,
+  Schema,
   Stream,
 } from "effect"
-import { LanguageModel, Prompt } from "effect/unstable/ai"
+import { LanguageModel, Prompt, Tool, Toolkit } from "effect/unstable/ai"
 import { CodexAiClient } from "./Codex.ts"
 import { KeyValueStore } from "effect/unstable/persistence"
 import { OpenAiLanguageModel } from "@effect/ai-openai"
@@ -27,13 +28,45 @@ const ClientLayer = CodexAiClient.pipe(
   Layer.provide(NodeServices.layer),
 )
 
+const Tools = Toolkit.make(
+  Tool.make("execute", {
+    description: "Run javascript code",
+    parameters: Schema.Struct({
+      script: Schema.String,
+    }),
+    success: Schema.String,
+    dependencies: [CurrentDirectory, TaskCompleteDeferred],
+  }),
+)
+
+const ToolHandlers = Tools.toLayer(
+  Effect.gen(function* () {
+    const executor = yield* Executor
+    const tools = yield* AgentTools
+    return Tools.of({
+      execute: Effect.fn("Tools.execute")(function* ({ script }) {
+        const cwd = yield* CurrentDirectory
+        const deferred = yield* TaskCompleteDeferred
+        return yield* pipe(
+          executor.execute({
+            tools,
+            script,
+          }),
+          Stream.mkString,
+          Effect.provideService(CurrentDirectory, cwd),
+          Effect.provideService(TaskCompleteDeferred, deferred),
+        )
+      }),
+    })
+  }),
+).pipe(Layer.provide([AgentToolHandlers, Executor.layer]))
+
 Effect.gen(function* () {
   const ai = yield* LanguageModel.LanguageModel
   const fs = yield* FileSystem.FileSystem
   const renderer = yield* ToolkitRenderer
   const deferred = yield* Deferred.make<string>()
-  const executor = yield* Executor
-  const tools = yield* AgentTools
+  const tools = yield* Tools
 
   const agentsMd = yield* fs.readFileString("AGENTS.md")
   let prompt = Prompt.make([
@@ -46,51 +79,31 @@ ${agentsMd}`,
     },
   ])
 
-  const result = yield* Effect.gen(function* () {
-    let output = ""
+  yield* Effect.gen(function* () {
     while (true) {
-      if (output.length > 0) {
-        console.log("Executing script:\n", output, "\n\n")
-        const result = yield* pipe(
-          executor.execute({
-            tools,
-            script: output,
-          }),
-          Stream.mkString,
-        )
-        console.log("Result:")
-        console.log(
-          result.length > 1500
-            ? result.slice(0, 1500) + "\n\n[output truncated]"
-            : result,
-        )
-        prompt = Prompt.concat(prompt, `Javascript output:\n\n${result}`)
-        output = ""
-      }
-
-      if (Deferred.isDoneUnsafe(deferred)) {
-        return yield* Deferred.await(deferred)
-      }
-
-      let response = Array.empty<StreamPart<{}>>()
+      // oxlint-disable-next-line typescript/no-explicit-any
+      let responseParts = Array.empty<StreamPart<any>>()
+      let hasTools = false
       yield* pipe(
-        ai.streamText({ prompt }),
-        Stream.takeUntil((part) => part.type === "text-end"),
+        ai.streamText({ prompt, toolkit: tools }),
         Stream.runForEachArray((parts) => {
-          response.push(...parts)
+          responseParts.push(...parts)
           for (const part of parts) {
             switch (part.type) {
-              case "text-start":
-                output = ""
-                break
               case "text-delta":
-                output += part.delta
+                process.stdout.write(part.delta)
+                break
+              case "text-end":
+                console.log("\n")
                 break
               case "reasoning-delta":
                 process.stdout.write(part.delta)
                 break
               case "reasoning-end":
                 console.log("\n")
+                break
+              case "tool-call":
+                hasTools = true
                 break
               case "finish":
                 console.log("Tokens used:", part.usage, "\n")
@@ -102,13 +115,13 @@ ${agentsMd}`,
         Effect.tapCause(Effect.logError),
         Effect.retry({
           while: (err) => {
-            response = []
+            responseParts = []
             return err.isRetryable
           },
         }),
       )
-      prompt = Prompt.concat(prompt, Prompt.fromResponseParts(response))
-      output = output.trim()
+      if (!hasTools) break
+      prompt = Prompt.concat(prompt, Prompt.fromResponseParts(responseParts))
     }
   }).pipe(
     Effect.provideService(CurrentDirectory, process.cwd()),
@@ -119,9 +132,8 @@ ${agentsMd}`,
 - You only add comments when necessary.
 - You do the research before making changes.
 
-To complete the task, respond with javascript code that will be executed for you.
+To do your job, use the "execute" tool to run code that helps you complete the task.
 
-- Do not add any markdown formatting, just code.
 - Use \`console.log\` to print any output you need.
 - Top level await is supported.
 - Avoid writing python or using bash to execute python
@@ -148,8 +160,6 @@ console.log(content)
 And the output would look like this:
 
 \`\`\`
-Javascript output:
-
 [22:44:53.054] INFO (#47): Calling "readFile" { path: 'package.json' }
 {
   "name": "my-project",
@@ -158,12 +168,9 @@ Javascript output:
 \`\`\``,
     }),
   )
-
-  console.log("Result:", result)
 }).pipe(
   Effect.provide([
-    AgentToolHandlers,
-    Executor.layer,
+    ToolHandlers,
     ToolkitRenderer.layer,
     OpenAiLanguageModel.model("gpt-5.4", {
       store: false,

@@ -17,6 +17,7 @@ export const layerModelConfig = AgentModelConfig.layer({
       instructions: system,
     }),
   supportsAssistantPrefill: true,
+  supportsNoTools: true,
 })
 
 /**

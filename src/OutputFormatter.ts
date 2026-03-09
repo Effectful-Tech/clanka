@@ -49,9 +49,15 @@ ${output.summary}\n\n`
           return "\n\n"
         }
         case "ScriptStart": {
-          return `${prefix}${chalkScriptHeading(`${scriptIcon} Executing script`)}\n\n${chalk.dim(output.script)}\n\n`
+          return `${prefix}${chalkScriptHeading(`${scriptIcon} Executing script`)}\n\n`
+        }
+        case "ScriptDelta": {
+          return chalk.dim(output.delta)
         }
         case "ScriptEnd": {
+          return "\n\n"
+        }
+        case "ScriptOutput": {
           const lines = output.output.split("\n")
           const truncated =
             lines.length > 20

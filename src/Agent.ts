@@ -106,45 +106,29 @@ export const make: <
   const fs = yield* FileSystem.FileSystem
   const pathService = yield* Path.Path
   const executor = yield* Executor
-  const modelConfig = yield* AgentModelConfig
+  const renderer = yield* ToolkitRenderer
   const allTools = Toolkit.merge(AgentTools, options.tools ?? Toolkit.empty)
+  const allToolsDts = renderer.render(allTools)
   const tools = yield* allTools
+  const singleTool = yield* SingleTools.asEffect().pipe(
+    Effect.provide(SingleToolHandlers),
+  )
   const services = yield* Effect.services<
     | Tool.HandlerServices<{}>
     | LanguageModel.LanguageModel
     | ProviderName
     | ModelName
   >()
+
   const pendingMessages = new Set<{
     readonly message: string
     readonly resume: (effect: Effect.Effect<void>) => void
   }>()
 
-  let system = yield* generateSystem(allTools)
-
   const agentsMd = yield* pipe(
     fs.readFileString(pathService.resolve(options.directory, "AGENTS.md")),
     Effect.option,
   )
-
-  if (Option.isSome(agentsMd)) {
-    system += `
-# AGENTS.md
-
-The following instructions are from ./AGENTS.md in the current directory.
-You do not need to read this file again.
-
-**ALWAYS follow these instructions when completing tasks**:
-
-<!-- AGENTS.md start -->
-${agentsMd.value}
-<!-- AGENTS.md end -->
-`
-  }
-
-  if (options.system) {
-    system += `\n${options.system}\n`
-  }
 
   let agentCounter = 0
 
@@ -160,8 +144,31 @@ ${agentsMd.value}
     LanguageModel.LanguageModel | ProviderName
   > = Effect.fnUntraced(function* (agentId, prompt) {
     const ai = yield* LanguageModel.LanguageModel
+    const modelConfig = yield* AgentModelConfig
+    const singleToolMode = modelConfig.supportsNoTools !== false
     const deferred = yield* Deferred.make<string>()
     const output = yield* Queue.make<Output, AgentFinished | AiError.AiError>()
+
+    let system = generateSystem(allToolsDts, !singleToolMode)
+
+    if (Option.isSome(agentsMd)) {
+      system += `
+# AGENTS.md
+
+The following instructions are from ./AGENTS.md in the current directory.
+You do not need to read this file again.
+
+**ALWAYS follow these instructions when completing tasks**:
+
+<!-- AGENTS.md start -->
+${agentsMd.value}
+<!-- AGENTS.md end -->
+`
+    }
+
+    if (options.system) {
+      system += `\n${options.system}\n`
+    }
 
     function maybeSend(agentId: number, part: Output, lock = false) {
       if (currentOutputAgent === null || currentOutputAgent === agentId) {
@@ -242,6 +249,17 @@ ${prompt}`),
       ServiceMap.add(TaskCompleteDeferred, deferred),
     )
 
+    const executeScript = Effect.fnUntraced(function* (script: string) {
+      maybeSend(agentId, new ScriptEnd())
+      const output = yield* pipe(
+        executor.execute({ tools, script }),
+        Stream.mkString,
+        Effect.provideServices(taskServices),
+      )
+      maybeSend(agentId, new ScriptOutput({ output }))
+      return output
+    })
+
     if (!modelConfig.systemPromptTransform) {
       prompt = Prompt.setSystem(prompt, system)
     }
@@ -249,18 +267,9 @@ ${prompt}`),
     let currentScript = ""
     yield* Effect.gen(function* () {
       while (true) {
-        if (currentScript.length > 0) {
+        if (!singleToolMode && currentScript.length > 0) {
           currentScript = extractScript(currentScript)
-          maybeSend(agentId, new ScriptStart({ script: currentScript }))
-          let result = yield* pipe(
-            executor.execute({
-              tools,
-              script: currentScript,
-            }),
-            Stream.mkString,
-          )
-          result = result.trim()
-          maybeSend(agentId, new ScriptEnd({ output: result }))
+          const result = yield* executeScript(currentScript)
           prompt = Prompt.concat(prompt, [
             {
               role: modelConfig.supportsAssistantPrefill ? "assistant" : "user",
@@ -292,16 +301,26 @@ ${prompt}`),
           pendingMessages.clear()
         }
 
-        let response = Array.empty<StreamPart<{}>>()
+        // oxlint-disable-next-line typescript/no-explicit-any
+        let response = Array.empty<StreamPart<any>>()
         let reasoningStarted = false
         let hadReasoningDelta = false
         yield* pipe(
-          ai.streamText({ prompt }),
+          ai.streamText(
+            singleToolMode ? { prompt, toolkit: singleTool } : { prompt },
+          ),
           Stream.takeUntil((part) => {
-            if (part.type === "text-end" && currentScript.trim().length > 0) {
+            if (
+              !singleToolMode &&
+              part.type === "text-end" &&
+              currentScript.trim().length > 0
+            ) {
               return true
             }
-            if (part.type === "reasoning-end" && pendingMessages.size > 0) {
+            if (
+              (part.type === "text-end" || part.type === "reasoning-end") &&
+              pendingMessages.size > 0
+            ) {
               return true
             }
             return false
@@ -312,11 +331,43 @@ ${prompt}`),
             for (const part of parts) {
               switch (part.type) {
                 case "text-start":
+                  if (singleToolMode) {
+                    reasoningStarted = true
+                    break
+                  }
                   currentScript = ""
                   break
-                case "text-delta":
+                case "text-delta": {
+                  if (singleToolMode) {
+                    hadReasoningDelta = true
+                    if (reasoningStarted) {
+                      reasoningStarted = false
+                      maybeSend(agentId, new ReasoningStart(), true)
+                    }
+                    maybeSend(
+                      agentId,
+                      new ReasoningDelta({ delta: part.delta }),
+                    )
+                    break
+                  }
+                  if (currentScript === "" && part.delta.length > 0) {
+                    maybeSend(agentId, new ScriptStart(), true)
+                  }
+                  maybeSend(agentId, new ScriptDelta({ delta: part.delta }))
                   currentScript += part.delta
                   break
+                }
+                case "text-end": {
+                  if (singleToolMode) {
+                    reasoningStarted = false
+                    if (hadReasoningDelta) {
+                      hadReasoningDelta = false
+                      const sent = maybeSend(agentId, new ReasoningEnd())
+                      if (sent) flushBuffer()
+                    }
+                  }
+                  break
+                }
                 case "reasoning-start":
                   reasoningStarted = true
                   break
@@ -357,7 +408,15 @@ ${prompt}`),
         currentScript = currentScript.trim()
       }
     }).pipe(
-      Effect.provideServices(taskServices),
+      Effect.provideServices(
+        taskServices.pipe(
+          ServiceMap.add(ScriptExecutor, (script) => {
+            maybeSend(agentId, new ScriptStart())
+            maybeSend(agentId, new ScriptDelta({ delta: script }))
+            return executeScript(script)
+          }),
+        ),
+      ),
       Effect.provideServices(services),
       Effect.catchCause((cause) => Queue.failCause(output, cause)),
       Effect.forkScoped,
@@ -384,27 +443,18 @@ ${prompt}`),
   // oxlint-disable-next-line typescript/no-explicit-any
 }) as any
 
-// oxlint-disable-next-line typescript/no-explicit-any
-const generateSystem = Effect.fn(function* (tools: Toolkit.Toolkit<any>) {
-  const renderer = yield* ToolkitRenderer
+const generateSystem = (
+  // oxlint-disable-next-line typescript/no-explicit-any
+  toolsDts: string,
+  multi: boolean,
+) => {
+  const toolMd = multi
+    ? generateSystemMulti(toolsDts)
+    : generateSystemSingle(toolsDts)
 
   return `You are a professional software engineer. You are precise, thoughtful and concise. You make changes with care and always do the due diligence to ensure the best possible outcome. You make no mistakes.
 
-From now on only respond with javascript code that will be executed for you.
-
-- Use \`console.log\` to print any output you need.
-- Top level await is supported.
-- **Prefer using the functions provided** over the bash tool
-
-**When you have completed your task**, call the "taskComplete" function with the final output.
-
-You have the following functions available to you:
-
-\`\`\`ts
-${renderer.render(tools)}
-
-declare const fetch: typeof globalThis.fetch
-\`\`\`
+${toolMd}
 
 Here is how you would read a file:
 
@@ -435,6 +485,64 @@ Javascript output:
 - Only add comments when necessary.
 - Use the "subagent" tool to delegate large tasks / exploration. Run multiple subagents in parallel with Promise.all
 `
+}
+
+// oxlint-disable-next-line typescript/no-explicit-any
+const generateSystemMulti = (toolsDts: string) => {
+  return `From now on only respond with javascript code that will be executed for you.
+
+- Use \`console.log\` to print any output you need.
+- Top level await is supported.
+- **Prefer using the functions provided** over the bash tool
+
+**When you have completed your task**, call the "taskComplete" function with the final output.
+
+You have the following functions available to you:
+
+\`\`\`ts
+${toolsDts}
+
+declare const fetch: typeof globalThis.fetch
+\`\`\``
+}
+
+// oxlint-disable-next-line typescript/no-explicit-any
+const generateSystemSingle = (toolsDts: string) => {
+  return `Use the "execute" tool to run javascript code to do your work.
+
+- Use \`console.log\` to print any output you need.
+- Top level await is supported.
+- **Prefer using the functions provided** over the bash tool
+
+You have the following functions available to you:
+
+\`\`\`ts
+${toolsDts}
+
+declare const fetch: typeof globalThis.fetch
+\`\`\``
+}
+
+class ScriptExecutor extends ServiceMap.Service<
+  ScriptExecutor,
+  (script: string) => Effect.Effect<string>
+>()("clanka/Agent/ScriptExecutor") {}
+
+const SingleTools = Toolkit.make(
+  Tool.make("execute", {
+    description: "Execute javascript code and return the output",
+    parameters: Schema.Struct({
+      script: Schema.String,
+    }),
+    success: Schema.String,
+    dependencies: [ScriptExecutor],
+  }),
+)
+const SingleToolHandlers = SingleTools.toLayer({
+  execute: Effect.fnUntraced(function* ({ script }) {
+    const execute = yield* ScriptExecutor
+    return yield* execute(script)
+  }),
 })
 
 /**
@@ -447,6 +555,7 @@ export class AgentModelConfig extends ServiceMap.Reference<{
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E, R>
   readonly supportsAssistantPrefill?: boolean | undefined
+  readonly supportsNoTools?: boolean | undefined
 }>("clanka/Agent/SystemPromptTransform", {
   defaultValue: () => ({}),
 }) {
@@ -501,8 +610,17 @@ export class ReasoningEnd extends Schema.TaggedClass<ReasoningEnd>()(
  */
 export class ScriptStart extends Schema.TaggedClass<ScriptStart>()(
   "ScriptStart",
+  {},
+) {}
+
+/**
+ * @since 1.0.0
+ * @category Output
+ */
+export class ScriptDelta extends Schema.TaggedClass<ScriptDelta>()(
+  "ScriptDelta",
   {
-    script: Schema.String,
+    delta: Schema.String,
   },
 ) {}
 
@@ -510,9 +628,21 @@ export class ScriptStart extends Schema.TaggedClass<ScriptStart>()(
  * @since 1.0.0
  * @category Output
  */
-export class ScriptEnd extends Schema.TaggedClass<ScriptEnd>()("ScriptEnd", {
-  output: Schema.String,
-}) {}
+export class ScriptEnd extends Schema.TaggedClass<ScriptEnd>()(
+  "ScriptEnd",
+  {},
+) {}
+
+/**
+ * @since 1.0.0
+ * @category Output
+ */
+export class ScriptOutput extends Schema.TaggedClass<ScriptOutput>()(
+  "ScriptOutput",
+  {
+    output: Schema.String,
+  },
+) {}
 
 /**
  * @since 1.0.0
@@ -560,14 +690,18 @@ export type ContentPart =
   | ReasoningDelta
   | ReasoningEnd
   | ScriptStart
+  | ScriptDelta
   | ScriptEnd
+  | ScriptOutput
 
 export const ContentPart = Schema.Union([
   ReasoningStart,
   ReasoningDelta,
   ReasoningEnd,
   ScriptStart,
+  ScriptDelta,
   ScriptEnd,
+  ScriptOutput,
 ])
 
 /**
@@ -601,7 +735,9 @@ export const Output = Schema.Union([
   ReasoningDelta,
   ReasoningEnd,
   ScriptStart,
+  ScriptDelta,
   ScriptEnd,
+  ScriptOutput,
   SubagentStart,
   SubagentComplete,
   SubagentPart,

@@ -29,9 +29,9 @@ const AgentModel = OpenAiLanguageModel.model("gpt-5.4", {
   },
 }).pipe(Layer.provideMerge(CodexLayer))
 
-const Opus = CompatModel.model("claude-opus-4.6").pipe(
-  Layer.provideMerge(CopilotLayer),
-)
+const Opus = CompatModel.model("claude-opus-4.6", {
+  thinking: { thinking_budget: 4000 },
+}).pipe(Layer.provideMerge(CopilotLayer))
 
 const SubAgentModel = OpenAiLanguageModel.model("gpt-5.4", {
   reasoning: {

@@ -38,6 +38,16 @@ import type { ChildProcessSpawner } from "effect/unstable/process"
  */
 export interface Agent {
   readonly output: Stream.Stream<Output, AgentFinished>
+
+  /**
+   * Send a message to the agent to steer its behavior. This is useful for
+   * providing feedback or new instructions while the agent is running.
+   *
+   * The effect will only complete once the message has been sent.
+   * Interrupting the effect will withdraw the message, so it will not be sent
+   * to the agent.
+   */
+  steer(message: string): Effect.Effect<void>
 }
 
 /**
@@ -110,6 +120,10 @@ export const make: <
     | ProviderName
     | ModelName
   >()
+  const pendingMessages = new Set<{
+    readonly message: string
+    readonly resume: (effect: Effect.Effect<void>) => void
+  }>()
 
   let system = yield* generateSystem(allTools)
 
@@ -264,15 +278,34 @@ ${prompt}`),
           return
         }
 
+        if (pendingMessages.size > 0) {
+          prompt = Prompt.concat(
+            prompt,
+            Array.Array.from(pendingMessages, ({ message, resume }) => {
+              resume(Effect.void)
+              return {
+                role: "user",
+                content: message,
+              }
+            }),
+          )
+          pendingMessages.clear()
+        }
+
         let response = Array.empty<StreamPart<{}>>()
         let reasoningStarted = false
         let hadReasoningDelta = false
         yield* pipe(
           ai.streamText({ prompt }),
-          Stream.takeUntil(
-            (part) =>
-              part.type === "text-end" && currentScript.trim().length > 0,
-          ),
+          Stream.takeUntil((part) => {
+            if (part.type === "text-end" && currentScript.trim().length > 0) {
+              return true
+            }
+            if (part.type === "reasoning-end" && pendingMessages.size > 0) {
+              return true
+            }
+            return false
+          }),
           Stream.runForEachArray((parts) => {
             response.push(...parts)
 
@@ -338,6 +371,12 @@ ${prompt}`),
 
   return identity<Agent>({
     output,
+    steer: (message) =>
+      Effect.callback((resume) => {
+        const entry = { message, resume }
+        pendingMessages.add(entry)
+        return Effect.sync(() => pendingMessages.delete(entry))
+      }),
   })
   // oxlint-disable-next-line typescript/no-explicit-any
 }) as any

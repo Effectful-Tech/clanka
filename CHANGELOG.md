@@ -1,5 +1,15 @@
 # clanka
 
+## 0.0.5
+
+### Patch Changes
+
+- [`ef011ca`](https://github.com/tim-smart/clanka/commit/ef011ca73f5a5d3ef1721a05db7278b9d50abd6c) Thanks [@tim-smart](https://github.com/tim-smart)! - support tool mode for models that don't work with plain js
+
+- [`a1a9699`](https://github.com/tim-smart/clanka/commit/a1a96999e94a6f1a868ebd75766e25c4f382026e) Thanks [@tim-smart](https://github.com/tim-smart)! - Add a GitHub Copilot provider layer backed by the device auth flow and the Copilot OpenAI-compatible API.
+
+  Implement `ScriptExtraction.extractScript` to extract fenced code blocks from markdown responses.
+
 ## 0.0.4
 
 ### Patch Changes

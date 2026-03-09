@@ -62,7 +62,7 @@ ${output.summary}\n\n`
     }),
     Stream.catch((finished) =>
       Stream.succeed(
-        `\n${chalk.bold.green(`${subagentIcon} Task complete:`)}\n\n${finished.summary}`,
+        `\n${chalk.bold.green(`${doneIcon} Task complete:`)}\n\n${finished.summary}`,
       ),
     ),
   )
@@ -74,3 +74,4 @@ const chalkReasoningHeading = chalk.bold.yellow
 const scriptIcon = "\u{f0bc1}"
 const subagentIcon = "\u{ee0d} "
 const thinkingIcon = "\u{f07f6}"
+const doneIcon = "\u{eab2}"

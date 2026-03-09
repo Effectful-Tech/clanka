@@ -42,7 +42,12 @@ Effect.gen(function* () {
     subagentModel: SubAgentModel,
   })
   yield* agent.output.pipe(
-    Stream.run(OutputFormatter.pretty),
-    Effect.catch((finished) => Effect.log(finished.summary)),
+    OutputFormatter.pretty,
+    Stream.runForEachArray((chunk) => {
+      for (const out of chunk) {
+        process.stdout.write(out)
+      }
+      return Effect.void
+    }),
   )
 }).pipe(Effect.scoped, Effect.provide(AgentServices), NodeRuntime.runMain)

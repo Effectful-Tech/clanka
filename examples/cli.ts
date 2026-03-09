@@ -18,7 +18,7 @@ const CodexLayer = Codex.CodexAiClient.pipe(
 
 const AgentModel = OpenAiLanguageModel.model("gpt-5.4", {
   reasoning: {
-    effort: "xhigh",
+    effort: "medium",
     summary: "auto",
   },
 }).pipe(Layer.provide(CodexLayer))

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.6
+
+### Patch Changes
+
+- [`d539084`](https://github.com/tim-smart/clanka/commit/d53908400b8d9541c3e48e342f9b40b6db66c22e) Thanks [@tim-smart](https://github.com/tim-smart)! - better handle void params
+
 ## 0.0.5
 
 ### Patch Changes

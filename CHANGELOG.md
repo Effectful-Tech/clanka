@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.14
+
+### Patch Changes
+
+- [`1435087`](https://github.com/tim-smart/clanka/commit/143508729e23a4188cd4747b8949746750cf6b8a) Thanks [@tim-smart](https://github.com/tim-smart)! - prompt tweaks
+
 ## 0.0.13
 
 ### Patch Changes

@@ -10,7 +10,7 @@ import chalk from "chalk"
  * @category Models
  */
 export type OutputFormatter = <E, R>(
-  stream: Stream.Stream<Output, AgentFinished | E>,
+  stream: Stream.Stream<Output, AgentFinished | E, R>,
 ) => Stream.Stream<string, Exclude<E, AgentFinished>, R>
 
 /**

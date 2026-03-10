@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.9
+
+### Patch Changes
+
+- [`1d2c46f`](https://github.com/tim-smart/clanka/commit/1d2c46f31c2e1f9355c1237899edebef2c960c04) Thanks [@tim-smart](https://github.com/tim-smart)! - fix singleToolMode detection
+
 ## 0.0.8
 
 ### Patch Changes

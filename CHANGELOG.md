@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.8
+
+### Patch Changes
+
+- [`67a789f`](https://github.com/tim-smart/clanka/commit/67a789fdf0471110c8171462e26969d12aec88c7) Thanks [@tim-smart](https://github.com/tim-smart)! - fix requirements
+
 ## 0.0.7
 
 ### Patch Changes

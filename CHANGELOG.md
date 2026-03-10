@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.12
+
+### Patch Changes
+
+- [`f19901c`](https://github.com/tim-smart/clanka/commit/f19901c46895eaa21ca53c818188d945c941430a) Thanks [@tim-smart](https://github.com/tim-smart)! - dont fail promises due to interruption
+
 ## 0.0.11
 
 ### Patch Changes

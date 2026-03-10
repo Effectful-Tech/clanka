@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.11
+
+### Patch Changes
+
+- [`b0baf26`](https://github.com/tim-smart/clanka/commit/b0baf26f1cd53ffa0812dde8998a74f2d0cf613b) Thanks [@tim-smart](https://github.com/tim-smart)! - fix ScriptEnd not reset output lock
+
 ## 0.0.10
 
 ### Patch Changes

@@ -75,9 +75,9 @@ export const AgentTools = Toolkit.make(
     success: Schema.NullOr(Schema.String),
     dependencies: [CurrentDirectory],
   }),
-  Tool.make("createFile", {
+  Tool.make("writeFile", {
     description:
-      "Write content to a file, creating parent directories if needed.",
+      "Write content to a file, creating parent directories if needed. PREFER USING applyPatch to update existing files.",
     parameters: Schema.Struct({
       path: Schema.String,
       content: Schema.String,
@@ -242,8 +242,8 @@ export const AgentToolHandlers = AgentTools.toLayer(
           Effect.orDie,
         )
       }),
-      createFile: Effect.fn("AgentTools.createFile")(function* (options) {
-        yield* Effect.logInfo(`Calling "createFile"`).pipe(
+      writeFile: Effect.fn("AgentTools.writeFile")(function* (options) {
+        yield* Effect.logInfo(`Calling "writeFile"`).pipe(
           Effect.annotateLogs({ path: options.path }),
         )
         const cwd = yield* CurrentDirectory

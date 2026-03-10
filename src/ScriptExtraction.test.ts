@@ -93,4 +93,42 @@ describe("extractScript", () => {
       ),
     ).toBe(["const a = 1", "const b = 2"].join("\r\n\r\n"))
   })
+
+  it("supports tilde fences", () => {
+    expect(
+      extractScript(["~~~ts", 'console.log("tilde")', "~~~"].join("\n")),
+    ).toBe('console.log("tilde")')
+  })
+
+  it("does not close a backtick fence with tildes", () => {
+    expect(
+      extractScript(["```", "hello", "~~~", "world", "```"].join("\n")),
+    ).toBe(["hello", "~~~", "world"].join("\n"))
+  })
+
+  it("does not close a tilde fence with backticks", () => {
+    expect(
+      extractScript(["~~~", "hello", "```", "world", "~~~"].join("\n")),
+    ).toBe(["hello", "```", "world"].join("\n"))
+  })
+
+  it("does not close when closing fence is shorter than opening", () => {
+    expect(
+      extractScript(["````", "hello", "```", "world", "````"].join("\n")),
+    ).toBe(["hello", "```", "world"].join("\n"))
+  })
+
+  it("supports fences with up to three leading spaces", () => {
+    expect(extractScript(["  ```ts", "const a = 1", "  ```"].join("\n"))).toBe(
+      "const a = 1",
+    )
+  })
+
+  it("does not treat a closing fence with trailing text as closing", () => {
+    expect(
+      extractScript(
+        ["```", "hello", "``` more text", "world", "```"].join("\n"),
+      ),
+    ).toBe(["hello", "``` more text", "world"].join("\n"))
+  })
 })

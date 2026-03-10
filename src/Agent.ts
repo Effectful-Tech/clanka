@@ -249,7 +249,8 @@ ${prompt}`),
     )
 
     const executeScript = Effect.fnUntraced(function* (script: string) {
-      maybeSend(agentId, new ScriptEnd())
+      const sent = maybeSend(agentId, new ScriptEnd())
+      if (sent) flushBuffer()
       const output = yield* pipe(
         executor.execute({ tools, script }),
         Stream.mkString,
@@ -487,7 +488,7 @@ Javascript output:
 
 // oxlint-disable-next-line typescript/no-explicit-any
 const generateSystemMulti = (toolsDts: string) => {
-  return `Respond with plain javascript code (no typescript) that will be executed for you.
+  return `You can interact with the system by writing plain javascript code (no typescript) that will be executed for you.
 
 - Use \`console.log\` to print any output you need.
 - Top level await is supported.

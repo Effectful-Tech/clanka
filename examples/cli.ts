@@ -41,7 +41,7 @@ const SubAgentModel = OpenAiLanguageModel.model("gpt-5.4", {
 }).pipe(Layer.provide(CodexLayer))
 
 const AgentServices = Agent.layerServices.pipe(
-  Layer.merge(AgentModel),
+  Layer.merge(Opus),
   Layer.provideMerge(NodeServices.layer),
 )
 

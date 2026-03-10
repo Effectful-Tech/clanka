@@ -1,5 +1,13 @@
 # clanka
 
+## 0.0.15
+
+### Patch Changes
+
+- [`42dd340`](https://github.com/tim-smart/clanka/commit/42dd3405c6e305d7d4d2a79171ac6a7127241cff) Thanks [@tim-smart](https://github.com/tim-smart)! - fix output locking
+
+- [`d49cb7d`](https://github.com/tim-smart/clanka/commit/d49cb7d65c7656d2d65cee41d71190af3925fb2d) Thanks [@tim-smart](https://github.com/tim-smart)! - system tweaks
+
 ## 0.0.14
 
 ### Patch Changes

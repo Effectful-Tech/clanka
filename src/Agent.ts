@@ -213,7 +213,11 @@ ${content}
         }
         return
       }
-      const state = outputBuffer.get(agentId) ?? []
+      let state = outputBuffer.get(agentId)
+      if (!state) {
+        state = []
+        outputBuffer.set(agentId, state)
+      }
       state.push(options.part)
       return
     }

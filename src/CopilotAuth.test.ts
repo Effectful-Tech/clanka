@@ -20,7 +20,7 @@ import {
   TokenData,
   toGithubCopilotAuthKeyValueStore,
   toTokenStore,
-} from "./GithubCopilotAuth.ts"
+} from "./CopilotAuth.ts"
 
 const jsonResponse = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {

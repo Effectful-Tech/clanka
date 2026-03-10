@@ -1,9 +1,9 @@
 /**
  * @since 1.0.0
  */
-import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
+import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai-compat"
 import { Layer } from "effect"
-import { CodexAuth } from "./CodexAuth.ts"
+import { API_URL, GithubCopilotAuth } from "./CopilotAuth.ts"
 import { AgentModelConfig } from "./Agent.ts"
 import { Model } from "effect/unstable/ai"
 import type { HttpClient } from "effect/unstable/http/HttpClient"
@@ -15,15 +15,15 @@ import type { LanguageModel } from "effect/unstable/ai/LanguageModel"
  * @category Layers
  */
 export const layerClient = OpenAiClient.layer({
-  apiUrl: "https://chatgpt.com/backend-api/codex",
-}).pipe(Layer.provide(CodexAuth.layerClient))
+  apiUrl: API_URL,
+}).pipe(Layer.provide(GithubCopilotAuth.layerClient))
 
 /**
  * @since 1.0.0
  * @category Layers
  */
 export const model = (
-  model: (string & {}) | OpenAiLanguageModel.Model,
+  model: string,
   options?:
     | (OpenAiLanguageModel.Config["Service"] & typeof AgentModelConfig.Service)
     | undefined,
@@ -34,22 +34,11 @@ export const model = (
     Layer.merge(
       OpenAiLanguageModel.layer({
         model,
-        config: {
-          ...options,
-          store: false,
-          reasoning: {
-            effort: options?.reasoning?.effort ?? "medium",
-            summary: "auto",
-          },
-        },
+        config: options,
       }),
       AgentModelConfig.layer({
-        systemPromptTransform: (system, effect) =>
-          OpenAiLanguageModel.withConfigOverride(effect, {
-            instructions: system,
-          }),
-        supportsAssistantPrefill: options?.supportsAssistantPrefill ?? true,
-        supportsNoTools: options?.supportsNoTools ?? true,
+        supportsAssistantPrefill: options?.supportsAssistantPrefill ?? false,
+        supportsNoTools: options?.supportsNoTools ?? false,
       }),
     ).pipe(Layer.provide(layerClient)),
   )

@@ -70,13 +70,26 @@ export const make: <
   readonly directory: string
   /** The prompt to use for the agent */
   readonly prompt: Prompt.RawInput
-  /** Additional system instructions to provide to the agent */
-  readonly system?: string | undefined
+  /**
+   * Provide additional system instructions, or a function that generates
+   * system instructions based on the tool instructions
+   */
+  readonly system?:
+    | string
+    | ((options: {
+        readonly toolInstructions: string
+        readonly agentsMd: string
+      }) => string)
+    | undefined
   /** Additional tools to provide to the agent */
   readonly tools?: Toolkit.Toolkit<Tools> | undefined
   /** Layer to use for subagents */
   readonly subagentModel?:
-    | Layer.Layer<LanguageModel.LanguageModel | ProviderName, SE, SR>
+    | Layer.Layer<
+        LanguageModel.LanguageModel | ProviderName | ModelName,
+        SE,
+        SR
+      >
     | undefined
 }) => Effect.Effect<
   Agent,
@@ -96,7 +109,10 @@ export const make: <
 > = Effect.fnUntraced(function* (options: {
   readonly directory: string
   readonly prompt: Prompt.RawInput
-  readonly system?: string | undefined
+  readonly system?:
+    | string
+    | ((options: { readonly toolInstructions: string }) => string)
+    | undefined
   readonly tools?: Toolkit.Toolkit<{}> | undefined
   readonly subagentModel?:
     | Layer.Layer<LanguageModel.LanguageModel | ProviderName | ModelName>
@@ -106,6 +122,9 @@ export const make: <
   const pathService = yield* Path.Path
   const executor = yield* Executor
   const renderer = yield* ToolkitRenderer
+  const generateSystem =
+    typeof options.system === "function" ? options.system : defaultSystem
+
   const allTools = Toolkit.merge(AgentTools, options.tools ?? Toolkit.empty)
   const allToolsDts = renderer.render(allTools)
   const tools = yield* allTools
@@ -126,6 +145,18 @@ export const make: <
 
   const agentsMd = yield* pipe(
     fs.readFileString(pathService.resolve(options.directory, "AGENTS.md")),
+    Effect.map(
+      (content) => `# AGENTS.md
+
+The following instructions are from ./AGENTS.md in the current directory.
+You do not need to read this file again.
+
+**ALWAYS follow these instructions when completing tasks**:
+
+<!-- AGENTS.md start -->
+${content}
+<!-- AGENTS.md end -->`,
+    ),
     Effect.option,
   )
 
@@ -148,51 +179,43 @@ export const make: <
     const deferred = yield* Deferred.make<string>()
     const output = yield* Queue.make<Output, AgentFinished | AiError.AiError>()
 
-    let system = generateSystem(allToolsDts, !singleToolMode)
-
-    if (Option.isSome(agentsMd)) {
-      system += `
-# AGENTS.md
-
-The following instructions are from ./AGENTS.md in the current directory.
-You do not need to read this file again.
-
-**ALWAYS follow these instructions when completing tasks**:
-
-<!-- AGENTS.md start -->
-${agentsMd.value}
-<!-- AGENTS.md end -->
-`
-    }
-
-    if (options.system) {
+    const toolInstructions = generateSystemTools(allToolsDts, !singleToolMode)
+    let system = generateSystem({
+      toolInstructions,
+      agentsMd: Option.getOrElse(agentsMd, () => ""),
+    })
+    if (typeof options.system === "string") {
       system += `\n${options.system}\n`
     }
 
-    function maybeSend(agentId: number, part: Output, lock = false) {
+    function maybeSend(options: {
+      readonly agentId: number
+      readonly part: Output
+      readonly acquire?: boolean
+      readonly release?: boolean
+    }) {
       if (currentOutputAgent === null || currentOutputAgent === agentId) {
-        Queue.offerUnsafe(output, part)
-        if (lock) {
+        Queue.offerUnsafe(output, options.part)
+        if (options.acquire) {
           currentOutputAgent = agentId
         }
-        return true
+        if (options.release) {
+          currentOutputAgent = null
+          for (const [id, state] of outputBuffer) {
+            outputBuffer.delete(id)
+            Queue.offerAllUnsafe(output, state)
+            const lastPart = state[state.length - 1]!
+            if (lastPart._tag === "ReasoningDelta") {
+              currentOutputAgent = id
+              break
+            }
+          }
+        }
+        return
       }
       const state = outputBuffer.get(agentId) ?? []
-      state.push(part)
-      return false
-    }
-
-    function flushBuffer() {
-      currentOutputAgent = null
-      for (const [id, state] of outputBuffer) {
-        outputBuffer.delete(id)
-        Queue.offerAllUnsafe(output, state)
-        const lastPart = state[state.length - 1]!
-        if (lastPart._tag === "ReasoningDelta") {
-          currentOutputAgent = id
-          break
-        }
-      }
+      state.push(options.part)
+      return
     }
 
     const taskServices = SubagentContext.serviceMap({
@@ -249,14 +272,13 @@ ${prompt}`),
     )
 
     const executeScript = Effect.fnUntraced(function* (script: string) {
-      const sent = maybeSend(agentId, new ScriptEnd())
-      if (sent) flushBuffer()
+      maybeSend({ agentId, part: new ScriptEnd(), release: true })
       const output = yield* pipe(
         executor.execute({ tools, script }),
         Stream.mkString,
         Effect.provideServices(taskServices),
       )
-      maybeSend(agentId, new ScriptOutput({ output }))
+      maybeSend({ agentId, part: new ScriptOutput({ output }) })
       return output
     })
 
@@ -341,18 +363,29 @@ ${prompt}`),
                     hadReasoningDelta = true
                     if (reasoningStarted) {
                       reasoningStarted = false
-                      maybeSend(agentId, new ReasoningStart(), true)
+                      maybeSend({
+                        agentId,
+                        part: new ReasoningStart(),
+                        acquire: true,
+                      })
                     }
-                    maybeSend(
+                    maybeSend({
                       agentId,
-                      new ReasoningDelta({ delta: part.delta }),
-                    )
+                      part: new ReasoningDelta({ delta: part.delta }),
+                    })
                     break
                   }
                   if (currentScript === "" && part.delta.length > 0) {
-                    maybeSend(agentId, new ScriptStart(), true)
+                    maybeSend({
+                      agentId,
+                      part: new ScriptStart(),
+                      acquire: true,
+                    })
                   }
-                  maybeSend(agentId, new ScriptDelta({ delta: part.delta }))
+                  maybeSend({
+                    agentId,
+                    part: new ScriptDelta({ delta: part.delta }),
+                  })
                   currentScript += part.delta
                   break
                 }
@@ -361,8 +394,11 @@ ${prompt}`),
                     reasoningStarted = false
                     if (hadReasoningDelta) {
                       hadReasoningDelta = false
-                      const sent = maybeSend(agentId, new ReasoningEnd())
-                      if (sent) flushBuffer()
+                      maybeSend({
+                        agentId,
+                        part: new ReasoningEnd(),
+                        release: true,
+                      })
                     }
                   }
                   break
@@ -374,16 +410,26 @@ ${prompt}`),
                   hadReasoningDelta = true
                   if (reasoningStarted) {
                     reasoningStarted = false
-                    maybeSend(agentId, new ReasoningStart(), true)
+                    maybeSend({
+                      agentId,
+                      part: new ReasoningStart(),
+                      acquire: true,
+                    })
                   }
-                  maybeSend(agentId, new ReasoningDelta({ delta: part.delta }))
+                  maybeSend({
+                    agentId,
+                    part: new ReasoningDelta({ delta: part.delta }),
+                  })
                   break
                 case "reasoning-end":
                   reasoningStarted = false
                   if (hadReasoningDelta) {
                     hadReasoningDelta = false
-                    const sent = maybeSend(agentId, new ReasoningEnd())
-                    if (sent) flushBuffer()
+                    maybeSend({
+                      agentId,
+                      part: new ReasoningEnd(),
+                      release: true,
+                    })
                   }
                   break
                 case "finish":
@@ -410,8 +456,8 @@ ${prompt}`),
       Effect.provideServices(
         taskServices.pipe(
           ServiceMap.add(ScriptExecutor, (script) => {
-            maybeSend(agentId, new ScriptStart())
-            maybeSend(agentId, new ScriptDelta({ delta: script }))
+            maybeSend({ agentId, part: new ScriptStart() })
+            maybeSend({ agentId, part: new ScriptDelta({ delta: script }) })
             return executeScript(script)
           }),
         ),
@@ -442,23 +488,27 @@ ${prompt}`),
   // oxlint-disable-next-line typescript/no-explicit-any
 }) as any
 
-const generateSystem = (
-  // oxlint-disable-next-line typescript/no-explicit-any
-  toolsDts: string,
-  multi: boolean,
-) => {
-  const toolMd = multi
-    ? generateSystemMulti(toolsDts)
-    : generateSystemSingle(toolsDts)
-
-  return `You are a world-class software engineer: precise, rigorous, thoughtful, and relentlessly careful. You fully understand the task, verify assumptions, and produce minimal, correct, maintainable solutions. You make no mistakes.
+const defaultSystem = (options: {
+  readonly toolInstructions: string
+  readonly agentsMd: string | null
+}) => `You are a world-class software engineer: precise, rigorous, thoughtful, and relentlessly careful. You fully understand the task, verify assumptions, and produce minimal, correct, maintainable solutions. You make no mistakes.
 
 - **Fully read and understand your task** before proceeding.
 - Use the current state of the codebase to inform your decisions. Don't look at git history unless explicity asked to.
 - Only add comments when necessary.
 - Make use of the "delegate" tool to delegate work, exploration and small research tasks. You can delegate multiple tasks in parallel with Promise.all
 
-${toolMd}
+${options.toolInstructions}
+
+${options.agentsMd}
+`
+
+const generateSystemTools = (toolsDts: string, multi: boolean) => {
+  const toolMd = multi
+    ? generateSystemMulti(toolsDts)
+    : generateSystemSingle(toolsDts)
+
+  return `${toolMd}
 
 Here is how you would read a file:
 
@@ -481,11 +531,9 @@ Javascript output:
   "name": "my-project",
   "version": "1.0.0"
 }
-\`\`\`
-`
+\`\`\``
 }
 
-// oxlint-disable-next-line typescript/no-explicit-any
 const generateSystemMulti = (toolsDts: string) => {
   return `From now on only respond with plain javascript code which will be executed for you.
 

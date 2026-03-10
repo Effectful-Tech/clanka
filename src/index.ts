@@ -16,7 +16,7 @@ export * as Codex from "./Codex.ts"
 /**
  * @since 1.0.0
  */
-export * as GithubCopilot from "./GithubCopilot.ts"
+export * as Copilot from "./Copilot.ts"
 
 /**
  * @since 1.0.0

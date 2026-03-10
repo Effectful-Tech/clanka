@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.7
+
+### Patch Changes
+
+- [`eb56541`](https://github.com/tim-smart/clanka/commit/eb56541bd5686829095616b874e188d180511fc3) Thanks [@tim-smart](https://github.com/tim-smart)! - relax OutputFormatter
+
 ## 0.0.6
 
 ### Patch Changes

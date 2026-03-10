@@ -1,5 +1,13 @@
 # clanka
 
+## 0.0.16
+
+### Patch Changes
+
+- [`5ddd1cc`](https://github.com/tim-smart/clanka/commit/5ddd1cc1e7d9b19fe1fc67c57f1783b53b0f6326) Thanks [@tim-smart](https://github.com/tim-smart)! - rename createFile to writeFile
+
+- [#35](https://github.com/tim-smart/clanka/pull/35) [`208f169`](https://github.com/tim-smart/clanka/commit/208f169cf60a3db5675959aba83ea80c2e6bc36c) Thanks [@tim-smart](https://github.com/tim-smart)! - Refactor applyPatch to accept git diff / unified diff input, including multi-file add, delete, and rename patches while preserving raw hunk support for single-file content transforms.
+
 ## 0.0.15
 
 ### Patch Changes

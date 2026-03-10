@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.17
+
+### Patch Changes
+
+- [`7f78db3`](https://github.com/tim-smart/clanka/commit/7f78db36a12294a234ddc72eab0fdcc1c75f808f) Thanks [@tim-smart](https://github.com/tim-smart)! - tweak tool prompt
+
 ## 0.0.16
 
 ### Patch Changes

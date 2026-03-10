@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.10
+
+### Patch Changes
+
+- [`f089121`](https://github.com/tim-smart/clanka/commit/f0891218366dcbb08d3554038c09ff96ff09592f) Thanks [@tim-smart](https://github.com/tim-smart)! - subagent/delegate/g
+
 ## 0.0.9
 
 ### Patch Changes

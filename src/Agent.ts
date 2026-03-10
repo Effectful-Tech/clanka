@@ -480,6 +480,7 @@ Javascript output:
 
 # Guidelines
 
+- **Full read and understand the users task** before proceeding.
 - Use the current state of the codebase to inform your decisions. Don't look at git history unless explicity asked to.
 - Only add comments when necessary.
 - Make use of the "delegate" tool to delegate work, exploration and small research tasks. You can delegate multiple tasks in parallel with Promise.all

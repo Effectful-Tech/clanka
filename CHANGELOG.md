@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.20
+
+### Patch Changes
+
+- [`5f76244`](https://github.com/tim-smart/clanka/commit/5f76244c6af8a560cd3335345af6c1457a0ebd5c) Thanks [@tim-smart](https://github.com/tim-smart)! - fix buffering and muxing
+
 ## 0.0.19
 
 ### Patch Changes

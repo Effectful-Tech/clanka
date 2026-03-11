@@ -205,7 +205,10 @@ ${content}
             outputBuffer.delete(id)
             Queue.offerAllUnsafe(output, state)
             const lastPart = state[state.length - 1]!
-            if (lastPart._tag === "ReasoningDelta") {
+            if (
+              lastPart._tag === "ScriptDelta" ||
+              lastPart._tag === "ReasoningDelta"
+            ) {
               currentOutputAgent = id
               break
             }

@@ -126,8 +126,11 @@ export const layerMuxer = (formatter: OutputFormatter) =>
                     currentAgentId = id
                     break
                   }
-                  case "ReasoningEnd":
-                  case "ScriptEnd": {
+                  case "ScriptDelta":
+                  case "ReasoningDelta": {
+                    break
+                  }
+                  default: {
                     currentAgentId = null
                     break
                   }

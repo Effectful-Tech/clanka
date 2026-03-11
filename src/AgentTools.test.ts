@@ -464,6 +464,296 @@ describe("AgentTools", () => {
     ),
   )
 
+  it.effect(
+    "applies realistic multi-file git patches with repeated multi-hunk updates",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const tempRoot = yield* makeTempRoot("clanka-apply-patch-realistic-")
+        yield* fs.makeDirectory(join(tempRoot, "dist", "internal"), {
+          recursive: true,
+        })
+
+        const initial = [
+          "if (reasoningStarted && !textStarted) {",
+          "  controller.enqueue({",
+          '    type: "reasoning-end",',
+          "    id: reasoningId || generateId()",
+          "  });",
+          "}",
+          "",
+          "separator",
+          "",
+          "if (reasoningStarted) {",
+          "  controller.enqueue({",
+          '    type: "reasoning-end",',
+          "    id: reasoningId || generateId()",
+          "  });",
+          "}",
+          "",
+        ].join("\n")
+
+        for (const path of [
+          join(tempRoot, "dist", "index.js"),
+          join(tempRoot, "dist", "index.mjs"),
+          join(tempRoot, "dist", "internal", "index.js"),
+          join(tempRoot, "dist", "internal", "index.mjs"),
+        ]) {
+          yield* fs.writeFileString(path, initial)
+        }
+
+        const executor = yield* Executor
+        const tools = yield* AgentTools
+        const output = yield* executor
+          .execute({
+            tools,
+            script: [
+              "const output = await applyPatch(`",
+              "diff --git a/dist/index.js b/dist/index.js",
+              "index f33510a..e887a60 100644",
+              "--- a/dist/index.js",
+              "+++ b/dist/index.js",
+              "@@ -1,7 +1,12 @@",
+              " if (reasoningStarted && !textStarted) {",
+              "   controller.enqueue({",
+              '     type: "reasoning-end",',
+              "-    id: reasoningId || generateId()",
+              "+    id: reasoningId || generateId(),",
+              "+    providerMetadata: accumulatedReasoningDetails.length > 0 ? {",
+              "+      openrouter: {",
+              "+        reasoning_details: accumulatedReasoningDetails",
+              "+      }",
+              "+    } : undefined",
+              "   });",
+              " }",
+              "@@ -10,7 +15,12 @@",
+              " if (reasoningStarted) {",
+              "   controller.enqueue({",
+              '     type: "reasoning-end",',
+              "-    id: reasoningId || generateId()",
+              "+    id: reasoningId || generateId(),",
+              "+    providerMetadata: accumulatedReasoningDetails.length > 0 ? {",
+              "+      openrouter: {",
+              "+        reasoning_details: accumulatedReasoningDetails",
+              "+      }",
+              "+    } : undefined",
+              "   });",
+              " }",
+              "diff --git a/dist/index.mjs b/dist/index.mjs",
+              "index 8a68833..6310cb8 100644",
+              "--- a/dist/index.mjs",
+              "+++ b/dist/index.mjs",
+              "@@ -1,7 +1,12 @@",
+              " if (reasoningStarted && !textStarted) {",
+              "   controller.enqueue({",
+              '     type: "reasoning-end",',
+              "-    id: reasoningId || generateId()",
+              "+    id: reasoningId || generateId(),",
+              "+    providerMetadata: accumulatedReasoningDetails.length > 0 ? {",
+              "+      openrouter: {",
+              "+        reasoning_details: accumulatedReasoningDetails",
+              "+      }",
+              "+    } : undefined",
+              "   });",
+              " }",
+              "@@ -10,7 +15,12 @@",
+              " if (reasoningStarted) {",
+              "   controller.enqueue({",
+              '     type: "reasoning-end",',
+              "-    id: reasoningId || generateId()",
+              "+    id: reasoningId || generateId(),",
+              "+    providerMetadata: accumulatedReasoningDetails.length > 0 ? {",
+              "+      openrouter: {",
+              "+        reasoning_details: accumulatedReasoningDetails",
+              "+      }",
+              "+    } : undefined",
+              "   });",
+              " }",
+              "diff --git a/dist/internal/index.js b/dist/internal/index.js",
+              "index d40fa66..8dd86d1 100644",
+              "--- a/dist/internal/index.js",
+              "+++ b/dist/internal/index.js",
+              "@@ -1,7 +1,12 @@",
+              " if (reasoningStarted && !textStarted) {",
+              "   controller.enqueue({",
+              '     type: "reasoning-end",',
+              "-    id: reasoningId || generateId()",
+              "+    id: reasoningId || generateId(),",
+              "+    providerMetadata: accumulatedReasoningDetails.length > 0 ? {",
+              "+      openrouter: {",
+              "+        reasoning_details: accumulatedReasoningDetails",
+              "+      }",
+              "+    } : undefined",
+              "   });",
+              " }",
+              "@@ -10,7 +15,12 @@",
+              " if (reasoningStarted) {",
+              "   controller.enqueue({",
+              '     type: "reasoning-end",',
+              "-    id: reasoningId || generateId()",
+              "+    id: reasoningId || generateId(),",
+              "+    providerMetadata: accumulatedReasoningDetails.length > 0 ? {",
+              "+      openrouter: {",
+              "+        reasoning_details: accumulatedReasoningDetails",
+              "+      }",
+              "+    } : undefined",
+              "   });",
+              " }",
+              "diff --git a/dist/internal/index.mjs b/dist/internal/index.mjs",
+              "index b0ed9d1..5695930 100644",
+              "--- a/dist/internal/index.mjs",
+              "+++ b/dist/internal/index.mjs",
+              "@@ -1,7 +1,12 @@",
+              " if (reasoningStarted && !textStarted) {",
+              "   controller.enqueue({",
+              '     type: "reasoning-end",',
+              "-    id: reasoningId || generateId()",
+              "+    id: reasoningId || generateId(),",
+              "+    providerMetadata: accumulatedReasoningDetails.length > 0 ? {",
+              "+      openrouter: {",
+              "+        reasoning_details: accumulatedReasoningDetails",
+              "+      }",
+              "+    } : undefined",
+              "   });",
+              " }",
+              "@@ -10,7 +15,12 @@",
+              " if (reasoningStarted) {",
+              "   controller.enqueue({",
+              '     type: "reasoning-end",',
+              "-    id: reasoningId || generateId()",
+              "+    id: reasoningId || generateId(),",
+              "+    providerMetadata: accumulatedReasoningDetails.length > 0 ? {",
+              "+      openrouter: {",
+              "+        reasoning_details: accumulatedReasoningDetails",
+              "+      }",
+              "+    } : undefined",
+              "   });",
+              " }",
+              "`)",
+              "console.log(output)",
+            ].join("\n"),
+          })
+          .pipe(
+            Stream.mkString,
+            Effect.provideServices(makeContextNoop(tempRoot)),
+          )
+
+        expect(output).toContain("M dist/index.js")
+        expect(output).toContain("M dist/index.mjs")
+        expect(output).toContain("M dist/internal/index.js")
+        expect(output).toContain("M dist/internal/index.mjs")
+
+        const expected = [
+          "if (reasoningStarted && !textStarted) {",
+          "  controller.enqueue({",
+          '    type: "reasoning-end",',
+          "    id: reasoningId || generateId(),",
+          "    providerMetadata: accumulatedReasoningDetails.length > 0 ? {",
+          "      openrouter: {",
+          "        reasoning_details: accumulatedReasoningDetails",
+          "      }",
+          "    } : undefined",
+          "  });",
+          "}",
+          "",
+          "separator",
+          "",
+          "if (reasoningStarted) {",
+          "  controller.enqueue({",
+          '    type: "reasoning-end",',
+          "    id: reasoningId || generateId(),",
+          "    providerMetadata: accumulatedReasoningDetails.length > 0 ? {",
+          "      openrouter: {",
+          "        reasoning_details: accumulatedReasoningDetails",
+          "      }",
+          "    } : undefined",
+          "  });",
+          "}",
+          "",
+        ].join("\n")
+
+        for (const path of [
+          join(tempRoot, "dist", "index.js"),
+          join(tempRoot, "dist", "index.mjs"),
+          join(tempRoot, "dist", "internal", "index.js"),
+          join(tempRoot, "dist", "internal", "index.mjs"),
+        ]) {
+          expect(yield* fs.readFileString(path)).toBe(expected)
+        }
+      }).pipe(
+        Effect.provide([
+          AgentToolHandlers,
+          Executor.layer,
+          ToolkitRenderer.layer,
+        ]),
+        Effect.provide(NodeServices.layer),
+      ),
+  )
+
+  it.effect("fails multi-file git patches atomically", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const tempRoot = yield* makeTempRoot("clanka-apply-patch-git-fail-")
+      yield* fs.makeDirectory(join(tempRoot, "src"), { recursive: true })
+      yield* fs.writeFileString(join(tempRoot, "src", "app.txt"), "old\n")
+      yield* fs.writeFileString(join(tempRoot, "keep.txt"), "keep\n")
+
+      const executor = yield* Executor
+      const tools = yield* AgentTools
+      const output = yield* executor
+        .execute({
+          tools,
+          script: [
+            "await applyPatch(`",
+            "diff --git a/src/app.txt b/src/main.txt",
+            "similarity index 100%",
+            "rename from src/app.txt",
+            "rename to src/main.txt",
+            "--- a/src/app.txt",
+            "+++ b/src/main.txt",
+            "@@ -1 +1 @@",
+            "-missing",
+            "+new",
+            "diff --git a/keep.txt b/keep.txt",
+            "deleted file mode 100644",
+            "--- a/keep.txt",
+            "+++ /dev/null",
+            "diff --git a/dev/null b/notes/hello.txt",
+            "new file mode 100644",
+            "--- /dev/null",
+            "+++ b/notes/hello.txt",
+            "@@ -0,0 +1 @@",
+            "+hello",
+            "`)",
+          ].join("\n"),
+        })
+        .pipe(
+          Stream.mkString,
+          Effect.provideServices(makeContextNoop(tempRoot)),
+        )
+
+      expect(output).toContain("applyPatch verification failed")
+      expect(output).toContain("Failed to find expected lines")
+      expect(yield* fs.readFileString(join(tempRoot, "src", "app.txt"))).toBe(
+        "old\n",
+      )
+      expect(yield* fs.readFileString(join(tempRoot, "keep.txt"))).toBe(
+        "keep\n",
+      )
+      yield* Effect.flip(fs.readFileString(join(tempRoot, "src", "main.txt")))
+      yield* Effect.flip(
+        fs.readFileString(join(tempRoot, "notes", "hello.txt")),
+      )
+    }).pipe(
+      Effect.provide([
+        AgentToolHandlers,
+        Executor.layer,
+        ToolkitRenderer.layer,
+      ]),
+      Effect.provide(NodeServices.layer),
+    ),
+  )
+
   it.effect("fails wrapped apply_patch patches atomically", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem

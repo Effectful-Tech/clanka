@@ -131,6 +131,9 @@ export const AgentTools = Toolkit.make(
       glob: Schema.optional(Schema.String).annotate({
         documentation: "--glob",
       }),
+      noIgnore: Schema.optional(Schema.Boolean).annotate({
+        documentation: "--no-ignore",
+      }),
       maxLines: Schema.optional(Schema.Finite).annotate({
         documentation:
           "The total maximum number of lines to return across all files (default: 500)",
@@ -300,6 +303,9 @@ export const AgentToolHandlers = AgentTools.toLayer(
         const args = ["--max-filesize", "1M", "--line-number"]
         if (options.glob) {
           args.push("--glob", options.glob)
+        }
+        if (options.noIgnore) {
+          args.push("--no-ignore")
         }
         args.push(options.pattern)
         let stream = pipe(

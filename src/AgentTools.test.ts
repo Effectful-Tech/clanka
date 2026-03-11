@@ -36,6 +36,7 @@ describe("AgentTools", () => {
       expect(output).toContain("readonly path: string;")
       expect(output).toContain("readonly startLine?: number | undefined;")
       expect(output).toContain("readonly endLine?: number | undefined;")
+      expect(output).toContain("readonly noIgnore?: boolean | undefined;")
       expect(output).toContain(
         "/** Apply a git diff / unified diff patch, or a wrapped apply_patch patch, across one or more files. */",
       )
@@ -842,6 +843,110 @@ describe("AgentTools", () => {
         Executor.layer,
         ToolkitRenderer.layer,
         NodeFileSystem.layer,
+      ]),
+      Effect.provide(NodeServices.layer),
+    ),
+  )
+
+  it.effect("rg respects ignore files by default and can disable them", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const tempRoot = yield* makeTempRoot("clanka-rg-ignore-")
+      yield* fs.writeFileString(join(tempRoot, ".ignore"), "ignored.txt\n")
+      yield* fs.writeFileString(
+        join(tempRoot, "visible.txt"),
+        "match visible\n",
+      )
+      yield* fs.writeFileString(
+        join(tempRoot, "ignored.txt"),
+        "match ignored\n",
+      )
+
+      const executor = yield* Executor
+      const tools = yield* AgentTools
+
+      const defaultOutput = yield* executor
+        .execute({
+          tools,
+          script: [
+            'const output = await rg({ pattern: "match" })',
+            "console.log(output)",
+          ].join("\n"),
+        })
+        .pipe(
+          Stream.mkString,
+          Effect.provideServices(makeContextNoop(tempRoot)),
+        )
+
+      expect(defaultOutput).toContain("visible.txt:1:match visible")
+      expect(defaultOutput).not.toContain("ignored.txt:1:match ignored")
+
+      const noIgnoreOutput = yield* executor
+        .execute({
+          tools,
+          script: [
+            'const output = await rg({ pattern: "match", noIgnore: true })',
+            "console.log(output)",
+          ].join("\n"),
+        })
+        .pipe(
+          Stream.mkString,
+          Effect.provideServices(makeContextNoop(tempRoot)),
+        )
+
+      expect(noIgnoreOutput).toContain("visible.txt:1:match visible")
+      expect(noIgnoreOutput).toContain("ignored.txt:1:match ignored")
+    }).pipe(
+      Effect.provide([
+        AgentToolHandlers,
+        Executor.layer,
+        ToolkitRenderer.layer,
+      ]),
+      Effect.provide(NodeServices.layer),
+    ),
+  )
+
+  it.effect("rg combines noIgnore with glob and maxLines", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const tempRoot = yield* makeTempRoot("clanka-rg-no-ignore-glob-")
+      yield* fs.writeFileString(join(tempRoot, ".ignore"), "ignored-*.txt\n")
+      yield* fs.writeFileString(join(tempRoot, "ignored-a.txt"), "needle one\n")
+      yield* fs.writeFileString(join(tempRoot, "ignored-b.txt"), "needle two\n")
+      yield* fs.writeFileString(
+        join(tempRoot, "visible.txt"),
+        "needle visible\n",
+      )
+
+      const executor = yield* Executor
+      const tools = yield* AgentTools
+      const output = yield* executor
+        .execute({
+          tools,
+          script: [
+            "const output = await rg({",
+            '  pattern: "needle",',
+            '  glob: "ignored-*.txt",',
+            "  noIgnore: true,",
+            "  maxLines: 1,",
+            "})",
+            "console.log(output)",
+          ].join("\n"),
+        })
+        .pipe(
+          Stream.mkString,
+          Effect.provideServices(makeContextNoop(tempRoot)),
+        )
+
+      const lines = output.trimEnd().split("\n")
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toMatch(/ignored-[ab]\.txt:1:needle (one|two)/)
+      expect(output).not.toContain("visible.txt:1:needle visible")
+    }).pipe(
+      Effect.provide([
+        AgentToolHandlers,
+        Executor.layer,
+        ToolkitRenderer.layer,
       ]),
       Effect.provide(NodeServices.layer),
     ),

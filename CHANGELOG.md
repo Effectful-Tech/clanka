@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.19
+
+### Patch Changes
+
+- [`983114f`](https://github.com/tim-smart/clanka/commit/983114f2fd7a0f8c4e7a4a78971fa6708d64460a) Thanks [@tim-smart](https://github.com/tim-smart)! - only require output stream for Muxer
+
 ## 0.0.18
 
 ### Patch Changes

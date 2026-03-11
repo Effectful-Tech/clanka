@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.26
+
+### Patch Changes
+
+- [`bdf196f`](https://github.com/tim-smart/clanka/commit/bdf196f2671c122874743b816c81ff721c20c39c) Thanks [@tim-smart](https://github.com/tim-smart)! - use -uu for rg no ignore
+
 ## 0.0.25
 
 ### Patch Changes

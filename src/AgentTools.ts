@@ -132,7 +132,7 @@ export const AgentTools = Toolkit.make(
         documentation: "--glob",
       }),
       noIgnore: Schema.optional(Schema.Boolean).annotate({
-        documentation: "--no-ignore",
+        documentation: "-uu",
       }),
       maxLines: Schema.optional(Schema.Finite).annotate({
         documentation:
@@ -306,7 +306,7 @@ export const AgentToolHandlers = AgentTools.toLayer(
           }
         }
         if (noIgnore) {
-          args.push("--no-ignore")
+          args.push("-uu")
         }
         args.push(options.pattern)
         let stream = pipe(

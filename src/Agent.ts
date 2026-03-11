@@ -249,6 +249,7 @@ ${prompt}`),
                   case "SubagentStart":
                   case "SubagentComplete":
                   case "SubagentPart":
+                    Queue.offerUnsafe(output, part)
                     break
 
                   default:

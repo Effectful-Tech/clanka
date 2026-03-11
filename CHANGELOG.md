@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.25
+
+### Patch Changes
+
+- [`589c2cb`](https://github.com/tim-smart/clanka/commit/589c2cbb18d079e7e67ef2b7fc209382fa69e464) Thanks [@tim-smart](https://github.com/tim-smart)! - try avoid nested delegation
+
 ## 0.0.24
 
 ### Patch Changes

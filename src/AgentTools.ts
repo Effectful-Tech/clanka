@@ -252,9 +252,6 @@ export const AgentToolHandlers = AgentTools.toLayer(
         )
         const cwd = yield* CurrentDirectory
         const path = pathService.resolve(cwd, options.path)
-        if (yield* fs.exists(path)) {
-          return yield* Effect.die("File already exists")
-        }
         yield* fs.makeDirectory(pathService.dirname(path), {
           recursive: true,
         })

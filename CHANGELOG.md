@@ -1,5 +1,15 @@
 # clanka
 
+## 0.0.22
+
+### Patch Changes
+
+- [#42](https://github.com/tim-smart/clanka/pull/42) [`c61f6ed`](https://github.com/tim-smart/clanka/commit/c61f6ed9a4dd20c05382dbb7ec5b9bbca93e6994) Thanks [@tim-smart](https://github.com/tim-smart)! - Support both git/unified diff patches and wrapped apply_patch patches in the public applyPatch tool interface.
+
+- [#42](https://github.com/tim-smart/clanka/pull/42) [`c61f6ed`](https://github.com/tim-smart/clanka/commit/c61f6ed9a4dd20c05382dbb7ec5b9bbca93e6994) Thanks [@tim-smart](https://github.com/tim-smart)! - Improve applyPatch test coverage with larger realistic multi-file git diff cases, context disambiguation, and atomic failure assertions.
+
+- [#44](https://github.com/tim-smart/clanka/pull/44) [`8ad737d`](https://github.com/tim-smart/clanka/commit/8ad737d6fb380f0434a00324a2248a4ca19bac9c) Thanks [@tim-smart](https://github.com/tim-smart)! - Add a noIgnore option to the rg tool so ripgrep searches can include ignored files when requested.
+
 ## 0.0.21
 
 ### Patch Changes

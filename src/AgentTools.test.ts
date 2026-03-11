@@ -416,6 +416,107 @@ describe("AgentTools", () => {
       ),
   )
 
+  it.effect("applies wrapped apply_patch patches with multiple hunks", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const tempRoot = yield* makeTempRoot("clanka-apply-patch-wrapped-hunks-")
+      yield* fs.writeFileString(
+        join(tempRoot, "multi.txt"),
+        "line1\nline2\nline3\nline4\n",
+      )
+
+      const executor = yield* Executor
+      const tools = yield* AgentTools
+      const output = yield* executor
+        .execute({
+          tools,
+          script: [
+            "const output = await applyPatch(`",
+            "*** Begin Patch",
+            "*** Update File: multi.txt",
+            "@@",
+            "-line2",
+            "+changed2",
+            "@@",
+            "-line4",
+            "+changed4",
+            "*** End Patch",
+            "`)",
+            "console.log(output)",
+          ].join("\n"),
+        })
+        .pipe(
+          Stream.mkString,
+          Effect.provideServices(makeContextNoop(tempRoot)),
+        )
+
+      expect(output).toContain("M multi.txt")
+      expect(yield* fs.readFileString(join(tempRoot, "multi.txt"))).toBe(
+        "line1\nchanged2\nline3\nchanged4\n",
+      )
+    }).pipe(
+      Effect.provide([
+        AgentToolHandlers,
+        Executor.layer,
+        ToolkitRenderer.layer,
+      ]),
+      Effect.provide(NodeServices.layer),
+    ),
+  )
+
+  it.effect("fails wrapped apply_patch patches atomically", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const tempRoot = yield* makeTempRoot("clanka-apply-patch-wrapped-fail-")
+      yield* fs.makeDirectory(join(tempRoot, "src"), { recursive: true })
+      yield* fs.writeFileString(join(tempRoot, "src", "app.txt"), "old\n")
+      yield* fs.writeFileString(join(tempRoot, "keep.txt"), "keep\n")
+
+      const executor = yield* Executor
+      const tools = yield* AgentTools
+      const output = yield* executor
+        .execute({
+          tools,
+          script: [
+            "await applyPatch(`",
+            "*** Begin Patch",
+            "*** Update File: src/app.txt",
+            "@@",
+            "-missing",
+            "+new",
+            "*** Delete File: keep.txt",
+            "*** Add File: notes/hello.txt",
+            "+hello",
+            "*** End Patch",
+            "`)",
+          ].join("\n"),
+        })
+        .pipe(
+          Stream.mkString,
+          Effect.provideServices(makeContextNoop(tempRoot)),
+        )
+
+      expect(output).toContain("applyPatch verification failed")
+      expect(output).toContain("Failed to find expected lines")
+      expect(yield* fs.readFileString(join(tempRoot, "src", "app.txt"))).toBe(
+        "old\n",
+      )
+      expect(yield* fs.readFileString(join(tempRoot, "keep.txt"))).toBe(
+        "keep\n",
+      )
+      yield* Effect.flip(
+        fs.readFileString(join(tempRoot, "notes", "hello.txt")),
+      )
+    }).pipe(
+      Effect.provide([
+        AgentToolHandlers,
+        Executor.layer,
+        ToolkitRenderer.layer,
+      ]),
+      Effect.provide(NodeServices.layer),
+    ),
+  )
+
   it.effect("renames a file", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem

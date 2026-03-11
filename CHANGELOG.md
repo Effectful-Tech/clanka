@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.18
+
+### Patch Changes
+
+- [`77efdd3`](https://github.com/tim-smart/clanka/commit/77efdd3179a6e90fb77e9ed93dde0eee62466bfb) Thanks [@tim-smart](https://github.com/tim-smart)! - add OutputFormatter.Muxer
+
 ## 0.0.17
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # clanka
 
+## 0.0.23
+
+### Patch Changes
+
+- [`3ec9faf`](https://github.com/tim-smart/clanka/commit/3ec9faf257e7e6ffa304037cd52827ad118aec76) Thanks [@tim-smart](https://github.com/tim-smart)! - allow writing existing files
+
+- [#46](https://github.com/tim-smart/clanka/pull/46) [`be02802`](https://github.com/tim-smart/clanka/commit/be02802915a08377b5f6aeb2dba0696f51564fc4) Thanks [@tim-smart](https://github.com/tim-smart)! - Forward nested subagent events so delegated grandchildren show their start, progress, and completion output.
+
 ## 0.0.22
 
 ### Patch Changes

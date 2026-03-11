@@ -1,5 +1,11 @@
 # clanka
 
+## 0.0.24
+
+### Patch Changes
+
+- [`f1e8aa0`](https://github.com/tim-smart/clanka/commit/f1e8aa0d8c8c4b9c80ffb2bd61658617f0681902) Thanks [@tim-smart](https://github.com/tim-smart)! - enable noIgnore when glob is set
+
 ## 0.0.23
 
 ### Patch Changes

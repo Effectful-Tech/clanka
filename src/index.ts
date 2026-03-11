@@ -21,6 +21,11 @@ export * as Copilot from "./Copilot.ts"
 /**
  * @since 1.0.0
  */
+export * as DuckDuckGo from "./DuckDuckGo.ts"
+
+/**
+ * @since 1.0.0
+ */
 export * as Executor from "./Executor.ts"
 
 /**

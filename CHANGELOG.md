@@ -1,5 +1,11 @@
 # clanka
 
+## 0.1.0
+
+### Minor Changes
+
+- [`8e1d893`](https://github.com/Effectful-Tech/clanka/commit/8e1d893f785562fb2ff894176cb3dc3f130e3937) Thanks [@tim-smart](https://github.com/tim-smart)! - Seperate executor completely from agent
+
 ## 0.0.29
 
 ### Patch Changes

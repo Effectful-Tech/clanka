@@ -27,6 +27,7 @@ export const layer = Layer.effect(
   WebToMarkdown,
   Effect.gen(function* () {
     const client = (yield* HttpClient.HttpClient).pipe(
+      HttpClient.followRedirects(),
       HttpClient.filterStatusOk,
       HttpClient.retryTransient({
         times: 3,

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.1.2
+
+### Patch Changes
+
+- [`4e2721e`](https://github.com/Effectful-Tech/clanka/commit/4e2721e8c9acae4fff14af56862231e1e7636d9c) Thanks [@tim-smart](https://github.com/tim-smart)! - add Rpc layers for AgentExecutor
+
 ## 0.1.1
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # clanka
 
+## 0.0.27
+
+### Patch Changes
+
+- [`b388c8f`](https://github.com/tim-smart/clanka/commit/b388c8f9b9b1d712fca974b28d04c16291e3d617) Thanks [@tim-smart](https://github.com/tim-smart)! - add web search
+
+- [#51](https://github.com/tim-smart/clanka/pull/51) [`23fa4b4`](https://github.com/tim-smart/clanka/commit/23fa4b49d98c6a4c0a76194ecbe3a26f6be9fa48) Thanks [@tim-smart](https://github.com/tim-smart)! - Allow wrapped applyPatch inputs to succeed when `*** End Patch` is missing at EOF.
+
 ## 0.0.26
 
 ### Patch Changes

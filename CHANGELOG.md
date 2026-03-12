@@ -1,5 +1,11 @@
 # clanka
 
+## 0.1.1
+
+### Patch Changes
+
+- [`2891046`](https://github.com/Effectful-Tech/clanka/commit/28910469548cded1fd85aa790bf67ae032052f93) Thanks [@tim-smart](https://github.com/tim-smart)! - add replay to output broadcast
+
 ## 0.1.0
 
 ### Minor Changes

@@ -508,7 +508,10 @@ ${prompt}`),
         agentId: agentCounter++,
         prompt: Prompt.make(options.prompt),
         system: options.system,
-      }).pipe(Stream.broadcast({ capacity: "unbounded" }), sendLock.withPermit),
+      }).pipe(
+        Stream.broadcast({ capacity: "unbounded", replay: 1 }),
+        sendLock.withPermit,
+      ),
     steer: (message) =>
       Effect.callback((resume) => {
         const entry = { message, resume }

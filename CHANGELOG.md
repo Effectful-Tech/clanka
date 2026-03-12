@@ -1,5 +1,13 @@
 # clanka
 
+## 0.0.29
+
+### Patch Changes
+
+- [#55](https://github.com/Effectful-Tech/clanka/pull/55) [`37f007c`](https://github.com/Effectful-Tech/clanka/commit/37f007c79a6b30ae528f11455a9c1aa00e57a4b7) Thanks [@tim-smart](https://github.com/tim-smart)! - Add a brief inline comment next to `declare const fetch` in both system prompt variants to clarify that it exposes the global Fetch API for HTTP requests.
+
+- [#53](https://github.com/Effectful-Tech/clanka/pull/53) [`88d72fa`](https://github.com/Effectful-Tech/clanka/commit/88d72fa6945833cbd017a22c5869123f52bbfe6b) Thanks [@tim-smart](https://github.com/tim-smart)! - Use `HttpClient.followRedirects()` in `WebToMarkdown` so redirected URLs are fetched successfully before markdown conversion. Added a regression test covering a 302 redirect flow in `WebToMarkdown.convertUrl`.
+
 ## 0.0.28
 
 ### Patch Changes

@@ -36,6 +36,7 @@ import { ToolkitRenderer } from "./ToolkitRenderer.ts"
 import { ModelName, ProviderName } from "effect/unstable/ai/Model"
 import { type StreamPart } from "effect/unstable/ai/Response"
 import type { ChildProcessSpawner } from "effect/unstable/process"
+import type { HttpClient } from "effect/unstable/http"
 
 /**
  * @since 1.0.0
@@ -628,7 +629,10 @@ export class AgentModelConfig extends ServiceMap.Reference<{
 export const layerServices: Layer.Layer<
   Tool.HandlersFor<typeof AgentTools.tools> | Executor | ToolkitRenderer,
   never,
-  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | HttpClient.HttpClient
 > = Layer.mergeAll(AgentToolHandlers, Executor.layer, ToolkitRenderer.layer)
 
 /**

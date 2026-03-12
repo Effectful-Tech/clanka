@@ -2,10 +2,13 @@ import { NodeServices } from "@effect/platform-node"
 import { Effect, Layer, Stream } from "effect"
 import { describe, it } from "@effect/vitest"
 import { expect } from "vitest"
-import { AgentModelConfig, layerServices, make } from "./Agent.ts"
+import { AgentModelConfig, make } from "./Agent.ts"
 import { pretty } from "./OutputFormatter.ts"
 import { LanguageModel, Prompt } from "effect/unstable/ai"
 import * as Model from "effect/unstable/ai/Model"
+import { Executor } from "./Executor.ts"
+import { ToolkitRenderer } from "./ToolkitRenderer.ts"
+import { AgentToolHandlersTest } from "./AgentTools.ts"
 
 const usage = {
   inputTokens: {
@@ -140,14 +143,17 @@ describe("Agent", () => {
         "root summary: child summary: grandchild summary",
       )
     }).pipe(
-      Effect.provide([
-        layerServices,
-        TestModel,
-        AgentModelConfig.layer({
-          supportsNoTools: true,
-        }),
-      ]),
-      Effect.provide(NodeServices.layer),
+      Effect.provide(
+        Layer.mergeAll(
+          AgentToolHandlersTest,
+          TestModel,
+          AgentModelConfig.layer({
+            supportsNoTools: true,
+          }),
+          Executor.layer,
+          ToolkitRenderer.layer,
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
     ),
   )
 })

@@ -40,6 +40,7 @@ const SubAgentModel = Codex.model("gpt-5.4", {
 const AgentServices = Agent.layerServices.pipe(
   Layer.merge(Gpt54),
   Layer.provideMerge(NodeServices.layer),
+  Layer.provide(NodeHttpClient.layerUndici),
 )
 
 Effect.gen(function* () {

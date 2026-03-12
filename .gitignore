@@ -6,3 +6,4 @@ dist/
 lalph-plan.md
 *.tsbuildinfo
 data/
+.env

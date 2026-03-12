@@ -18,7 +18,8 @@ import { Tool, Toolkit } from "effect/unstable/ai"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import * as Glob from "glob"
 import { parsePatch, patchChunks } from "./ApplyPatch.ts"
-import { MockSearch } from "./MockSearch.ts"
+import * as ExaSearch from "./ExaSearch.ts"
+import * as WebToMarkdown from "./WebToMarkdown.ts"
 
 /**
  * @since 1.0.0
@@ -60,12 +61,6 @@ export const makeContextNoop = (cwd?: string) =>
     ServiceMap.add(CurrentDirectory, cwd ?? "/"),
     ServiceMap.add(TaskCompleteDeferred, Deferred.makeUnsafe()),
   )
-
-const WebSearchResult = Schema.Struct({
-  title: Schema.String,
-  url: Schema.String,
-  snippet: Schema.String,
-})
 
 /**
  * @since 1.0.0
@@ -185,10 +180,15 @@ export const AgentTools = Toolkit.make(
   }),
   Tool.make("webSearch", {
     description: "Search the web for recent information.",
+    parameters: ExaSearch.ExaSearchOptions,
+    success: Schema.String,
+  }),
+  Tool.make("fetchMarkdown", {
+    description: "Fetch a web page and convert it to markdown.",
     parameters: Schema.String.annotate({
-      identifier: "query",
+      identifier: "url",
     }),
-    success: Schema.Array(WebSearchResult),
+    success: Schema.String,
   }),
   Tool.make("sleep", {
     description: "Sleep for a specified number of milliseconds",
@@ -210,12 +210,13 @@ export const AgentTools = Toolkit.make(
  * @since 1.0.0
  * @category Toolkit
  */
-export const AgentToolHandlers = AgentTools.toLayer(
+export const AgentToolHandlersNoDeps = AgentTools.toLayer(
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const fs = yield* FileSystem.FileSystem
     const pathService = yield* Path.Path
-    const webSearch = yield* MockSearch
+    const webSearch = yield* ExaSearch.ExaSearch
+    const fetchMarkdown = yield* WebToMarkdown.WebToMarkdown
 
     const execute = Effect.fn(function* (command: ChildProcess.Command) {
       const handle = yield* spawner.spawn(command)
@@ -372,12 +373,18 @@ export const AgentToolHandlers = AgentTools.toLayer(
         })
         return yield* execute(cmd)
       }, Effect.orDie),
-      webSearch: Effect.fn("AgentTools.webSearch")(function* (query) {
+      webSearch: Effect.fn("AgentTools.webSearch")(function* (options) {
         yield* Effect.logInfo(`Calling "webSearch"`).pipe(
-          Effect.annotateLogs({ query }),
+          Effect.annotateLogs(options),
         )
-        return yield* webSearch.search(query)
-      }),
+        return yield* webSearch.search(options)
+      }, Effect.orDie),
+      fetchMarkdown: Effect.fn("AgentTools.fetchMarkdown")(function* (url) {
+        yield* Effect.logInfo(`Calling "fetchMarkdown"`).pipe(
+          Effect.annotateLogs({ url }),
+        )
+        return yield* fetchMarkdown.convertUrl(url)
+      }, Effect.orDie),
       sleep: Effect.fn("AgentTools.sleep")(function* (ms) {
         yield* Effect.logInfo(`Calling "sleep" for ${ms}ms`)
         return yield* Effect.sleep(ms)
@@ -527,7 +534,26 @@ export const AgentToolHandlers = AgentTools.toLayer(
       }),
     })
   }),
-).pipe(Layer.provide(Layer.mock(MockSearch)({})))
+)
+
+/**
+ * @since 1.0.0
+ * @category Layers
+ */
+export const AgentToolHandlers = AgentToolHandlersNoDeps.pipe(
+  Layer.provide([ExaSearch.layer, WebToMarkdown.layer]),
+)
+
+/**
+ * @since 1.0.0
+ * @category Layers
+ */
+export const AgentToolHandlersTest = AgentToolHandlersNoDeps.pipe(
+  Layer.provide([
+    Layer.mock(ExaSearch.ExaSearch)({}),
+    Layer.mock(WebToMarkdown.WebToMarkdown)({}),
+  ]),
+)
 
 class ApplyPatchError extends Data.TaggedClass("ApplyPatchError")<{
   readonly message: string

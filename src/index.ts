@@ -6,6 +6,11 @@ export * as Agent from "./Agent.ts"
 /**
  * @since 1.0.0
  */
+export * as AgentExecutor from "./AgentExecutor.ts"
+
+/**
+ * @since 1.0.0
+ */
 export * as AgentTools from "./AgentTools.ts"
 
 /**
@@ -17,11 +22,6 @@ export * as Codex from "./Codex.ts"
  * @since 1.0.0
  */
 export * as Copilot from "./Copilot.ts"
-
-/**
- * @since 1.0.0
- */
-export * as Executor from "./Executor.ts"
 
 /**
  * @since 1.0.0

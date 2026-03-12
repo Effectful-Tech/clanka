@@ -19,6 +19,7 @@ import * as Glob from "glob"
 import { parsePatch, patchChunks } from "./ApplyPatch.ts"
 import * as ExaSearch from "./ExaSearch.ts"
 import * as WebToMarkdown from "./WebToMarkdown.ts"
+import type { HttpClient } from "effect/unstable/http/HttpClient"
 
 /**
  * @since 1.0.0
@@ -42,21 +43,17 @@ export class TaskCompleter extends ServiceMap.Service<
  * @since 1.0.0
  * @category Context
  */
-export class SubagentContext extends ServiceMap.Service<
-  SubagentContext,
-  {
-    spawn(options: { readonly prompt: string }): Effect.Effect<string>
-  }
->()("clanka/AgentTools/SubagentContext") {}
+export class SubagentExecutor extends ServiceMap.Service<
+  SubagentExecutor,
+  (prompt: string) => Effect.Effect<string>
+>()("clanka/AgentTools/SubagentExecutor") {}
 
 /**
  * @since 1.0.0
  * @category Context
  */
 export const makeContextNoop = (cwd?: string) =>
-  SubagentContext.serviceMap({
-    spawn: () => Effect.die("Not implemented"),
-  }).pipe(
+  SubagentExecutor.serviceMap(() => Effect.die("Not implemented")).pipe(
     ServiceMap.add(CurrentDirectory, cwd ?? "/"),
     ServiceMap.add(TaskCompleter, () => Effect.void),
   )
@@ -175,7 +172,7 @@ export const AgentTools = Toolkit.make(
       identifier: "task",
     }),
     success: Schema.String,
-    dependencies: [SubagentContext],
+    dependencies: [SubagentExecutor],
   }),
   Tool.make("webSearch", {
     description: "Search the web for recent information.",
@@ -524,8 +521,8 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
       }, Effect.orDie),
       delegate: Effect.fn("AgentTools.delegate")(function* (prompt) {
         yield* Effect.logInfo(`Calling "delegate"`)
-        const context = yield* SubagentContext
-        return yield* context.spawn({ prompt })
+        const spawn = yield* SubagentExecutor
+        return yield* spawn(prompt)
       }, Effect.orDie),
       taskComplete: Effect.fn("AgentTools.taskComplete")(function* (message) {
         const deferred = yield* TaskCompleter
@@ -539,7 +536,14 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
  * @since 1.0.0
  * @category Layers
  */
-export const AgentToolHandlers = AgentToolHandlersNoDeps.pipe(
+export const AgentToolHandlers: Layer.Layer<
+  Tool.HandlersFor<typeof AgentTools.tools>,
+  never,
+  | FileSystem.FileSystem
+  | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | HttpClient
+> = AgentToolHandlersNoDeps.pipe(
   Layer.provide([ExaSearch.layer, WebToMarkdown.layer]),
 )
 

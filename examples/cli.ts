@@ -1,4 +1,4 @@
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer, pipe, Stream } from "effect"
 import { Agent, Codex, Copilot, OutputFormatter } from "../src/index.ts"
 import {
   NodeHttpClient,
@@ -37,19 +37,23 @@ const SubAgentModel = Codex.model("gpt-5.4", {
   },
 }).pipe(Layer.provide(ModelServices))
 
-const AgentServices = Agent.layerServices.pipe(
-  Layer.merge(Gpt54),
-  Layer.provideMerge(NodeServices.layer),
+const AgentLayer = Agent.layerLocal({
+  directory: process.cwd(),
+}).pipe(
+  Layer.provide(NodeServices.layer),
   Layer.provide(NodeHttpClient.layerUndici),
 )
 
 Effect.gen(function* () {
-  const agent = yield* Agent.make({
-    directory: process.cwd(),
-    prompt: process.argv.slice(2).join(" "),
-    subagentModel: SubAgentModel,
-  })
-  yield* agent.output.pipe(
+  const agent = yield* Agent.Agent
+
+  const output = yield* pipe(
+    agent.send({
+      prompt: process.argv.slice(2).join(" "),
+    }),
+    Effect.provide([Gpt54, Agent.layerSubagentModel(SubAgentModel)]),
+  )
+  yield* output.pipe(
     OutputFormatter.pretty,
     Stream.runForEachArray((chunk) => {
       for (const out of chunk) {
@@ -58,4 +62,4 @@ Effect.gen(function* () {
       return Effect.void
     }),
   )
-}).pipe(Effect.scoped, Effect.provide(AgentServices), NodeRuntime.runMain)
+}).pipe(Effect.scoped, Effect.provide(AgentLayer), NodeRuntime.runMain)

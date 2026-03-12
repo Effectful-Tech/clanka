@@ -4,6 +4,7 @@
 import { Effect, Layer, PubSub, Semaphore, ServiceMap, Stream } from "effect"
 import { type Output, AgentFinished } from "./Agent.ts"
 import chalk from "chalk"
+import type { Prompt } from "effect/unstable/ai"
 
 /**
  * @since 1.0.0
@@ -26,6 +27,9 @@ export const pretty: OutputFormatter = (stream) =>
         output = output.part
       }
       switch (output._tag) {
+        case "AgentStart": {
+          return `${chalkAgentHeading(`${subagentIcon} Agent #${output.id} starting (${output.modelAndProvider})`)}\n\n${promptToString(output.prompt)}\n\n`
+        }
         case "SubagentStart": {
           return `${chalkSubagentHeading(`${subagentIcon} Subagent #${output.id} starting (${output.modelAndProvider})`)}
 
@@ -73,6 +77,20 @@ ${output.summary}\n\n`
     ),
   )
 
+const promptToString = (prompt: Prompt.Prompt): string => {
+  let textParts: string[] = []
+  for (const message of prompt.content) {
+    if (message.role !== "user") continue
+    let content = message.content
+    for (const part of content) {
+      if (part.type !== "text") continue
+      textParts.push(part.text)
+    }
+  }
+  return textParts.join("\n")
+}
+
+const chalkAgentHeading = chalk.bold.green
 const chalkScriptHeading = chalk.bold.blue
 const chalkSubagentHeading = chalk.bold.magenta
 const chalkReasoningHeading = chalk.bold.yellow

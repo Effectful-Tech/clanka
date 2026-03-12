@@ -3,17 +3,16 @@
  */
 import {
   Array,
-  Deferred,
   Effect,
-  FileSystem,
   identity,
   Layer,
+  MutableRef,
   Option,
-  Path,
   pipe,
   Queue,
   Schema,
   Scope,
+  Semaphore,
   ServiceMap,
   Stream,
 } from "effect"
@@ -24,13 +23,18 @@ import {
   Tool,
   Toolkit,
 } from "effect/unstable/ai"
-import { AgentToolHandlers, AgentTools, SubagentContext } from "./AgentTools.ts"
-import { ToolkitRenderer } from "./ToolkitRenderer.ts"
 import { ModelName, ProviderName } from "effect/unstable/ai/Model"
 import { type StreamPart } from "effect/unstable/ai/Response"
-import type { ChildProcessSpawner } from "effect/unstable/process"
-import type { HttpClient } from "effect/unstable/http"
-import { AgentExecutor, AgentFinished } from "./AgentExecutor.ts"
+import * as AgentExecutor from "./AgentExecutor.ts"
+import type { Path } from "effect/Path"
+import type { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+import type { HttpClient } from "effect/unstable/http/HttpClient"
+import type {
+  CurrentDirectory,
+  SubagentExecutor,
+  TaskCompleter,
+} from "./AgentTools.ts"
+import type { FileSystem } from "effect/FileSystem"
 
 /**
  * @since 1.0.0
@@ -51,7 +55,30 @@ export const TypeId: TypeId = "~clanka/Agent"
 export interface Agent {
   readonly [TypeId]: TypeId
 
-  readonly output: Stream.Stream<Output, AgentFinished | AiError.AiError>
+  /**
+   * Send a prompt to the agent and receive a stream of output.
+   */
+  send(options: {
+    /**
+     * The prompt to send to the agent.
+     */
+    readonly prompt: Prompt.RawInput
+    /**
+     * Provide additional system instructions, or a function that generates
+     * system instructions based on the tool instructions
+     */
+    readonly system?:
+      | string
+      | ((options: {
+          readonly toolInstructions: string
+          readonly agentsMd: string
+        }) => string)
+      | undefined
+  }): Effect.Effect<
+    Stream.Stream<Output, AgentFinished | AiError.AiError>,
+    never,
+    Scope.Scope | LanguageModel.LanguageModel | ProviderName | ModelName
+  >
 
   /**
    * Send a message to the agent to steer its behavior. This is useful for
@@ -74,40 +101,16 @@ export const Agent = ServiceMap.Service<Agent>("clanka/Agent")
  * @since 1.0.0
  * @category Constructors
  */
-export const make: (options: {
-  /** The prompt to use for the agent */
-  readonly prompt: Prompt.RawInput
-  /**
-   * Provide additional system instructions, or a function that generates
-   * system instructions based on the tool instructions
-   */
-  readonly system?:
-    | string
-    | ((options: {
-        readonly toolInstructions: string
-        readonly agentsMd: string
-      }) => string)
-    | undefined
-}) => Effect.Effect<
+export const make = Effect.gen(function* (): Effect.fn.Return<
   Agent,
   never,
-  | Scope.Scope
-  | AgentExecutor
-  | LanguageModel.LanguageModel
-  | ProviderName
-  | ModelName
-> = Effect.fnUntraced(function* (options) {
-  const executor = yield* AgentExecutor
-  const generateSystem =
-    typeof options.system === "function" ? options.system : defaultSystem
+  Scope.Scope | AgentExecutor.AgentExecutor
+> {
+  const executor = yield* AgentExecutor.AgentExecutor
 
   const singleTool = yield* SingleTools.asEffect().pipe(
     Effect.provide(SingleToolHandlers),
   )
-  const services = yield* Effect.services<
-    LanguageModel.LanguageModel | ProviderName | ModelName
-  >()
-  const subagentModel = yield* Effect.serviceOption(SubagentModel)
   const toolsDts = yield* executor.toolsDts
 
   const pendingMessages = new Set<{
@@ -138,27 +141,49 @@ ${content}
   const outputBuffer = new Map<number, Array<Output>>()
   let currentOutputAgent: number | null = null
 
-  const spawn: (
-    agentId: number,
-    prompt: Prompt.Prompt,
-  ) => Stream.Stream<
+  let history = MutableRef.make(Prompt.empty)
+
+  const spawn: (opts: {
+    readonly agentId: number
+    readonly prompt: Prompt.Prompt
+    readonly system?:
+      | string
+      | ((options: {
+          readonly toolInstructions: string
+          readonly agentsMd: string
+        }) => string)
+      | undefined
+    readonly disableHistory?: boolean | undefined
+  }) => Stream.Stream<
     Output,
     AgentFinished | AiError.AiError,
-    LanguageModel.LanguageModel | ProviderName
-  > = Effect.fnUntraced(function* (agentId, prompt) {
+    LanguageModel.LanguageModel | ProviderName | ModelName
+  > = Effect.fnUntraced(function* (opts) {
+    const agentId = opts.agentId
     const ai = yield* LanguageModel.LanguageModel
+    const subagentModel = yield* Effect.serviceOption(SubagentModel)
     const modelConfig = yield* AgentModelConfig
+    const services = yield* Effect.services<
+      LanguageModel.LanguageModel | ProviderName | ModelName
+    >()
+    let finalSummary = Option.none<string>()
+
     const singleToolMode = modelConfig.supportsNoTools !== true
-    const deferred = yield* Deferred.make<string>()
     const output = yield* Queue.make<Output, AgentFinished | AiError.AiError>()
+    const prompt = opts.disableHistory ? MutableRef.make(Prompt.empty) : history
+
+    MutableRef.update(prompt, Prompt.concat(opts.prompt))
+
+    const generateSystem =
+      typeof opts.system === "function" ? opts.system : defaultSystem
 
     const toolInstructions = generateSystemTools(toolsDts, !singleToolMode)
     let system = generateSystem({
       toolInstructions,
       agentsMd: Option.getOrElse(agentsMd, () => ""),
     })
-    if (typeof options.system === "string") {
-      system += `\n${options.system}\n`
+    if (typeof opts.system === "string") {
+      system += `\n${opts.system}\n`
     }
 
     function maybeSend(options: {
@@ -167,10 +192,10 @@ ${content}
       readonly acquire?: boolean
       readonly release?: boolean
     }) {
-      if (currentOutputAgent === null || currentOutputAgent === agentId) {
+      if (currentOutputAgent === null || currentOutputAgent === opts.agentId) {
         Queue.offerUnsafe(output, options.part)
         if (options.acquire) {
-          currentOutputAgent = agentId
+          currentOutputAgent = opts.agentId
         }
         if (options.release) {
           currentOutputAgent = null
@@ -189,80 +214,88 @@ ${content}
         }
         return
       }
-      let state = outputBuffer.get(agentId)
+      let state = outputBuffer.get(opts.agentId)
       if (!state) {
         state = []
-        outputBuffer.set(agentId, state)
+        outputBuffer.set(opts.agentId, state)
       }
       state.push(options.part)
       return
     }
 
-    const taskServices = SubagentContext.serviceMap({
-      spawn: ({ prompt }) => {
+    const spawnSubagent = Effect.fnUntraced(
+      function* (prompt: string) {
         let id = agentCounter++
-        const stream = spawn(
-          id,
-          Prompt.make(`You have been asked using the "delegate" function to complete the following task. Avoid using the "delegate" function yourself unless strictly necessary:
+        const stream = spawn({
+          agentId: id,
+          prompt:
+            Prompt.make(`You have been asked using the "delegate" function to complete the following task. Try to avoid using the "delegate" function yourself unless strictly necessary:
 
 ${prompt}`),
-        )
-        return Effect.gen(function* () {
-          const provider = yield* ProviderName
-          const model = yield* ModelName
-          maybeSend({
-            agentId,
-            part: new SubagentStart({ id, prompt, model, provider }),
-            release: true,
-          })
-          return yield* stream.pipe(
-            Stream.runForEachArray((parts) => {
-              for (const part of parts) {
-                switch (part._tag) {
-                  case "SubagentStart":
-                  case "SubagentComplete":
-                  case "SubagentPart":
-                    Queue.offerUnsafe(output, part)
-                    break
+          system: opts.system,
+          disableHistory: true,
+        })
+        const provider = yield* ProviderName
+        const model = yield* ModelName
+        maybeSend({
+          agentId: opts.agentId,
+          part: new SubagentStart({ id, prompt, model, provider }),
+          release: true,
+        })
+        return yield* stream.pipe(
+          Stream.runForEachArray((parts) => {
+            for (const part of parts) {
+              switch (part._tag) {
+                case "AgentStart":
+                  break
+                case "SubagentStart":
+                case "SubagentComplete":
+                case "SubagentPart":
+                  Queue.offerUnsafe(output, part)
+                  break
 
-                  default:
-                    Queue.offerUnsafe(output, new SubagentPart({ id, part }))
-                    break
-                }
+                default:
+                  Queue.offerUnsafe(output, new SubagentPart({ id, part }))
+                  break
               }
-              return Effect.void
-            }),
-            Effect.as(""),
-            Effect.catchTag("AgentFinished", (finished) => {
-              Queue.offerUnsafe(
-                output,
-                new SubagentComplete({ id, summary: finished.summary }),
-              )
-              return Effect.succeed(finished.summary)
-            }),
-            Effect.orDie,
-          )
-        }).pipe(
-          Option.isSome(subagentModel)
-            ? Effect.provideServices(subagentModel.value)
-            : Effect.provideServices(services),
+            }
+            return Effect.void
+          }),
+          Effect.as(""),
+          Effect.catchTag("AgentFinished", (finished) => {
+            Queue.offerUnsafe(
+              output,
+              new SubagentComplete({ id, summary: finished.summary }),
+            )
+            return Effect.succeed(finished.summary)
+          }),
+          Effect.orDie,
         )
       },
-    })
+      Option.isSome(subagentModel)
+        ? Effect.provideServices(subagentModel.value)
+        : Effect.provideServices(services),
+    )
 
     const executeScript = Effect.fnUntraced(function* (script: string) {
       maybeSend({ agentId, part: new ScriptEnd(), release: true })
       const output = yield* pipe(
-        executor.execute(script),
+        executor.execute({
+          script,
+          onSubagent: spawnSubagent,
+          onTaskComplete: (summary) =>
+            Effect.sync(() => {
+              finalSummary = Option.some(summary)
+            }),
+        }),
         Stream.mkString,
-        Effect.provideServices(taskServices),
       )
       maybeSend({ agentId, part: new ScriptOutput({ output }) })
       return output
     })
 
     if (!modelConfig.systemPromptTransform) {
-      prompt = Prompt.setSystem(prompt, system)
+      MutableRef.update(prompt, Prompt.setSystem(system))
     }
 
     let currentScript = ""
@@ -270,33 +303,40 @@ ${prompt}`),
       while (true) {
         if (!singleToolMode && currentScript.length > 0) {
           const result = yield* executeScript(currentScript)
-          prompt = Prompt.concat(prompt, [
-            {
-              role: modelConfig.supportsAssistantPrefill ? "assistant" : "user",
-              content: `Javascript output:\n\n${result}`,
-            },
-          ])
+          MutableRef.update(
+            prompt,
+            Prompt.concat([
+              {
+                role: modelConfig.supportsAssistantPrefill
+                  ? "assistant"
+                  : "user",
+                content: `Javascript output:\n\n${result}`,
+              },
+            ]),
+          )
           currentScript = ""
         }
 
-        if (Deferred.isDoneUnsafe(deferred)) {
+        if (Option.isSome(finalSummary)) {
           yield* Queue.fail(
             output,
-            new AgentFinished({ summary: yield* Deferred.await(deferred) }),
+            new AgentFinished({ summary: finalSummary.value }),
           )
           return
         }
 
         if (pendingMessages.size > 0) {
-          prompt = Prompt.concat(
+          MutableRef.update(
             prompt,
-            Array.Array.from(pendingMessages, ({ message, resume }) => {
-              resume(Effect.void)
-              return {
-                role: "user",
-                content: message,
-              }
-            }),
+            Prompt.concat(
+              Array.Array.from(pendingMessages, ({ message, resume }) => {
+                resume(Effect.void)
+                return {
+                  role: "user",
+                  content: message,
+                }
+              }),
+            ),
           )
           pendingMessages.clear()
         }
@@ -307,7 +347,9 @@ ${prompt}`),
         let hadReasoningDelta = false
         yield* pipe(
           ai.streamText(
-            singleToolMode ? { prompt, toolkit: singleTool } : { prompt },
+            singleToolMode
+              ? { prompt: prompt.current, toolkit: singleTool }
+              : { prompt: prompt.current },
           ),
           Stream.takeUntil((part) => {
             if (
@@ -428,36 +470,45 @@ ${prompt}`),
             ? (effect) => modelConfig.systemPromptTransform!(system, effect)
             : identity,
         )
-        prompt = Prompt.concat(prompt, Prompt.fromResponseParts(response))
+        MutableRef.update(
+          prompt,
+          Prompt.concat(Prompt.fromResponseParts(response)),
+        )
         currentScript = currentScript.trim()
       }
     }).pipe(
-      Effect.provideServices(
-        taskServices.pipe(
-          ServiceMap.add(ScriptExecutor, (script) => {
-            maybeSend({ agentId, part: new ScriptStart() })
-            maybeSend({ agentId, part: new ScriptDelta({ delta: script }) })
-            return executeScript(script)
-          }),
-        ),
-      ),
-      Effect.provideServices(services),
+      Effect.provideService(ScriptExecutor, (script) => {
+        maybeSend({ agentId, part: new ScriptStart() })
+        maybeSend({ agentId, part: new ScriptDelta({ delta: script }) })
+        return executeScript(script)
+      }),
       Effect.catchCause((cause) => Queue.failCause(output, cause)),
       Effect.forkScoped,
+    )
+
+    yield* Queue.offer(
+      output,
+      new AgentStart({
+        id: opts.agentId,
+        prompt: opts.prompt,
+        provider: yield* ProviderName,
+        model: yield* ModelName,
+      }),
     )
 
     return Stream.fromQueue(output)
   }, Stream.unwrap)
 
-  const output = yield* spawn(agentCounter++, Prompt.make(options.prompt)).pipe(
-    Stream.broadcast({
-      capacity: "unbounded",
-    }),
-  )
+  const sendLock = Semaphore.makeUnsafe(1)
 
   return Agent.of({
     [TypeId]: TypeId,
-    output,
+    send: (options) =>
+      spawn({
+        agentId: agentCounter++,
+        prompt: Prompt.make(options.prompt),
+        system: options.system,
+      }).pipe(Stream.broadcast({ capacity: "unbounded" }), sendLock.withPermit),
     steer: (message) =>
       Effect.callback((resume) => {
         const entry = { message, resume }
@@ -575,6 +626,37 @@ const SingleToolHandlers = SingleTools.toLayer({
 
 /**
  * @since 1.0.0
+ * @category Layers
+ */
+export const layer: Layer.Layer<Agent, never, AgentExecutor.AgentExecutor> =
+  Layer.effect(Agent, make)
+
+/**
+ * Create an Agent layer that uses a local AgentExecutor.
+ *
+ * @since 1.0.0
+ * @category Layers
+ */
+export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
+  readonly directory: string
+  readonly tools?: Toolkit | undefined
+}): Layer.Layer<
+  Agent,
+  never,
+  | FileSystem
+  | Path
+  | ChildProcessSpawner
+  | HttpClient
+  | Exclude<
+      Toolkit extends Toolkit.Toolkit<infer T>
+        ? Tool.HandlersFor<T> | Tool.HandlerServices<T[keyof T]>
+        : never,
+      CurrentDirectory | SubagentExecutor | TaskCompleter
+    >
+> => layer.pipe(Layer.provide(AgentExecutor.layerLocal(options)))
+
+/**
+ * @since 1.0.0
  * @category Subagent model
  */
 export class SubagentModel extends ServiceMap.Service<
@@ -614,23 +696,19 @@ export class AgentModelConfig extends ServiceMap.Reference<{
 }
 
 /**
- * A layer that provides most of the common services needed to run an agent.
- *
  * @since 1.0.0
- * @category Services
+ * @category Output
  */
-export const layerServices: Layer.Layer<
-  Tool.HandlersFor<typeof AgentTools.tools> | Executor | ToolkitRenderer,
-  never,
-  | FileSystem.FileSystem
-  | Path.Path
-  | ChildProcessSpawner.ChildProcessSpawner
-  | HttpClient.HttpClient
-> = Layer.mergeAll(
-  AgentToolHandlers,
-  Executor.layerLocal,
-  ToolkitRenderer.layer,
-)
+export class AgentStart extends Schema.TaggedClass<AgentStart>()("AgentStart", {
+  id: Schema.Number,
+  prompt: Prompt.Prompt,
+  provider: Schema.String,
+  model: Schema.String,
+}) {
+  get modelAndProvider() {
+    return `${this.provider}/${this.model}`
+  }
+}
 
 /**
  * @since 1.0.0
@@ -767,6 +845,7 @@ export class SubagentPart extends Schema.TaggedClass<SubagentPart>()(
  * @category Output
  */
 export type Output =
+  | AgentStart
   | ContentPart
   | SubagentStart
   | SubagentComplete
@@ -777,6 +856,7 @@ export type Output =
  * @category Output
  */
 export const Output = Schema.Union([
+  AgentStart,
   ReasoningStart,
   ReasoningDelta,
   ReasoningEnd,
@@ -788,3 +868,14 @@ export const Output = Schema.Union([
   SubagentComplete,
   SubagentPart,
 ])
+
+/**
+ * @since 1.0.0
+ * @category Output
+ */
+export class AgentFinished extends Schema.TaggedErrorClass<AgentFinished>()(
+  "AgentFinished",
+  {
+    summary: Schema.String,
+  },
+) {}

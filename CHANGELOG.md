@@ -1,5 +1,11 @@
 # clanka
 
+## 0.1.5
+
+### Patch Changes
+
+- [`f2d5219`](https://github.com/Effectful-Tech/clanka/commit/f2d52197f271723d3bc1bb8388bb4e3071370000) Thanks [@tim-smart](https://github.com/tim-smart)! - improve claude support
+
 ## 0.1.4
 
 ### Patch Changes

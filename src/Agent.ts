@@ -26,6 +26,7 @@ import {
 import { ModelName, ProviderName } from "effect/unstable/ai/Model"
 import { type StreamPart } from "effect/unstable/ai/Response"
 import * as AgentExecutor from "./AgentExecutor.ts"
+import { stripWrappingCodeFence } from "./ScriptExtraction.ts"
 import type { Path } from "effect/Path"
 import type { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import type { HttpClient } from "effect/unstable/http/HttpClient"
@@ -279,9 +280,10 @@ ${prompt}`),
 
     const executeScript = Effect.fnUntraced(function* (script: string) {
       maybeSend({ agentId, part: new ScriptEnd(), release: true })
+      const normalizedScript = stripWrappingCodeFence(script)
       const output = yield* pipe(
         executor.execute({
-          script,
+          script: normalizedScript,
           onSubagent: spawnSubagent,
           onTaskComplete: (summary) =>
             Effect.sync(() => {

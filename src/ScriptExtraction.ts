@@ -73,3 +73,53 @@ export const extractScript = (markdown: string): string => {
 
   return blocks.length === 0 ? markdown : blocks.join(separator)
 }
+
+export const stripWrappingCodeFence = (script: string): string => {
+  const lines = script.split(/\r?\n/)
+  if (lines.length < 2) {
+    return script
+  }
+
+  let firstNonEmpty = -1
+  let lastNonEmpty = -1
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]!.trim().length > 0) {
+      firstNonEmpty = i
+      break
+    }
+  }
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]!.trim().length > 0) {
+      lastNonEmpty = i
+      break
+    }
+  }
+
+  if (
+    firstNonEmpty === -1 ||
+    lastNonEmpty === -1 ||
+    firstNonEmpty >= lastNonEmpty
+  ) {
+    return script
+  }
+
+  const opening = lines[firstNonEmpty]!.match(/^ {0,3}(`{3,}|~{3,})[^\r\n]*$/)
+  if (!opening) {
+    return script
+  }
+
+  const closing = lines[lastNonEmpty]!.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/)
+  if (!closing) {
+    return script
+  }
+
+  if (opening[1]![0] !== closing[1]![0]) {
+    return script
+  }
+  if (closing[1]!.length < opening[1]!.length) {
+    return script
+  }
+
+  const newLine = script.includes("\r\n") ? "\r\n" : "\n"
+  return lines.slice(firstNonEmpty + 1, lastNonEmpty).join(newLine)
+}

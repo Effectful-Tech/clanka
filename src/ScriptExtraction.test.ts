@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { extractScript } from "./ScriptExtraction.ts"
+import { extractScript, stripWrappingCodeFence } from "./ScriptExtraction.ts"
 
 describe("extractScript", () => {
   it("returns the full string when there are no code blocks", () => {
@@ -130,5 +130,48 @@ describe("extractScript", () => {
         ["```", "hello", "``` more text", "world", "```"].join("\n"),
       ),
     ).toBe(["hello", "``` more text", "world"].join("\n"))
+  })
+})
+
+describe("stripWrappingCodeFence", () => {
+  it("strips wrapping backtick fences", () => {
+    expect(
+      stripWrappingCodeFence(["```ts", "const answer = 42", "```"].join("\n")),
+    ).toBe("const answer = 42")
+  })
+
+  it("strips wrapping tilde fences", () => {
+    expect(
+      stripWrappingCodeFence(["~~~js", "console.log(1)", "~~~"].join("\n")),
+    ).toBe("console.log(1)")
+  })
+
+  it("preserves CRLF output when stripping wrappers", () => {
+    expect(
+      stripWrappingCodeFence(
+        ["```ts", "const a = 1", "const b = 2", "```"].join("\r\n"),
+      ),
+    ).toBe(["const a = 1", "const b = 2"].join("\r\n"))
+  })
+
+  it("returns the input unchanged when not fully wrapped", () => {
+    const input = [
+      "Some explanation",
+      "",
+      "```ts",
+      "const answer = 42",
+      "```",
+    ].join("\n")
+    expect(stripWrappingCodeFence(input)).toBe(input)
+  })
+
+  it("returns the input unchanged when closing fence is missing", () => {
+    const input = ["```ts", "const answer = 42"].join("\n")
+    expect(stripWrappingCodeFence(input)).toBe(input)
+  })
+
+  it("returns the input unchanged when fence markers do not match", () => {
+    const input = ["```ts", "const answer = 42", "~~~"].join("\n")
+    expect(stripWrappingCodeFence(input)).toBe(input)
   })
 })

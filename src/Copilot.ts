@@ -2,7 +2,7 @@
  * @since 1.0.0
  */
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai-compat"
-import { Layer } from "effect"
+import { Layer, Struct } from "effect"
 import { API_URL, GithubCopilotAuth } from "./CopilotAuth.ts"
 import { AgentModelConfig } from "./Agent.ts"
 import { Model } from "effect/unstable/ai"
@@ -34,7 +34,10 @@ export const model = (
     Layer.merge(
       OpenAiLanguageModel.layer({
         model,
-        config: options,
+        config: Struct.omit(options ?? {}, [
+          "supportsNoTools",
+          "supportsAssistantPrefill",
+        ]),
       }),
       AgentModelConfig.layer({
         supportsAssistantPrefill: options?.supportsAssistantPrefill ?? false,

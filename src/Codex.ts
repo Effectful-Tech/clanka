@@ -2,7 +2,7 @@
  * @since 1.0.0
  */
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
-import { Layer } from "effect"
+import { Layer, Record, Struct } from "effect"
 import { CodexAuth } from "./CodexAuth.ts"
 import { AgentModelConfig } from "./Agent.ts"
 import { Model } from "effect/unstable/ai"
@@ -35,7 +35,11 @@ export const model = (
       OpenAiLanguageModel.layer({
         model,
         config: {
-          ...options,
+          ...Struct.omit(options ?? {}, [
+            "reasoning",
+            "supportsNoTools",
+            "supportsAssistantPrefill",
+          ]),
           store: false,
           reasoning: {
             effort: options?.reasoning?.effort ?? "medium",

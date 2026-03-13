@@ -373,6 +373,14 @@ ${content}
               switch (part.type) {
                 case "text-start":
                   if (singleToolMode) {
+                    if (hadReasoningDelta) {
+                      hadReasoningDelta = false
+                      maybeSend({
+                        agentId,
+                        part: new ReasoningEnd(),
+                        release: true,
+                      })
+                    }
                     reasoningStarted = true
                     break
                   }
@@ -574,7 +582,7 @@ ${systemToolsCommon(toolsDts)}`
 
 // oxlint-disable-next-line typescript/no-explicit-any
 const generateSystemSingle = (toolsDts: string) => {
-  return `Use the "execute" tool to run javascript code to do your work.
+  return `**YOU ONLY HAVE ACCESS TO ONE TOOL** "execute", to run javascript code to do your work.
 
 ${systemToolsCommon(toolsDts)}`
 }

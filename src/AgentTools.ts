@@ -74,6 +74,14 @@ export const AgentTools = Toolkit.make(
     success: Schema.NullOr(Schema.String),
     dependencies: [CurrentDirectory],
   }),
+  Tool.make("search", {
+    description: "Find information from a description",
+    parameters: Schema.String.annotate({
+      identifier: "description",
+    }),
+    success: Schema.String,
+    dependencies: [SubagentExecutor],
+  }),
   Tool.make("writeFile", {
     description:
       "Write content to a file, creating parent directories if needed. PREFER USING applyPatch to update existing files.",
@@ -124,7 +132,8 @@ export const AgentTools = Toolkit.make(
     dependencies: [CurrentDirectory],
   }),
   Tool.make("rg", {
-    description: "Search for a pattern in files using ripgrep.",
+    description:
+      "Search for a pattern in files using ripgrep. Prefer the search function unless finding something specific",
     parameters: Schema.Struct({
       pattern: Schema.String,
       glob: Schema.optional(Schema.String).annotate({
@@ -167,15 +176,6 @@ export const AgentTools = Toolkit.make(
       "Delegate a task to another software engineer. Returns the result of the task.",
     parameters: Schema.String.annotate({
       identifier: "task",
-    }),
-    success: Schema.String,
-    dependencies: [SubagentExecutor],
-  }),
-  Tool.make("search", {
-    description:
-      "Spawn a subagent to investigate what to find in the codebase. Returns a concise report with file names, line numbers, and code snippets.",
-    parameters: Schema.String.annotate({
-      identifier: "description",
     }),
     success: Schema.String,
     dependencies: [SubagentExecutor],
@@ -524,7 +524,7 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
       delegate: Effect.fn("AgentTools.delegate")(function* (prompt) {
         yield* Effect.logInfo(`Calling "delegate"`)
         const spawn = yield* SubagentExecutor
-        return yield* spawn(`You have been asked using the "delegate" function to complete the following task. Try to avoid using the "delegate" function yourself unless strictly necessary:
+        return yield* spawn(`You have been asked using the "delegate" function to complete the following task. Try to avoid using the "delegate" or "search" functions yourself unless strictly necessary:
 
 ${prompt}`)
       }, Effect.orDie),

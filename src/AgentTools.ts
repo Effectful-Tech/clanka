@@ -524,21 +524,20 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
       delegate: Effect.fn("AgentTools.delegate")(function* (prompt) {
         yield* Effect.logInfo(`Calling "delegate"`)
         const spawn = yield* SubagentExecutor
-        return yield* spawn(prompt)
+        return yield* spawn(`You have been asked using the "delegate" function to complete the following task. Try to avoid using the "delegate" function yourself unless strictly necessary:
+
+${prompt}`)
       }, Effect.orDie),
       search: Effect.fn("AgentTools.search")(function* (description) {
         yield* Effect.logInfo(`Calling "search"`)
         const spawn = yield* SubagentExecutor
-        return yield* spawn(`You were invoked by the "search" tool to investigate the codebase.
+        return yield* spawn(`You are to find the following information as fast as possible:
 
-What to find:
 ${description}
 
 Requirements:
-- Do not call the "search" tool from this subagent.
-- Use direct inspection tools (like rg, glob, and readFile) to gather evidence.
-- Return a concise report only.
-- Include findings with file names, line numbers, and short code snippets.
+- DO NOT call the "search" or "delegate" functions.
+- Output a concise report with file names, line numbers, and code snippets.
 - If nothing relevant is found, say so clearly.`)
       }, Effect.orDie),
       taskComplete: Effect.fn("AgentTools.taskComplete")(function* (message) {

@@ -1,5 +1,13 @@
 # clanka
 
+## 0.1.7
+
+### Patch Changes
+
+- [#65](https://github.com/Effectful-Tech/clanka/pull/65) [`96bd44b`](https://github.com/Effectful-Tech/clanka/commit/96bd44b57d87cea7f8777f975ab6685c69bae434) Thanks [@tim-smart](https://github.com/tim-smart)! - Add an optional `timeout` field to the `bash` tool parameters and change the `bash` tool input shape to `{ command, timeout? }` (with `command` as the parameter name in rendered typings).
+
+  The timeout is specified in seconds and defaults to 120 seconds.
+
 ## 0.1.6
 
 ### Patch Changes

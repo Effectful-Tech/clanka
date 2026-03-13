@@ -1,5 +1,13 @@
 # clanka
 
+## 0.1.6
+
+### Patch Changes
+
+- [`c37b725`](https://github.com/Effectful-Tech/clanka/commit/c37b72521afc876d3f95b1a39c416f98690f095c) Thanks [@tim-smart](https://github.com/tim-smart)! - clean up imports
+
+- [`1aac21a`](https://github.com/Effectful-Tech/clanka/commit/1aac21a26cd097afe5cedb31d7813ea15af8ed1e) Thanks [@tim-smart](https://github.com/tim-smart)! - add note about not sharing variables
+
 ## 0.1.5
 
 ### Patch Changes

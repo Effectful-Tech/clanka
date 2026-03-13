@@ -1,5 +1,13 @@
 # clanka
 
+## 0.1.3
+
+### Patch Changes
+
+- [`ad9b2da`](https://github.com/Effectful-Tech/clanka/commit/ad9b2da9371aab7122f3e15bd3c64e960f06aa15) Thanks [@tim-smart](https://github.com/tim-smart)! - remove rg noIgnore option
+
+- [#60](https://github.com/Effectful-Tech/clanka/pull/60) [`e9dd2e3`](https://github.com/Effectful-Tech/clanka/commit/e9dd2e3690b20a34e96cd17f8174058288410656) Thanks [@tim-smart](https://github.com/tim-smart)! - Strip a single outer markdown code fence before passing generated scripts to the executor, so wrapped JavaScript responses execute directly.
+
 ## 0.1.2
 
 ### Patch Changes

@@ -157,7 +157,12 @@ export const AgentTools = Toolkit.make(
   }),
   Tool.make("bash", {
     description: "Run a bash command and return the output",
-    parameters: Schema.String.annotate({
+    parameters: Schema.Struct({
+      command: Schema.String,
+      timeout: Schema.optional(Schema.Finite).annotate({
+        documentation: "Timeout in seconds (default: 120)",
+      }),
+    }).annotate({
       identifier: "command",
     }),
     success: Schema.String,
@@ -349,16 +354,25 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
         const cwd = yield* CurrentDirectory
         return yield* Effect.promise(() => Glob.glob(pattern, { cwd }))
       }),
-      bash: Effect.fn("AgentTools.bash")(function* (command) {
+      bash: Effect.fn("AgentTools.bash")(function* (options) {
+        const timeout = options.timeout ?? 120
         yield* Effect.logInfo(`Calling "bash"`).pipe(
-          Effect.annotateLogs({ command }),
+          Effect.annotateLogs({ ...options, timeout }),
         )
         const cwd = yield* CurrentDirectory
-        const cmd = ChildProcess.make("bash", ["-c", command], {
+        const cmd = ChildProcess.make("bash", ["-c", options.command], {
           cwd,
           stdin: "ignore",
         })
-        return yield* execute(cmd)
+        return yield* execute(cmd).pipe(
+          Effect.timeoutOrElse({
+            duration: timeout * 1_000,
+            onTimeout: () =>
+              Effect.die(
+                new Error(`Command timed out after ${timeout} seconds`),
+              ),
+          }),
+        )
       }, Effect.orDie),
       gh: Effect.fn("AgentTools.gh")(function* (args) {
         yield* Effect.logInfo(`Calling "gh"`).pipe(

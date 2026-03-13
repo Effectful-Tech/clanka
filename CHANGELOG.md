@@ -1,5 +1,13 @@
 # clanka
 
+## 0.1.4
+
+### Patch Changes
+
+- [#61](https://github.com/Effectful-Tech/clanka/pull/61) [`a4d55da`](https://github.com/Effectful-Tech/clanka/commit/a4d55da778a37bc456315124e3c6e894ecb4a4de) Thanks [@tim-smart](https://github.com/tim-smart)! - Add a new `search` AgentTool that spawns a subagent from a textual search description and returns its findings.
+
+  The `search` subagent is explicitly instructed not to call `search` recursively, and to return a concise report with file paths, line numbers, and code snippets.
+
 ## 0.1.3
 
 ### Patch Changes

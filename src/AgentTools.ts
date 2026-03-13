@@ -130,9 +130,6 @@ export const AgentTools = Toolkit.make(
       glob: Schema.optional(Schema.String).annotate({
         documentation: "--glob",
       }),
-      noIgnore: Schema.optional(Schema.Boolean).annotate({
-        documentation: "-uu",
-      }),
       maxLines: Schema.optional(Schema.Finite).annotate({
         documentation:
           "The total maximum number of lines to return across all files (default: 500)",
@@ -311,15 +308,11 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
         yield* Effect.logInfo(`Calling "rg"`).pipe(Effect.annotateLogs(options))
         const cwd = yield* CurrentDirectory
         const args = ["--max-filesize", "1M", "--line-number"]
-        let noIgnore = options.noIgnore ?? false
         if (options.glob) {
           args.push("--glob", options.glob)
-          if (options.noIgnore === undefined && !options.glob.startsWith("*")) {
-            noIgnore = true
+          if (!options.glob.startsWith("*")) {
+            args.push("-uu")
           }
-        }
-        if (noIgnore) {
-          args.push("-uu")
         }
         args.push(options.pattern)
         let stream = pipe(

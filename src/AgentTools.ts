@@ -74,6 +74,14 @@ export const AgentTools = Toolkit.make(
     success: Schema.NullOr(Schema.String),
     dependencies: [CurrentDirectory],
   }),
+  Tool.make("search", {
+    description: "Find information from a description",
+    parameters: Schema.String.annotate({
+      identifier: "description",
+    }),
+    success: Schema.String,
+    dependencies: [SubagentExecutor],
+  }),
   Tool.make("writeFile", {
     description:
       "Write content to a file, creating parent directories if needed. PREFER USING applyPatch to update existing files.",
@@ -124,7 +132,8 @@ export const AgentTools = Toolkit.make(
     dependencies: [CurrentDirectory],
   }),
   Tool.make("rg", {
-    description: "Search for a pattern in files using ripgrep.",
+    description:
+      "Search for a pattern in files using ripgrep. Prefer the search function unless finding something specific",
     parameters: Schema.Struct({
       pattern: Schema.String,
       glob: Schema.optional(Schema.String).annotate({
@@ -515,7 +524,21 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
       delegate: Effect.fn("AgentTools.delegate")(function* (prompt) {
         yield* Effect.logInfo(`Calling "delegate"`)
         const spawn = yield* SubagentExecutor
-        return yield* spawn(prompt)
+        return yield* spawn(`You have been asked using the "delegate" function to complete the following task. Try to avoid using the "delegate" or "search" functions yourself unless strictly necessary:
+
+${prompt}`)
+      }, Effect.orDie),
+      search: Effect.fn("AgentTools.search")(function* (description) {
+        yield* Effect.logInfo(`Calling "search"`)
+        const spawn = yield* SubagentExecutor
+        return yield* spawn(`You are to find the following information as fast as possible:
+
+${description}
+
+Requirements:
+- DO NOT call the "search" or "delegate" functions.
+- Output a concise report with file names, line numbers, and code snippets.
+- If nothing relevant is found, say so clearly.`)
       }, Effect.orDie),
       taskComplete: Effect.fn("AgentTools.taskComplete")(function* (message) {
         const deferred = yield* TaskCompleter

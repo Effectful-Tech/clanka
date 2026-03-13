@@ -229,10 +229,7 @@ ${content}
         let id = agentCounter++
         const stream = spawn({
           agentId: id,
-          prompt:
-            Prompt.make(`You have been asked using the "delegate" function to complete the following task. Try to avoid using the "delegate" function yourself unless strictly necessary:
-
-${prompt}`),
+          prompt: Prompt.make(prompt),
           system: opts.system,
           disableHistory: true,
         })
@@ -572,9 +569,22 @@ Javascript output:
 const generateSystemMulti = (toolsDts: string) => {
   return `You complete your tasks by **only writing javascript code** to interact with your environment.
 
-- Use \`console.log\` to print any output you need.
+${systemToolsCommon(toolsDts)}`
+}
+
+// oxlint-disable-next-line typescript/no-explicit-any
+const generateSystemSingle = (toolsDts: string) => {
+  return `Use the "execute" tool to run javascript code to do your work.
+
+${systemToolsCommon(toolsDts)}`
+}
+
+const systemToolsCommon = (
+  toolsDts: string,
+) => `- Use \`console.log\` to print any output you need.
 - Top level await is supported.
 - AVOID passing scripts into the "bash" function, and instead write javascript.
+- PREFER the "search" function over "rg" for finding information or code
 
 **When you have fully completed your task**, call the "taskComplete" function with the final output.
 Make sure every detail of the task is done before calling "taskComplete".
@@ -587,25 +597,6 @@ ${toolsDts}
 /** The global Fetch API available for making HTTP requests. */
 declare const fetch: typeof globalThis.fetch
 \`\`\``
-}
-
-// oxlint-disable-next-line typescript/no-explicit-any
-const generateSystemSingle = (toolsDts: string) => {
-  return `Use the "execute" tool to run javascript code to do your work.
-
-- Use \`console.log\` to print any output you need.
-- Top level await is supported.
-- AVOID passing scripts into the "bash" function, and instead write javascript.
-
-You have the following functions available to you:
-
-\`\`\`ts
-${toolsDts}
-
-// The global Fetch API available for making HTTP requests.
-declare const fetch: typeof globalThis.fetch
-\`\`\``
-}
 
 class ScriptExecutor extends ServiceMap.Service<
   ScriptExecutor,

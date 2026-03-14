@@ -1,5 +1,11 @@
 # clanka
 
+## 0.1.8
+
+### Patch Changes
+
+- [`201bf24`](https://github.com/Effectful-Tech/clanka/commit/201bf24f206309b35dec7d25f58a5cb8affea19f) Thanks [@tim-smart](https://github.com/tim-smart)! - use ms for bash timeout
+
 ## 0.1.7
 
 ### Patch Changes

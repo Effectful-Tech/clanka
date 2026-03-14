@@ -307,7 +307,7 @@ ${content}
                 role: modelConfig.supportsAssistantPrefill
                   ? "assistant"
                   : "user",
-                content: `Javascript output:\n\n${result}`,
+                content: result,
               },
             ]),
           )
@@ -561,8 +561,6 @@ console.log(JSON.parse(content))
 And the output would look like this:
 
 \`\`\`
-Javascript output:
-
 [22:44:53.054] INFO (#47): Calling "readFile" { path: 'package.json' }
 {
   "name": "my-project",

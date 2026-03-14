@@ -1,5 +1,11 @@
 # clanka
 
+## 0.1.9
+
+### Patch Changes
+
+- [`de281e5`](https://github.com/Effectful-Tech/clanka/commit/de281e5ad7220b129ca780f55c819139159bfe92) Thanks [@tim-smart](https://github.com/tim-smart)! - remove "Javascript output" from output
+
 ## 0.1.8
 
 ### Patch Changes

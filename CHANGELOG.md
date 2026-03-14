@@ -1,5 +1,11 @@
 # clanka
 
+## 0.1.11
+
+### Patch Changes
+
+- [`cf50ca4`](https://github.com/Effectful-Tech/clanka/commit/cf50ca459008728dbd74018af78b9f56ef812d9b) Thanks [@tim-smart](https://github.com/tim-smart)! - use duration format
+
 ## 0.1.10
 
 ### Patch Changes

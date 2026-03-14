@@ -358,7 +358,10 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
       bash: Effect.fn("AgentTools.bash")(function* (options) {
         const timeout = Duration.millis(options.timeoutMs ?? 120_000)
         yield* Effect.logInfo(`Calling "bash"`).pipe(
-          Effect.annotateLogs({ ...options, timeout }),
+          Effect.annotateLogs({
+            ...options,
+            timeoutMs: Duration.format(timeout),
+          }),
         )
         const cwd = yield* CurrentDirectory
         const cmd = ChildProcess.make("bash", ["-c", options.command], {
@@ -369,7 +372,11 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
           Effect.timeoutOrElse({
             duration: timeout,
             onTimeout: () =>
-              Effect.die(new Error(`Command timed out after ${timeout}`)),
+              Effect.die(
+                new Error(
+                  `Command timed out after ${Duration.format(timeout)}`,
+                ),
+              ),
           }),
         )
       }, Effect.orDie),

@@ -547,7 +547,8 @@ const generateSystemTools = (toolsDts: string, multi: boolean) => {
 
   return `${toolMd}
 
-Here is how you would read a file:
+For example, here is how you would read a file. First you would respond with
+javascript code that uses the "readFile" function:
 
 \`\`\`
 const content = await readFile({
@@ -558,7 +559,7 @@ const content = await readFile({
 console.log(JSON.parse(content))
 \`\`\`
 
-And the output would look like this:
+And then you wil revieve back output that would look like this:
 
 \`\`\`
 [22:44:53.054] INFO (#47): Calling "readFile" { path: 'package.json' }

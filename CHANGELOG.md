@@ -1,5 +1,11 @@
 # clanka
 
+## 0.1.12
+
+### Patch Changes
+
+- [`b817eeb`](https://github.com/Effectful-Tech/clanka/commit/b817eebadcef5cd7bf82160a444ca5f9cefee47c) Thanks [@tim-smart](https://github.com/tim-smart)! - switch to single tool only
+
 ## 0.1.11
 
 ### Patch Changes

@@ -37,23 +37,23 @@
     "turndown": "^7.2.2"
   },
   "peerDependencies": {
-    "@effect/ai-openai": "4.0.0-beta.32",
-    "@effect/ai-openai-compat": "4.0.0-beta.32",
-    "effect": "4.0.0-beta.32"
+    "@effect/ai-openai": "4.0.0-beta.33",
+    "@effect/ai-openai-compat": "4.0.0-beta.33",
+    "effect": "4.0.0-beta.33"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.6.0",
     "@changesets/cli": "^2.29.8",
-    "@effect/ai-openai": "4.0.0-beta.32",
-    "@effect/ai-openai-compat": "4.0.0-beta.32",
+    "@effect/ai-openai": "4.0.0-beta.33",
+    "@effect/ai-openai-compat": "4.0.0-beta.33",
     "@effect/language-service": "^0.80.0",
-    "@effect/platform-node": "4.0.0-beta.32",
-    "@effect/vitest": "4.0.0-beta.32",
+    "@effect/platform-node": "4.0.0-beta.33",
+    "@effect/vitest": "4.0.0-beta.33",
     "@linear/sdk": "^77.0.0",
     "@types/node": "^25.5.0",
     "@types/turndown": "^5.0.6",
     "@typescript/native-preview": "7.0.0-dev.20260315.1",
-    "effect": "4.0.0-beta.32",
+    "effect": "4.0.0-beta.33",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
     "oxlint": "^1.55.0",

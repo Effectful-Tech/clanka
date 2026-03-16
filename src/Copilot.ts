@@ -7,8 +7,6 @@ import * as Struct from "effect/Struct"
 import { API_URL, GithubCopilotAuth } from "./CopilotAuth.ts"
 import { AgentModelConfig } from "./Agent.ts"
 import * as Model from "effect/unstable/ai/Model"
-import type * as HttpClient from "effect/unstable/http/HttpClient"
-import type * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
 import type * as LanguageModel from "effect/unstable/ai/LanguageModel"
 
 /**
@@ -31,7 +29,7 @@ export const model = (
 ): Model.Model<
   "openai",
   LanguageModel.LanguageModel,
-  HttpClient.HttpClient | KeyValueStore.KeyValueStore
+  OpenAiClient.OpenAiClient
 > =>
   Model.make(
     "openai",
@@ -47,5 +45,5 @@ export const model = (
       AgentModelConfig.layer({
         systemPromptTransform: options?.systemPromptTransform,
       }),
-    ).pipe(Layer.provide(layerClient)),
+    ),
   )

@@ -4,6 +4,7 @@ import {
   NodeHttpClient,
   NodeRuntime,
   NodeServices,
+  NodeSocket,
 } from "@effect/platform-node"
 import { KeyValueStore } from "effect/unstable/persistence"
 import * as NodePath from "node:path"
@@ -11,16 +12,18 @@ import * as NodePath from "node:path"
 const XDG_CONFIG_HOME =
   process.env.XDG_CONFIG_HOME ||
   NodePath.join(process.env.HOME || "", ".config")
-
 console.log(`Using config directory: ${XDG_CONFIG_HOME}`)
-const ModelServices = KeyValueStore.layerFileSystem(
-  NodePath.join(XDG_CONFIG_HOME, "clanka"),
-).pipe(
+
+const ModelServices = Codex.layerClient.pipe(
+  Layer.provide(
+    KeyValueStore.layerFileSystem(NodePath.join(XDG_CONFIG_HOME, "clanka")),
+  ),
   Layer.provide(NodeServices.layer),
-  Layer.merge(NodeHttpClient.layerUndici),
+  Layer.provideMerge(NodeHttpClient.layerUndici),
+  Layer.merge(NodeSocket.layerWebSocketConstructorWS),
 )
 
-const Gpt54 = Codex.model("gpt-5.3-codex", {
+const Gpt54 = Codex.modelWebSocket("gpt-5.3-codex", {
   reasoning: {
     effort: "high",
   },

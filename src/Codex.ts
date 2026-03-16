@@ -7,9 +7,9 @@ import * as Struct from "effect/Struct"
 import { CodexAuth } from "./CodexAuth.ts"
 import { AgentModelConfig } from "./Agent.ts"
 import * as Model from "effect/unstable/ai/Model"
-import type * as HttpClient from "effect/unstable/http/HttpClient"
-import type * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
 import type * as LanguageModel from "effect/unstable/ai/LanguageModel"
+import type * as Socket from "effect/unstable/socket/Socket"
+import type * as ResponseIdTracker from "effect/unstable/ai/ResponseIdTracker"
 
 /**
  * @since 1.0.0
@@ -31,28 +31,56 @@ export const model = (
 ): Model.Model<
   "openai",
   LanguageModel.LanguageModel,
-  HttpClient.HttpClient | KeyValueStore.KeyValueStore
+  OpenAiClient.OpenAiClient
+> => Model.make("openai", model, layerModel(model, options))
+
+/**
+ * @since 1.0.0
+ * @category Layers
+ */
+export const modelWebSocket = (
+  model: (string & {}) | OpenAiLanguageModel.Model,
+  options?:
+    | (OpenAiLanguageModel.Config["Service"] & typeof AgentModelConfig.Service)
+    | undefined,
+): Model.Model<
+  "openai",
+  | LanguageModel.LanguageModel
+  | OpenAiClient.OpenAiSocket
+  | ResponseIdTracker.ResponseIdTracker,
+  OpenAiClient.OpenAiClient | Socket.WebSocketConstructor
 > =>
   Model.make(
     "openai",
     model,
+    layerModel(model, options).pipe(
+      Layer.merge(OpenAiClient.layerWebSocketMode),
+    ),
+  )
+
+const layerModel = (
+  model: (string & {}) | OpenAiLanguageModel.Model,
+  options?:
+    | (OpenAiLanguageModel.Config["Service"] & typeof AgentModelConfig.Service)
+    | undefined,
+) =>
+  OpenAiLanguageModel.layer({
+    model,
+    config: {
+      ...Struct.omit(options ?? {}, ["reasoning"]),
+      store: false,
+      reasoning: {
+        effort: options?.reasoning?.effort ?? "medium",
+        summary: "auto",
+      },
+    },
+  }).pipe(
     Layer.merge(
-      OpenAiLanguageModel.layer({
-        model,
-        config: {
-          ...Struct.omit(options ?? {}, ["reasoning"]),
-          store: false,
-          reasoning: {
-            effort: options?.reasoning?.effort ?? "medium",
-            summary: "auto",
-          },
-        },
-      }),
       AgentModelConfig.layer({
         systemPromptTransform: (system, effect) =>
           OpenAiLanguageModel.withConfigOverride(effect, {
             instructions: system,
           }),
       }),
-    ).pipe(Layer.provide(layerClient)),
+    ),
   )

@@ -78,6 +78,7 @@ export interface Agent {
     | LanguageModel.LanguageModel
     | Model.ProviderName
     | Model.ModelName
+    | SubagentModel
   >
 
   /**
@@ -157,15 +158,15 @@ ${content}
   }) => Stream.Stream<
     Output,
     AgentFinished | AiError.AiError,
-    LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName
+    | LanguageModel.LanguageModel
+    | Model.ProviderName
+    | Model.ModelName
+    | SubagentModel
   > = Effect.fnUntraced(function* (opts) {
     const agentId = opts.agentId
     const ai = yield* LanguageModel.LanguageModel
-    const subagentModel = yield* Effect.serviceOption(SubagentModel)
+    const subagentModel = yield* SubagentModel
     const modelConfig = yield* AgentModelConfig
-    const services = yield* Effect.services<
-      LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName
-    >()
     let finalSummary = Option.none<string>()
 
     const output = yield* Queue.make<Output, AgentFinished | AiError.AiError>()
@@ -268,9 +269,8 @@ ${content}
           Effect.orDie,
         )
       },
-      Option.isSome(subagentModel)
-        ? Effect.provideServices(subagentModel.value)
-        : Effect.provideServices(services),
+      Effect.provide(subagentModel, { local: true }),
+      Effect.provideService(SubagentModel, subagentModel),
     )
 
     const executeScript = Effect.fnUntraced(function* (script: string) {
@@ -567,7 +567,7 @@ export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
  */
 export class SubagentModel extends ServiceMap.Service<
   SubagentModel,
-  ServiceMap.ServiceMap<
+  Layer.Layer<
     LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName
   >
 >()("clanka/Agent/SubagentModel") {}
@@ -583,7 +583,15 @@ export const layerSubagentModel = <E, R>(
     R
   >,
 ): Layer.Layer<SubagentModel, E, R> =>
-  Layer.effect(SubagentModel, Layer.build(layer))
+  Layer.effect(
+    SubagentModel,
+    Effect.gen(function* () {
+      const services = yield* Effect.services<R>()
+      return Layer.orDie(layer).pipe(
+        Layer.provide(Layer.succeedServices(services)),
+      )
+    }),
+  )
 
 /**
  * @since 1.0.0

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.1.15
+
+### Patch Changes
+
+- [`3983176`](https://github.com/Effectful-Tech/clanka/commit/398317663b9d988490fdabb44229dbcf6336adb2) Thanks [@tim-smart](https://github.com/tim-smart)! - improve Layer memoization
+
 ## 0.1.14
 
 ### Patch Changes

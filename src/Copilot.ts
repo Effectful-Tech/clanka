@@ -37,10 +37,7 @@ export const model = (
     Layer.merge(
       OpenAiLanguageModel.layer({
         model,
-        config: Struct.omit(options ?? {}, [
-          "supportsNoTools",
-          "supportsAssistantPrefill",
-        ]),
+        config: Struct.omit(options ?? {}, ["systemPromptTransform"]),
       }),
       AgentModelConfig.layer({
         systemPromptTransform: options?.systemPromptTransform,

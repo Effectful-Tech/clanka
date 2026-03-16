@@ -269,7 +269,7 @@ ${content}
           Effect.orDie,
         )
       },
-      Effect.provide(subagentModel, { local: true }),
+      Effect.provide(subagentModel),
       Effect.provideService(SubagentModel, subagentModel),
     )
 

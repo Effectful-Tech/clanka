@@ -54,7 +54,7 @@ export const modelWebSocket = (
     "openai",
     model,
     layerModel(model, options).pipe(
-      Layer.merge(OpenAiClient.layerWebSocketMode),
+      Layer.merge(Layer.fresh(OpenAiClient.layerWebSocketMode)),
     ),
   )
 

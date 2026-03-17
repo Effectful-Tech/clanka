@@ -1,5 +1,15 @@
 # clanka
 
+## 0.2.0
+
+### Minor Changes
+
+- [#84](https://github.com/Effectful-Tech/clanka/pull/84) [`19a9c1a`](https://github.com/Effectful-Tech/clanka/commit/19a9c1a9d145317e3da01e34c4834b620d4a2572) Thanks [@tim-smart](https://github.com/tim-smart)! - Replace `SemanticSearch.reindex` with file-specific index update methods.
+  - Add `SemanticSearch.updateFile(path)` to re-chunk and re-embed a single file.
+  - Add `SemanticSearch.removeFile(path)` to remove a single file from the index.
+  - Add `CodeChunker.chunkFile` and `CodeChunker.chunkFiles` for targeted chunking.
+  - Update `AgentTools` file mutation handlers to call targeted semantic index updates instead of global reindexing.
+
 ## 0.1.22
 
 ### Patch Changes

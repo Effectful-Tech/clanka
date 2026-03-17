@@ -54,7 +54,7 @@ export const SqliteLayer = (database: string) =>
           const fs = yield* FileSystem.FileSystem
           const path = yield* Path.Path
           const directory = path.dirname(database)
-          if (directory !== ".") return
+          if (directory === ".") return
           yield* fs.makeDirectory(directory, { recursive: true })
         }),
       ),

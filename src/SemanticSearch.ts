@@ -10,7 +10,7 @@ import { pipe } from "effect/Function"
 import * as EmbeddingModel from "effect/unstable/ai/EmbeddingModel"
 import * as RequestResolver from "effect/RequestResolver"
 import * as Option from "effect/Option"
-import * as Path from "effect/Path"
+import type * as Path from "effect/Path"
 import * as ServiceMap from "effect/ServiceMap"
 import * as Fiber from "effect/Fiber"
 import * as Duration from "effect/Duration"
@@ -65,12 +65,11 @@ export const layer = (options: {
       const chunker = yield* CodeChunker.CodeChunker
       const repo = yield* ChunkRepo.ChunkRepo
       const embeddings = yield* EmbeddingModel.EmbeddingModel
-      const pathService = yield* Path.Path
       const resolver = embeddings.resolver.pipe(
         RequestResolver.setDelay(
           options.embeddingBatchSize ?? Duration.millis(50),
         ),
-        RequestResolver.batchN(options.embeddingBatchSize ?? 200),
+        RequestResolver.batchN(options.embeddingBatchSize ?? 500),
       )
       const indexHandle = yield* FiberHandle.make()
       const console = yield* Console.Console
@@ -82,6 +81,8 @@ export const layer = (options: {
         yield* pipe(
           chunker.chunkCodebase({
             root: options.directory,
+            chunkSize: 20,
+            chunkOverlap: 5,
           }),
           Stream.tap(
             Effect.fnUntraced(
@@ -95,12 +96,9 @@ export const layer = (options: {
                   yield* repo.setSyncId(id.value, syncId)
                   return
                 }
-                const module = pathService.basename(chunk.path)
-                const directory = pathService.dirname(chunk.path)
                 const result = yield* Effect.request(
                   new EmbeddingModel.EmbeddingRequest({
-                    input: `Module: ${module}
-Directory: ${directory}
+                    input: `File: ${chunk.path}
 Lines: ${chunk.startLine}-${chunk.endLine}
 
 ${chunk.content}`,
@@ -129,7 +127,7 @@ ${chunk.content}`,
                   chunk: `${chunk.path}/${chunk.startLine}`,
                 }),
             ),
-            { concurrency: options.concurrency ?? 1000 },
+            { concurrency: options.concurrency ?? 2000 },
           ),
           Stream.runDrain,
         )

@@ -106,7 +106,10 @@ describe("chunkFileContent", () => {
   })
 
   it("drops minified-like content", () => {
-    const chunks = chunkFileContent("src/bundle.js", "x".repeat(3000))
+    const chunks = chunkFileContent("src/bundle.js", "x".repeat(3000), {
+      chunkSize: 30,
+      chunkOverlap: 0,
+    })
     expect(chunks).toEqual([])
   })
 })

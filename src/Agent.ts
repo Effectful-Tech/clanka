@@ -182,6 +182,7 @@ ${content}
     if (typeof opts.system === "string") {
       system += `\n${opts.system}\n`
     }
+    console.log("Generated system prompt:", system)
 
     function maybeSend(options: {
       readonly agentId: number
@@ -477,13 +478,13 @@ const generateSystemTools = (
 ) => `**YOU ONLY HAVE ACCESS TO ONE TOOL** "execute", to run javascript code to do your work.
 
 - Use \`console.log\` to print any output you need.
-- Top level await is supported.
-- AVOID passing scripts into the "bash" function, and instead write javascript.${
+- Top level await is supported.${
   capabilities.supportsSearch
     ? `
-- PREFER USING the "search" function instead of "rg", unless you are targeting specific files or need regex.`
+- AVOID USING the "rg" function and instead use "search", unless you are targeting specific files or need regex.`
     : ""
 }
+- AVOID passing scripts into the "bash" function, and instead write javascript.
 - Do as much work as possible in a single script, using \`Promise.all\` to run multiple functions in parallel.
 - Variables **are not shared** between executions, so you must include all necessary code in each script you execute.
 - Use the "delegate" function to assign complex jobs to another software engineer.
@@ -492,7 +493,7 @@ const generateSystemTools = (
 DO NOT output the final result without wrapping it with "taskComplete".
 Make sure every detail of the task is done before calling "taskComplete".
 
-You have the following functions available to you:
+Apart from standard javascript apis, **you only have** the following functions available to you:
 
 \`\`\`ts
 ${capabilities.toolsDts}

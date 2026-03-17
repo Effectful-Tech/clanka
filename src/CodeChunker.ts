@@ -32,15 +32,15 @@ export interface CodeChunk {
 export class CodeChunker extends ServiceMap.Service<
   CodeChunker,
   {
-    listFiles(options?: {
-      readonly root?: string | undefined
+    listFiles(options: {
+      readonly root: string
       readonly maxFileSize?: string | undefined
     }): Effect.Effect<ReadonlyArray<string>>
-    chunkCodebase(options?: {
-      readonly root?: string | undefined
+    chunkCodebase(options: {
+      readonly root: string
       readonly maxFileSize?: string | undefined
-      readonly chunkSize?: number | undefined
-      readonly chunkOverlap?: number | undefined
+      readonly chunkSize: number
+      readonly chunkOverlap: number
     }): Stream.Stream<CodeChunk>
   }
 >()("clanka/CodeChunker") {}
@@ -220,14 +220,14 @@ export const isMeaningfulFile = (path: string): boolean => {
   )
 }
 
-const resolveChunkSettings = (options?: {
-  readonly chunkSize?: number | undefined
-  readonly chunkOverlap?: number | undefined
+const resolveChunkSettings = (options: {
+  readonly chunkSize: number
+  readonly chunkOverlap: number
 }) => {
-  const chunkSize = Math.max(1, Math.floor(options?.chunkSize ?? 50))
+  const chunkSize = Math.max(1, options.chunkSize)
   const chunkOverlap = Math.max(
     0,
-    Math.min(chunkSize - 1, Math.floor(options?.chunkOverlap ?? 5)),
+    Math.min(chunkSize - 1, options.chunkOverlap),
   )
 
   return {
@@ -243,9 +243,9 @@ const resolveChunkSettings = (options?: {
 export const chunkFileContent = (
   path: string,
   content: string,
-  options?: {
-    readonly chunkSize?: number | undefined
-    readonly chunkOverlap?: number | undefined
+  options: {
+    readonly chunkSize: number
+    readonly chunkOverlap: number
   },
 ): ReadonlyArray<CodeChunk> => {
   if (content.trim().length === 0 || isProbablyMinified(content)) {
@@ -312,8 +312,8 @@ export const layer: Layer.Layer<
 
     const listFiles: CodeChunker["Service"]["listFiles"] = Effect.fn(
       "CodeChunker.listFiles",
-    )(function* (options = {}): Effect.fn.Return<ReadonlyArray<string>> {
-      const root = pathService.resolve(options.root ?? process.cwd())
+    )(function* (options): Effect.fn.Return<ReadonlyArray<string>> {
+      const root = pathService.resolve(options.root)
       const maxFileSize = options.maxFileSize ?? "1M"
 
       return yield* pipe(
@@ -347,8 +347,8 @@ export const layer: Layer.Layer<
     })
 
     const chunkCodebase: CodeChunker["Service"]["chunkCodebase"] =
-      Effect.fnUntraced(function* (options = {}) {
-        const root = pathService.resolve(options.root ?? process.cwd())
+      Effect.fnUntraced(function* (options) {
+        const root = pathService.resolve(options.root)
         const files = yield* listFiles({
           root,
           ...(options.maxFileSize === undefined

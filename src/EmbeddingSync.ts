@@ -49,7 +49,12 @@ Effect.gen(function* () {
             return
           }
           const result = yield* Effect.request(
-            new EmbeddingModel.EmbeddingRequest({ input: chunk.content }),
+            new EmbeddingModel.EmbeddingRequest({
+              input: `File: ${chunk.path}
+Lines: ${chunk.startLine}-${chunk.endLine}
+
+${chunk.content}`,
+            }),
             resolver,
           )
           const vector = new Float32Array(result.vector)

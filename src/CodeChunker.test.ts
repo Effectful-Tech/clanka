@@ -83,6 +83,28 @@ describe("chunkFileContent", () => {
     )
   })
 
+  it("skips non-meaningful chunk starts", () => {
+    const content = [
+      "",
+      "   ",
+      "---",
+      "const alpha = 1",
+      "const beta = 2",
+    ].join("\n")
+
+    const chunks = chunkFileContent("src/example.ts", content, {
+      chunkSize: 3,
+      chunkOverlap: 1,
+    })
+
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0]).toMatchObject({
+      startLine: 4,
+      endLine: 5,
+      content: ["const alpha = 1", "const beta = 2"].join("\n"),
+    })
+  })
+
   it("drops minified-like content", () => {
     const chunks = chunkFileContent("src/bundle.js", "x".repeat(3000))
     expect(chunks).toEqual([])

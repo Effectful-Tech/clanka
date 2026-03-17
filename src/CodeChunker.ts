@@ -158,6 +158,11 @@ const normalizeText = (content: string): string =>
 const hashContent = (content: string): string =>
   createHash("sha256").update(content).digest("hex")
 
+const meaningfulLinePattern = /[^\s\p{P}]/u
+
+const isMeaningfulLine = (line: string): boolean =>
+  meaningfulLinePattern.test(line)
+
 /**
  * @since 1.0.0
  * @category Predicates
@@ -270,14 +275,18 @@ export const chunkFileContent = (
   for (let index = 0; index < lines.length; index += step) {
     const start = index
     const end = Math.min(lines.length, start + settings.chunkSize)
-    const chunkContent = lines.slice(start, end).join("\n")
-    if (chunkContent.trim().length === 0) {
+    const chunkLines = lines.slice(start, end)
+    const firstMeaningfulLineIndex = chunkLines.findIndex(isMeaningfulLine)
+    if (firstMeaningfulLineIndex === -1) {
       continue
     }
 
+    const chunkStart = start + firstMeaningfulLineIndex
+    const chunkContent = chunkLines.slice(firstMeaningfulLineIndex).join("\n")
+
     out.push({
       path: normalizedPath,
-      startLine: start + 1,
+      startLine: chunkStart + 1,
       endLine: end,
       contentHash: hashContent(chunkContent),
       content: chunkContent,

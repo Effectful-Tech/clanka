@@ -43,6 +43,7 @@ const SubAgentModel = Codex.model("gpt-5.4", {
 
 const Search = SemanticSearch.layer({
   directory: process.cwd(),
+  database: ".lalph/shared/search.sqlite",
 }).pipe(
   Layer.provide(
     OpenAiEmbeddingModel.model("text-embedding-3-small", {

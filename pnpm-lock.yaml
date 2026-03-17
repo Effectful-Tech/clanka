@@ -4,11 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-patchedDependencies:
-  '@sqliteai/sqlite-vector':
-    hash: afdd8bde9b18bf3052efeb94d22a0565295e4490fe42016011b1f145371f66fd
-    path: patches/@sqliteai__sqlite-vector.patch
-
 importers:
 
   .:
@@ -19,9 +14,6 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.27.1
         version: 1.27.1(zod@3.25.76)
-      '@sqliteai/sqlite-vector':
-        specifier: ^0.9.93
-        version: 0.9.93(patch_hash=afdd8bde9b18bf3052efeb94d22a0565295e4490fe42016011b1f145371f66fd)
       '@vscode/ripgrep':
         specifier: ^1.17.1
         version: 1.17.1
@@ -86,6 +78,28 @@ importers:
       vitest:
         specifier: ^4.1.0
         version: 4.1.0(@types/node@25.5.0)(vite@7.3.1(@types/node@25.5.0)(yaml@2.8.2))
+    optionalDependencies:
+      '@sqliteai/sqlite-vector-darwin-arm64':
+        specifier: 0.9.93
+        version: 0.9.93
+      '@sqliteai/sqlite-vector-darwin-x86_64':
+        specifier: 0.9.93
+        version: 0.9.93
+      '@sqliteai/sqlite-vector-linux-arm64':
+        specifier: 0.9.93
+        version: 0.9.93
+      '@sqliteai/sqlite-vector-linux-arm64-musl':
+        specifier: 0.9.93
+        version: 0.9.93
+      '@sqliteai/sqlite-vector-linux-x86_64':
+        specifier: 0.9.93
+        version: 0.9.93
+      '@sqliteai/sqlite-vector-linux-x86_64-musl':
+        specifier: 0.9.93
+        version: 0.9.93
+      '@sqliteai/sqlite-vector-win32-x86_64':
+        specifier: 0.9.93
+        version: 0.9.93
 
 packages:
 
@@ -710,10 +724,6 @@ packages:
     engines: {node: '>=16.0.0'}
     cpu: [x64, ia32]
     os: [win32]
-
-  '@sqliteai/sqlite-vector@0.9.93':
-    resolution: {integrity: sha512-zKNq3c5kYaASBJB6bktxxKDRV36hh4niui3wzrt/S+QvYNY5xmaomyxYOstYbKDIPSPRBgOeu6ozktzqAr+c2Q==}
-    engines: {node: '>=16.0.0'}
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
@@ -2527,16 +2537,6 @@ snapshots:
 
   '@sqliteai/sqlite-vector-win32-x86_64@0.9.93':
     optional: true
-
-  '@sqliteai/sqlite-vector@0.9.93(patch_hash=afdd8bde9b18bf3052efeb94d22a0565295e4490fe42016011b1f145371f66fd)':
-    optionalDependencies:
-      '@sqliteai/sqlite-vector-darwin-arm64': 0.9.93
-      '@sqliteai/sqlite-vector-darwin-x86_64': 0.9.93
-      '@sqliteai/sqlite-vector-linux-arm64': 0.9.93
-      '@sqliteai/sqlite-vector-linux-arm64-musl': 0.9.93
-      '@sqliteai/sqlite-vector-linux-x86_64': 0.9.93
-      '@sqliteai/sqlite-vector-linux-x86_64-musl': 0.9.93
-      '@sqliteai/sqlite-vector-win32-x86_64': 0.9.93
 
   '@standard-schema/spec@1.1.0': {}
 

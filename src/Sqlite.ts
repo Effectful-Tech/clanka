@@ -5,10 +5,10 @@ import * as SqliteClient from "@effect/sql-sqlite-node/SqliteClient"
 import * as SqliteMigrator from "@effect/sql-sqlite-node/SqliteMigrator"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
-import * as Vector from "@sqliteai/sqlite-vector"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as FileSystem from "effect/FileSystem"
 import * as Path from "effect/Path"
+import { getExtensionPath } from "./internal/sqlite-vector.ts"
 
 /**
  * @since 1.0.0
@@ -39,7 +39,7 @@ export const SqliteLayer = (database: string) =>
       Layer.effectDiscard(
         Effect.gen(function* () {
           const client = yield* SqliteClient.SqliteClient
-          yield* client.loadExtension(Vector.getExtensionPath())
+          yield* client.loadExtension(getExtensionPath())
         }),
       ),
     ),

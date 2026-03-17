@@ -32,11 +32,19 @@
   "dependencies": {
     "@effect/sql-sqlite-node": "4.0.0-beta.34",
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "@sqliteai/sqlite-vector": "^0.9.93",
     "@vscode/ripgrep": "^1.17.1",
     "chalk": "^5.6.2",
     "glob": "^13.0.6",
     "turndown": "^7.2.2"
+  },
+  "optionalDependencies": {
+    "@sqliteai/sqlite-vector-darwin-arm64": "0.9.93",
+    "@sqliteai/sqlite-vector-darwin-x86_64": "0.9.93",
+    "@sqliteai/sqlite-vector-linux-arm64": "0.9.93",
+    "@sqliteai/sqlite-vector-linux-arm64-musl": "0.9.93",
+    "@sqliteai/sqlite-vector-linux-x86_64": "0.9.93",
+    "@sqliteai/sqlite-vector-linux-x86_64-musl": "0.9.93",
+    "@sqliteai/sqlite-vector-win32-x86_64": "0.9.93"
   },
   "peerDependencies": {
     "@effect/ai-openai": "4.0.0-beta.34",
@@ -76,9 +84,6 @@
       "@vscode/ripgrep",
       "better-sqlite3",
       "esbuild"
-    ],
-    "patchedDependencies": {
-      "@sqliteai/sqlite-vector": "patches/@sqliteai__sqlite-vector.patch"
-    }
+    ]
   }
 }

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.1.19
+
+### Patch Changes
+
+- [`075d63a`](https://github.com/Effectful-Tech/clanka/commit/075d63af70bc02ef6cd1f3d73245f3b95771f5d8) Thanks [@tim-smart](https://github.com/tim-smart)! - use rg --header
+
 ## 0.1.18
 
 ### Patch Changes

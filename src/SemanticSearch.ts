@@ -30,7 +30,7 @@ export const layer = Layer.effect(
     const pathService = yield* Path.Path
     const resolver = embeddings.resolver.pipe(
       RequestResolver.setDelay(50),
-      RequestResolver.batchN(500),
+      RequestResolver.batchN(300),
     )
 
     const index = Effect.gen(function* () {

@@ -295,14 +295,18 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           recursive: true,
         })
         yield* fs.writeFileString(path, options.content)
-        yield* SemanticSearch.maybeReindex
+        yield* SemanticSearch.maybeUpdateFile(pathService.relative(cwd, path))
       }, Effect.orDie),
       removeFile: Effect.fn("AgentTools.removeFile")(function* (path) {
         yield* Effect.logInfo(`Calling "removeFile"`).pipe(
           Effect.annotateLogs({ path }),
         )
         const cwd = yield* CurrentDirectory
-        return yield* fs.remove(pathService.resolve(cwd, path), { force: true })
+        const absolutePath = pathService.resolve(cwd, path)
+        yield* fs.remove(absolutePath, { force: true })
+        yield* SemanticSearch.maybeRemoveFile(
+          pathService.relative(cwd, absolutePath),
+        )
       }, Effect.orDie),
       renameFile: Effect.fn("AgentTools.renameFile")(function* (options) {
         yield* Effect.logInfo(`Calling "renameFile"`).pipe(
@@ -314,7 +318,9 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         yield* fs.makeDirectory(pathService.dirname(to), {
           recursive: true,
         })
-        return yield* fs.rename(from, to)
+        yield* fs.rename(from, to)
+        yield* SemanticSearch.maybeRemoveFile(pathService.relative(cwd, from))
+        yield* SemanticSearch.maybeUpdateFile(pathService.relative(cwd, to))
       }, Effect.orDie),
       mkdir: Effect.fn("AgentTools.mkdir")(function* (path) {
         yield* Effect.logInfo(`Calling "mkdir"`).pipe(
@@ -458,8 +464,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
             }
         >
         const out = [] as Array<string>
-        const rel = (path: string) =>
-          pathService.relative(cwd, path).replaceAll("\\", "/")
+        const rel = (path: string) => pathService.relative(cwd, path)
         const load = Effect.fn("AgentTools.applyPatch.load")(function* (
           path: string,
           reason: "delete" | "update",
@@ -545,6 +550,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
                 recursive: true,
               })
               yield* fs.writeFileString(step.path, step.next)
+              yield* SemanticSearch.maybeUpdateFile(rel(step.path))
               break
             }
             case "move": {
@@ -553,16 +559,17 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
               })
               yield* fs.writeFileString(step.movePath, step.next)
               yield* fs.remove(step.path)
+              yield* SemanticSearch.maybeRemoveFile(rel(step.path))
+              yield* SemanticSearch.maybeUpdateFile(rel(step.movePath))
               break
             }
             case "delete": {
               yield* fs.remove(step.path)
+              yield* SemanticSearch.maybeRemoveFile(rel(step.path))
               break
             }
           }
         }
-
-        yield* SemanticSearch.maybeReindex
 
         return `Success. Updated the following files:\n${out.join("\n")}`
       }, Effect.orDie),

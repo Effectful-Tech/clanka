@@ -36,6 +36,18 @@ export class CodeChunker extends ServiceMap.Service<
       readonly root: string
       readonly maxFileSize?: string | undefined
     }): Effect.Effect<ReadonlyArray<string>>
+    chunkFile(options: {
+      readonly root: string
+      readonly path: string
+      readonly chunkSize: number
+      readonly chunkOverlap: number
+    }): Effect.Effect<ReadonlyArray<CodeChunk>>
+    chunkFiles(options: {
+      readonly root: string
+      readonly paths: ReadonlyArray<string>
+      readonly chunkSize: number
+      readonly chunkOverlap: number
+    }): Stream.Stream<CodeChunk>
     chunkCodebase(options: {
       readonly root: string
       readonly maxFileSize?: string | undefined
@@ -346,6 +358,46 @@ export const layer: Layer.Layer<
       )
     })
 
+    const chunkFile: CodeChunker["Service"]["chunkFile"] = Effect.fn(
+      "CodeChunker.chunkFile",
+    )(function* (options): Effect.fn.Return<ReadonlyArray<CodeChunk>> {
+      const root = pathService.resolve(options.root)
+      const absolutePath = pathService.resolve(root, options.path)
+      const path = normalizePath(pathService.relative(root, absolutePath))
+
+      if (
+        path.length === 0 ||
+        path === ".." ||
+        path.startsWith("../") ||
+        !isMeaningfulFile(path)
+      ) {
+        return []
+      }
+
+      return yield* pipe(
+        fs.readFileString(absolutePath),
+        Effect.map((content) => chunkFileContent(path, content, options)),
+        Effect.catch(() => Effect.succeed([])),
+      )
+    })
+
+    const chunkFiles: CodeChunker["Service"]["chunkFiles"] = (options) =>
+      Stream.fromArray(options.paths).pipe(
+        Stream.flatMap(
+          (path) =>
+            pipe(
+              chunkFile({
+                root: options.root,
+                path,
+                chunkSize: options.chunkSize,
+                chunkOverlap: options.chunkOverlap,
+              }),
+              Stream.fromArrayEffect,
+            ),
+          { concurrency: 5 },
+        ),
+      )
+
     const chunkCodebase: CodeChunker["Service"]["chunkCodebase"] =
       Effect.fnUntraced(function* (options) {
         const root = pathService.resolve(options.root)
@@ -356,26 +408,18 @@ export const layer: Layer.Layer<
             : { maxFileSize: options.maxFileSize }),
         })
 
-        return Stream.fromArray(files).pipe(
-          Stream.flatMap(
-            (path) => {
-              const absolutePath = pathService.resolve(root, path)
-              return pipe(
-                fs.readFileString(absolutePath),
-                Effect.map((content) =>
-                  chunkFileContent(path, content, options),
-                ),
-                Effect.catch(() => Effect.succeed([])),
-                Stream.fromArrayEffect,
-              )
-            },
-            { concurrency: 5 },
-          ),
-        )
+        return chunkFiles({
+          root,
+          paths: files,
+          chunkSize: options.chunkSize,
+          chunkOverlap: options.chunkOverlap,
+        })
       }, Stream.unwrap)
 
     return CodeChunker.of({
       listFiles,
+      chunkFile,
+      chunkFiles,
       chunkCodebase,
     })
   }),

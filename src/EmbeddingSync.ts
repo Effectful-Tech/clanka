@@ -13,6 +13,7 @@ import { OpenAiEmbeddingModel } from "@effect/ai-openai"
 import * as RequestResolver from "effect/RequestResolver"
 import * as Config from "effect/Config"
 import * as Option from "effect/Option"
+import * as Path from "effect/Path"
 
 const OpenAiClientLayer = OpenAiClient.layerConfig({
   apiKey: Config.redacted("OPENAI_API_KEY"),
@@ -26,6 +27,7 @@ Effect.gen(function* () {
   const chunker = yield* CodeChunker.CodeChunker
   const repo = yield* ChunkRepo.ChunkRepo
   const embeddings = yield* EmbeddingModel.EmbeddingModel
+  const pathService = yield* Path.Path
   const resolver = embeddings.resolver.pipe(
     RequestResolver.setDelay(50),
     RequestResolver.batchN(100),
@@ -47,9 +49,12 @@ Effect.gen(function* () {
             yield* repo.setSyncId(id.value, syncId)
             return
           }
+          const module = pathService.basename(chunk.path)
+          const directory = pathService.dirname(chunk.path)
           const result = yield* Effect.request(
             new EmbeddingModel.EmbeddingRequest({
-              input: `File: ${chunk.path}
+              input: `Module: ${module}
+Directory: ${directory}
 Lines: ${chunk.startLine}-${chunk.endLine}
 
 ${chunk.content}`,

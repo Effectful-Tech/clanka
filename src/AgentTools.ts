@@ -315,7 +315,12 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
       rg: Effect.fn("AgentTools.rg")(function* (options) {
         yield* Effect.logInfo(`Calling "rg"`).pipe(Effect.annotateLogs(options))
         const cwd = yield* CurrentDirectory
-        const args = ["--max-filesize", "1M", "--heading", "--line-number"]
+        const args = [
+          "--max-filesize=1M",
+          "--heading",
+          "--line-number",
+          "--max-columns=300",
+        ]
         if (options.filesOnly) {
           args.push("--files-with-matches")
         }
@@ -326,16 +331,10 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
           }
         }
         args.push(options.pattern)
-        let stream = pipe(
-          spawner.streamLines(
-            ChildProcess.make("rg", args, {
-              cwd,
-              stdin: "ignore",
-            }),
-          ),
-          Stream.map((line) => {
-            if (line.length <= 500) return line
-            return line.slice(0, 500) + "...[truncated]"
+        let stream = spawner.streamLines(
+          ChildProcess.make("rg", args, {
+            cwd,
+            stdin: "ignore",
           }),
         )
         stream = Stream.take(stream, options.maxLines ?? 500)

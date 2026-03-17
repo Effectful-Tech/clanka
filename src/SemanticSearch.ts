@@ -10,7 +10,7 @@ import { pipe } from "effect/Function"
 import * as EmbeddingModel from "effect/unstable/ai/EmbeddingModel"
 import * as RequestResolver from "effect/RequestResolver"
 import * as Option from "effect/Option"
-import type * as Path from "effect/Path"
+import * as Path from "effect/Path"
 import * as ServiceMap from "effect/ServiceMap"
 import * as Fiber from "effect/Fiber"
 import * as Duration from "effect/Duration"
@@ -23,6 +23,13 @@ import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessS
 import type * as FileSystem from "effect/FileSystem"
 import * as Console from "effect/Console"
 
+const normalizePath = (path: string) => path.replace(/\\/g, "/")
+
+const chunkConfig = {
+  chunkSize: 20,
+  chunkOverlap: 5,
+} as const
+
 /**
  * @since 1.0.0
  * @category Services
@@ -34,7 +41,8 @@ export class SemanticSearch extends ServiceMap.Service<
       readonly query: string
       readonly limit: number
     }): Effect.Effect<string>
-    readonly reindex: Effect.Effect<void>
+    updateFile(path: string): Effect.Effect<void>
+    removeFile(path: string): Effect.Effect<void>
   }
 >()("clanka/SemanticSearch/SemanticSearch") {}
 
@@ -65,14 +73,82 @@ export const layer = (options: {
       const chunker = yield* CodeChunker.CodeChunker
       const repo = yield* ChunkRepo.ChunkRepo
       const embeddings = yield* EmbeddingModel.EmbeddingModel
+      const pathService = yield* Path.Path
+      const root = pathService.resolve(options.directory)
       const resolver = embeddings.resolver.pipe(
         RequestResolver.setDelay(
           options.embeddingBatchSize ?? Duration.millis(50),
         ),
         RequestResolver.batchN(options.embeddingBatchSize ?? 500),
       )
+      const concurrency = options.concurrency ?? 2000
       const indexHandle = yield* FiberHandle.make()
       const console = yield* Console.Console
+
+      const resolveIndexedPath = (path: string): Option.Option<string> => {
+        const absolutePath = pathService.resolve(root, path)
+        const relativePath = normalizePath(
+          pathService.relative(root, absolutePath),
+        )
+        if (
+          relativePath.length === 0 ||
+          relativePath === ".." ||
+          relativePath.startsWith("../")
+        ) {
+          return Option.none()
+        }
+        return Option.some(relativePath)
+      }
+
+      const processChunk = Effect.fnUntraced(
+        function* (options: {
+          readonly chunk: CodeChunker.CodeChunk
+          readonly syncId: ChunkRepo.SyncId
+          readonly checkExisting: boolean
+        }) {
+          if (options.checkExisting) {
+            const id = yield* repo.exists({
+              path: options.chunk.path,
+              startLine: options.chunk.startLine,
+              hash: options.chunk.contentHash,
+            })
+            if (Option.isSome(id)) {
+              yield* repo.setSyncId(id.value, options.syncId)
+              return
+            }
+          }
+
+          const result = yield* Effect.request(
+            new EmbeddingModel.EmbeddingRequest({
+              input: `File: ${options.chunk.path}
+Lines: ${options.chunk.startLine}-${options.chunk.endLine}
+
+${options.chunk.content}`,
+            }),
+            resolver,
+          )
+          const vector = new Float32Array(result.vector)
+          yield* repo.insert(
+            ChunkRepo.Chunk.insert.makeUnsafe({
+              path: options.chunk.path,
+              startLine: options.chunk.startLine,
+              endLine: options.chunk.endLine,
+              hash: options.chunk.contentHash,
+              content: options.chunk.content,
+              vector,
+              syncId: options.syncId,
+            }),
+          )
+        },
+        Effect.ignore({
+          log: "Warn",
+          message: "Failed to process chunk for embedding",
+        }),
+        (effect, options) =>
+          Effect.annotateLogs(effect, {
+            chunk: `${options.chunk.path}/${options.chunk.startLine}`,
+          }),
+      )
 
       const index = Effect.gen(function* () {
         const syncId = ChunkRepo.SyncId.makeUnsafe(crypto.randomUUID())
@@ -80,57 +156,22 @@ export const layer = (options: {
 
         yield* pipe(
           chunker.chunkCodebase({
-            root: options.directory,
-            chunkSize: 20,
-            chunkOverlap: 5,
+            root,
+            ...chunkConfig,
           }),
           Stream.tap(
-            Effect.fnUntraced(
-              function* (chunk) {
-                const id = yield* repo.exists({
-                  path: chunk.path,
-                  startLine: chunk.startLine,
-                  hash: chunk.contentHash,
-                })
-                if (Option.isSome(id)) {
-                  yield* repo.setSyncId(id.value, syncId)
-                  return
-                }
-                const result = yield* Effect.request(
-                  new EmbeddingModel.EmbeddingRequest({
-                    input: `File: ${chunk.path}
-Lines: ${chunk.startLine}-${chunk.endLine}
-
-${chunk.content}`,
-                  }),
-                  resolver,
-                )
-                const vector = new Float32Array(result.vector)
-                yield* repo.insert(
-                  ChunkRepo.Chunk.insert.makeUnsafe({
-                    path: chunk.path,
-                    startLine: chunk.startLine,
-                    endLine: chunk.endLine,
-                    hash: chunk.contentHash,
-                    content: chunk.content,
-                    vector,
-                    syncId,
-                  }),
-                )
-              },
-              Effect.ignore({
-                log: "Warn",
-                message: "Failed to process chunk for embedding",
+            (chunk) =>
+              processChunk({
+                chunk,
+                syncId,
+                checkExisting: true,
               }),
-              (effect, chunk) =>
-                Effect.annotateLogs(effect, {
-                  chunk: `${chunk.path}/${chunk.startLine}`,
-                }),
-            ),
-            { concurrency: options.concurrency ?? 2000 },
+            { concurrency },
           ),
           Stream.runDrain,
         )
+
+        yield* repo.deleteForSyncId(syncId)
 
         yield* Effect.logInfo("Finished SemanticSearch index")
       }).pipe(
@@ -161,7 +202,48 @@ ${chunk.content}`,
           })
           return results.map((r) => r.format()).join("\n\n")
         }, Effect.orDie),
-        reindex: Effect.asVoid(runIndex),
+        updateFile: Effect.fn("SemanticSearch.updateFile")(function* (path) {
+          yield* Fiber.join(initialIndex)
+          const indexedPath = resolveIndexedPath(path)
+          if (Option.isNone(indexedPath)) {
+            return
+          }
+
+          yield* repo.deleteByPath(indexedPath.value)
+
+          const chunks = yield* chunker.chunkFile({
+            root,
+            path: indexedPath.value,
+            ...chunkConfig,
+          })
+          if (chunks.length === 0) {
+            return
+          }
+
+          const syncId = ChunkRepo.SyncId.makeUnsafe(crypto.randomUUID())
+
+          yield* pipe(
+            Stream.fromArray(chunks),
+            Stream.tap(
+              (chunk) =>
+                processChunk({
+                  chunk,
+                  syncId,
+                  checkExisting: false,
+                }),
+              { concurrency },
+            ),
+            Stream.runDrain,
+          )
+        }, Effect.orDie),
+        removeFile: Effect.fn("SemanticSearch.removeFile")(function* (path) {
+          yield* Fiber.join(initialIndex)
+          const indexedPath = resolveIndexedPath(path)
+          if (Option.isNone(indexedPath)) {
+            return
+          }
+          yield* repo.deleteByPath(indexedPath.value)
+        }, Effect.orDie),
       })
     }),
   ).pipe(
@@ -177,13 +259,26 @@ ${chunk.content}`,
  * @since 1.0.0
  * @category Utils
  */
-export const maybeReindex: Effect.Effect<void> = Effect.serviceOption(
-  SemanticSearch,
-).pipe(
-  Effect.flatMap(
-    Option.match({
-      onNone: () => Effect.void,
-      onSome: (service) => service.reindex,
-    }),
-  ),
-)
+export const maybeUpdateFile = (path: string): Effect.Effect<void> =>
+  Effect.serviceOption(SemanticSearch).pipe(
+    Effect.flatMap(
+      Option.match({
+        onNone: () => Effect.void,
+        onSome: (service) => service.updateFile(path),
+      }),
+    ),
+  )
+
+/**
+ * @since 1.0.0
+ * @category Utils
+ */
+export const maybeRemoveFile = (path: string): Effect.Effect<void> =>
+  Effect.serviceOption(SemanticSearch).pipe(
+    Effect.flatMap(
+      Option.match({
+        onNone: () => Effect.void,
+        onSome: (service) => service.removeFile(path),
+      }),
+    ),
+  )

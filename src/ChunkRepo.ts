@@ -126,6 +126,7 @@ export class ChunkRepo extends ServiceMap.Service<
       chunkId: ChunkId,
       syncId: SyncId,
     ): Effect.Effect<void, ChunkRepoError>
+    deleteByPath(path: string): Effect.Effect<void, ChunkRepoError>
     deleteForSyncId(syncId: SyncId): Effect.Effect<void, ChunkRepoError>
   }
 >()("clanka/ChunkRepo") {}
@@ -221,6 +222,10 @@ export const layer = Layer.effect(
       quantize: maybeQuantize,
       setSyncId: (chunkId, syncId) =>
         sql`update chunks set syncId = ${syncId} where id = ${chunkId}`.pipe(
+          Effect.mapError((reason) => new ChunkRepoError({ reason })),
+        ),
+      deleteByPath: (path) =>
+        sql`delete from chunks where path = ${path}`.pipe(
           Effect.mapError((reason) => new ChunkRepoError({ reason })),
         ),
       deleteForSyncId: (syncId) =>

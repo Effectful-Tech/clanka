@@ -41,8 +41,14 @@ const SubAgentModel = Codex.model("gpt-5.4", {
   },
 }).pipe(Layer.provide(ModelServices))
 
-const Search = SemanticSearch.layer.pipe(
-  Layer.provide(OpenAiEmbeddingModel.model("text-embedding-3-small")),
+const Search = SemanticSearch.layer({
+  directory: process.cwd(),
+}).pipe(
+  Layer.provide(
+    OpenAiEmbeddingModel.model("text-embedding-3-small", {
+      dimensions: 1536,
+    }),
+  ),
   Layer.provide(
     OpenAiClient.layerConfig({
       apiKey: Config.redacted("OPENAI_API_KEY"),

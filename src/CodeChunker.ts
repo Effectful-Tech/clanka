@@ -27,33 +27,21 @@ export interface CodeChunk {
 
 /**
  * @since 1.0.0
- * @category Models
- */
-export type ListCodebaseFilesOptions = {
-  readonly root?: string
-  readonly maxFileSize?: string
-}
-
-/**
- * @since 1.0.0
- * @category Models
- */
-export type ChunkCodebaseOptions = ListCodebaseFilesOptions & {
-  readonly chunkSize?: number
-  readonly chunkOverlap?: number
-}
-
-/**
- * @since 1.0.0
  * @category Services
  */
 export class CodeChunker extends ServiceMap.Service<
   CodeChunker,
   {
-    listFiles(
-      options?: ListCodebaseFilesOptions,
-    ): Effect.Effect<ReadonlyArray<string>>
-    chunkCodebase(options?: ChunkCodebaseOptions): Stream.Stream<CodeChunk>
+    listFiles(options?: {
+      readonly root?: string | undefined
+      readonly maxFileSize?: string | undefined
+    }): Effect.Effect<ReadonlyArray<string>>
+    chunkCodebase(options?: {
+      readonly root?: string | undefined
+      readonly maxFileSize?: string | undefined
+      readonly chunkSize?: number | undefined
+      readonly chunkOverlap?: number | undefined
+    }): Stream.Stream<CodeChunk>
   }
 >()("clanka/CodeChunker") {}
 
@@ -232,7 +220,10 @@ export const isMeaningfulFile = (path: string): boolean => {
   )
 }
 
-const resolveChunkSettings = (options?: ChunkCodebaseOptions) => {
+const resolveChunkSettings = (options?: {
+  readonly chunkSize?: number | undefined
+  readonly chunkOverlap?: number | undefined
+}) => {
   const chunkSize = Math.max(1, Math.floor(options?.chunkSize ?? 50))
   const chunkOverlap = Math.max(
     0,
@@ -252,7 +243,10 @@ const resolveChunkSettings = (options?: ChunkCodebaseOptions) => {
 export const chunkFileContent = (
   path: string,
   content: string,
-  options?: Pick<ChunkCodebaseOptions, "chunkSize" | "chunkOverlap">,
+  options?: {
+    readonly chunkSize?: number | undefined
+    readonly chunkOverlap?: number | undefined
+  },
 ): ReadonlyArray<CodeChunk> => {
   if (content.trim().length === 0 || isProbablyMinified(content)) {
     return []
@@ -316,9 +310,9 @@ export const layer: Layer.Layer<
     const fs = yield* FileSystem.FileSystem
     const pathService = yield* Path.Path
 
-    const listFiles = Effect.fn("CodeChunker.listFiles")(function* (
-      options: ListCodebaseFilesOptions = {},
-    ): Effect.fn.Return<ReadonlyArray<string>> {
+    const listFiles: CodeChunker["Service"]["listFiles"] = Effect.fn(
+      "CodeChunker.listFiles",
+    )(function* (options = {}): Effect.fn.Return<ReadonlyArray<string>> {
       const root = pathService.resolve(options.root ?? process.cwd())
       const maxFileSize = options.maxFileSize ?? "1M"
 
@@ -352,32 +346,33 @@ export const layer: Layer.Layer<
       )
     })
 
-    const chunkCodebase = Effect.fnUntraced(function* (
-      options: ChunkCodebaseOptions = {},
-    ) {
-      const root = pathService.resolve(options.root ?? process.cwd())
-      const files = yield* listFiles({
-        root,
-        ...(options.maxFileSize === undefined
-          ? {}
-          : { maxFileSize: options.maxFileSize }),
-      })
+    const chunkCodebase: CodeChunker["Service"]["chunkCodebase"] =
+      Effect.fnUntraced(function* (options = {}) {
+        const root = pathService.resolve(options.root ?? process.cwd())
+        const files = yield* listFiles({
+          root,
+          ...(options.maxFileSize === undefined
+            ? {}
+            : { maxFileSize: options.maxFileSize }),
+        })
 
-      return Stream.fromArray(files).pipe(
-        Stream.flatMap(
-          (path) => {
-            const absolutePath = pathService.resolve(root, path)
-            return pipe(
-              fs.readFileString(absolutePath),
-              Effect.map((content) => chunkFileContent(path, content, options)),
-              Effect.catch(() => Effect.succeed([])),
-              Stream.fromArrayEffect,
-            )
-          },
-          { concurrency: 5 },
-        ),
-      )
-    }, Stream.unwrap)
+        return Stream.fromArray(files).pipe(
+          Stream.flatMap(
+            (path) => {
+              const absolutePath = pathService.resolve(root, path)
+              return pipe(
+                fs.readFileString(absolutePath),
+                Effect.map((content) =>
+                  chunkFileContent(path, content, options),
+                ),
+                Effect.catch(() => Effect.succeed([])),
+                Stream.fromArrayEffect,
+              )
+            },
+            { concurrency: 5 },
+          ),
+        )
+      }, Stream.unwrap)
 
     return CodeChunker.of({
       listFiles,

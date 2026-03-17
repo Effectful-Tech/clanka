@@ -8,17 +8,19 @@ import * as Layer from "effect/Layer"
 import * as Vector from "@sqliteai/sqlite-vector"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as FileSystem from "effect/FileSystem"
+import * as Path from "effect/Path"
 
 /**
  * @since 1.0.0
  * @category Layers
  */
-export const SqliteLayer = SqliteMigrator.layer({
-  loader: SqliteMigrator.fromRecord({
-    "0001_create_chunks": Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient
+export const SqliteLayer = (database: string) =>
+  SqliteMigrator.layer({
+    loader: SqliteMigrator.fromRecord({
+      "0001_create_chunks": Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient
 
-      yield* sql`CREATE TABLE IF NOT EXISTS chunks (
+        yield* sql`CREATE TABLE IF NOT EXISTS chunks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         path TEXT NOT NULL,
         startLine INTEGER NOT NULL,
@@ -29,29 +31,32 @@ export const SqliteLayer = SqliteMigrator.layer({
         syncId TEXT NOT NULL
       )`
 
-      yield* sql`CREATE INDEX IF NOT EXISTS idx_chunks_path_start_end ON chunks (path, startLine, hash)`
+        yield* sql`CREATE INDEX IF NOT EXISTS idx_chunks_path_start_end ON chunks (path, startLine, hash)`
+      }),
     }),
-  }),
-}).pipe(
-  Layer.provide(
-    Layer.effectDiscard(
-      Effect.gen(function* () {
-        const client = yield* SqliteClient.SqliteClient
-        yield* client.loadExtension(Vector.getExtensionPath())
+  }).pipe(
+    Layer.provide(
+      Layer.effectDiscard(
+        Effect.gen(function* () {
+          const client = yield* SqliteClient.SqliteClient
+          yield* client.loadExtension(Vector.getExtensionPath())
+        }),
+      ),
+    ),
+    Layer.provideMerge(
+      SqliteClient.layer({
+        filename: database,
       }),
     ),
-  ),
-  Layer.provideMerge(
-    SqliteClient.layer({
-      filename: ".clanka/db.sqlite",
-    }),
-  ),
-  Layer.provide(
-    Layer.effectDiscard(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem
-        yield* fs.makeDirectory(".clanka", { recursive: true })
-      }),
+    Layer.provide(
+      Layer.effectDiscard(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const path = yield* Path.Path
+          const directory = path.dirname(database)
+          if (directory !== ".") return
+          yield* fs.makeDirectory(directory, { recursive: true })
+        }),
+      ),
     ),
-  ),
-)
+  )

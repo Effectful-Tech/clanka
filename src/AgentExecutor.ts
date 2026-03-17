@@ -7,6 +7,7 @@ import { Writable } from "node:stream"
 import {
   AgentToolHandlers,
   AgentTools,
+  AgentToolsWithSearch,
   CurrentDirectory,
   SubagentExecutor,
   TaskCompleter,
@@ -16,7 +17,7 @@ import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessS
 import type * as HttpClient from "effect/unstable/http/HttpClient"
 import * as ServiceMap from "effect/ServiceMap"
 import * as Effect from "effect/Effect"
-import type * as Option from "effect/Option"
+import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
 import * as FileSystem from "effect/FileSystem"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
@@ -28,7 +29,7 @@ import * as Scope from "effect/Scope"
 import * as Fiber from "effect/Fiber"
 import * as Console from "effect/Console"
 import * as Exit from "effect/Exit"
-import { pipe } from "effect/Function"
+import { pipe, flow, identity } from "effect/Function"
 import * as RpcClient from "effect/unstable/rpc/RpcClient"
 import * as Layer from "effect/Layer"
 import * as RpcServer from "effect/unstable/rpc/RpcServer"
@@ -36,7 +37,7 @@ import * as Schema from "effect/Schema"
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup"
 import * as Rpc from "effect/unstable/rpc/Rpc"
 import * as Result from "effect/Result"
-import type { SemanticSearch } from "./SemanticSearch.ts"
+import { SemanticSearch } from "./SemanticSearch.ts"
 
 /**
  * @since 1.0.0
@@ -45,8 +46,7 @@ import type { SemanticSearch } from "./SemanticSearch.ts"
 export class AgentExecutor extends ServiceMap.Service<
   AgentExecutor,
   {
-    readonly toolsDts: Effect.Effect<string>
-    readonly agentsMd: Effect.Effect<Option.Option<string>>
+    readonly capabilities: Effect.Effect<Capabilities>
     execute(options: {
       readonly script: string
       readonly onTaskComplete: (summary: string) => Effect.Effect<void>
@@ -54,6 +54,16 @@ export class AgentExecutor extends ServiceMap.Service<
     }): Stream.Stream<string>
   }
 >()("clanka/AgentExecutor") {}
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
+  toolsDts: Schema.String,
+  agentsMd: Schema.Option(Schema.String),
+  supportsSearch: Schema.Boolean,
+}) {}
 
 /**
  * @since 1.0.0
@@ -70,7 +80,7 @@ export const makeLocal = Effect.fnUntraced(function* <
   | ToolkitRenderer
   | FileSystem.FileSystem
   | Path.Path
-  | Tool.HandlersFor<typeof AgentTools.tools>
+  | Tool.HandlersFor<typeof AgentToolsWithSearch.tools>
   | Exclude<
       Toolkit extends Toolkit.Toolkit<infer T>
         ? Tool.HandlersFor<T> | Tool.HandlerServices<T[keyof T]>
@@ -81,12 +91,14 @@ export const makeLocal = Effect.fnUntraced(function* <
   const fs = yield* FileSystem.FileSystem
   const pathService = yield* Path.Path
   const renderer = yield* ToolkitRenderer
+  const search = yield* Effect.serviceOption(SemanticSearch)
+  const hasSearch = Option.isSome(search)
   const AllTools = Toolkit.merge(
-    AgentTools,
+    hasSearch ? AgentToolsWithSearch : AgentTools,
     (options.tools as unknown as Toolkit.Toolkit<{}>) ?? Toolkit.empty,
   )
   const tools = yield* AllTools
-  const toolsDts = Effect.succeed(renderer.render(AllTools))
+  const toolsDts = renderer.render(AllTools)
 
   const services = yield* Effect.services()
 
@@ -109,13 +121,17 @@ export const makeLocal = Effect.fnUntraced(function* <
     const handlerScope = Scope.makeUnsafe("parallel")
     const trackFiber = Fiber.runIn(handlerScope)
 
-    const taskServices = ServiceMap.make(
-      TaskCompleter,
-      opts.onTaskComplete,
-    ).pipe(
-      ServiceMap.add(CurrentDirectory, options.directory),
-      ServiceMap.add(SubagentExecutor, opts.onSubagent),
-      ServiceMap.add(Console.Console, console),
+    const taskServices = ServiceMap.mutate(
+      ServiceMap.empty(),
+      flow(
+        ServiceMap.add(TaskCompleter, opts.onTaskComplete),
+        ServiceMap.add(CurrentDirectory, options.directory),
+        ServiceMap.add(SubagentExecutor, opts.onSubagent),
+        ServiceMap.add(Console.Console, console),
+        Option.isSome(search)
+          ? ServiceMap.add(SemanticSearch, search.value)
+          : identity,
+      ),
     )
 
     yield* Effect.gen(function* () {
@@ -175,11 +191,16 @@ ${opts.script}
   }, Stream.unwrap)
 
   return AgentExecutor.of({
-    toolsDts,
-    agentsMd: pipe(
-      fs.readFileString(pathService.join(options.directory, "AGENTS.md")),
-      Effect.option,
-    ),
+    capabilities: Effect.gen(function* () {
+      const agentsMd = yield* Effect.option(
+        fs.readFileString(pathService.join(options.directory, "AGENTS.md")),
+      )
+      return new Capabilities({
+        toolsDts,
+        agentsMd,
+        supportsSearch: hasSearch,
+      })
+    }),
     execute,
   })
 })
@@ -194,8 +215,7 @@ export const makeRpc = Effect.gen(function* () {
   })
 
   return AgentExecutor.of({
-    toolsDts: Effect.orDie(client.toolsDts()),
-    agentsMd: Effect.orDie(client.agentsMd()),
+    capabilities: Effect.orDie(client.capabilities()),
     execute: (opts) =>
       Scope.Scope.useSync((scope) =>
         client.execute({ script: opts.script }).pipe(
@@ -248,7 +268,6 @@ export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
         : never,
       CurrentDirectory | SubagentExecutor | TaskCompleter
     >
-  | SemanticSearch
 > =>
   Layer.effect(AgentExecutor, makeLocal(options)).pipe(
     Layer.provide([AgentToolHandlers, ToolkitRenderer.layer]),
@@ -289,7 +308,6 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
         : never,
       CurrentDirectory | SubagentExecutor | TaskCompleter
     >
-  | SemanticSearch
 > =>
   RpcServer.layer(Rpcs, {
     spanPrefix: "AgentExecutorServer",
@@ -305,8 +323,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
           >()
 
           return Rpcs.of({
-            agentsMd: () => local.agentsMd,
-            toolsDts: () => local.toolsDts,
+            capabilities: () => local.capabilities,
             subagentOutput: ({ id, output }) => {
               const resume = subagentResumes.get(id)
               if (resume) {
@@ -382,11 +399,8 @@ export const ExecuteOutput = Schema.TaggedUnion({
  * @category Rpcs
  */
 export class Rpcs extends RpcGroup.make(
-  Rpc.make("toolsDts", {
-    success: Schema.String,
-  }),
-  Rpc.make("agentsMd", {
-    success: Schema.Option(Schema.String),
+  Rpc.make("capabilities", {
+    success: Capabilities,
   }),
   Rpc.make("subagentOutput", {
     payload: {

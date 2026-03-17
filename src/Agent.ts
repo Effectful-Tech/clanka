@@ -32,7 +32,6 @@ import * as Tool from "effect/unstable/ai/Tool"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
 import * as Semaphore from "effect/Semaphore"
 import * as Schedule from "effect/Schedule"
-import type { SemanticSearch } from "./SemanticSearch.ts"
 
 /**
  * @since 1.0.0
@@ -113,18 +112,16 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
   const singleTool = yield* SingleTools.asEffect().pipe(
     Effect.provide(SingleToolHandlers),
   )
-  const toolsDts = yield* executor.toolsDts
+  const capabilities = yield* executor.capabilities
 
   const pendingMessages = new Set<{
     readonly message: string
     readonly resume: (effect: Effect.Effect<void>) => void
   }>()
 
-  const agentsMd = yield* pipe(
-    executor.agentsMd,
-    Effect.map(
-      Option.map(
-        (content) => `# AGENTS.md
+  const agentsMd = Option.map(
+    capabilities.agentsMd,
+    (content) => `# AGENTS.md
 
 The following instructions are from ./AGENTS.md in the current directory.
 You do not need to read this file again.
@@ -134,8 +131,6 @@ You do not need to read this file again.
 <!-- AGENTS.md start -->
 ${content}
 <!-- AGENTS.md end -->`,
-      ),
-    ),
   )
 
   let agentCounter = 0
@@ -179,7 +174,7 @@ ${content}
     const generateSystem =
       typeof opts.system === "function" ? opts.system : defaultSystem
 
-    const toolInstructions = generateSystemTools(toolsDts)
+    const toolInstructions = generateSystemTools(capabilities)
     let system = generateSystem({
       toolInstructions,
       agentsMd: Option.getOrElse(agentsMd, () => ""),
@@ -478,13 +473,17 @@ ${options.agentsMd}
 `
 
 const generateSystemTools = (
-  toolsDts: string,
+  capabilities: AgentExecutor.Capabilities,
 ) => `**YOU ONLY HAVE ACCESS TO ONE TOOL** "execute", to run javascript code to do your work.
 
 - Use \`console.log\` to print any output you need.
 - Top level await is supported.
-- AVOID passing scripts into the "bash" function, and instead write javascript.
-- AVOID using the "rg" function in favour of "search", unless you have something specific to find
+- AVOID passing scripts into the "bash" function, and instead write javascript.${
+  capabilities.supportsSearch
+    ? `
+- AVOID using the "rg" function in favour of "search", unless you have something specific to find`
+    : ""
+}
 - Do as much work as possible in a single script, using \`Promise.all\` to run multiple functions in parallel.
 - Variables **are not shared** between executions, so you must include all necessary code in each script you execute.
 - Use the "delegate" function to assign complex jobs to another software engineer.
@@ -496,7 +495,7 @@ Make sure every detail of the task is done before calling "taskComplete".
 You have the following functions available to you:
 
 \`\`\`ts
-${toolsDts}
+${capabilities.toolsDts}
 
 /** The global Fetch API available for making HTTP requests. */
 declare const fetch: typeof globalThis.fetch
@@ -575,7 +574,6 @@ export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
         : never,
       CurrentDirectory | SubagentExecutor | TaskCompleter
     >
-  | SemanticSearch
 > => layer.pipe(Layer.provide(AgentExecutor.layerLocal(options)))
 
 /**

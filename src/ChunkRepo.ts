@@ -8,9 +8,9 @@ import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as SqlError from "effect/unstable/sql/SqlError"
 import * as SqlModel from "effect/unstable/sql/SqlModel"
 import * as SqlSchema from "effect/unstable/sql/SqlSchema"
-import { SqliteLayer } from "./Sqlite.ts"
 import type * as Cause from "effect/Cause"
 import * as Option from "effect/Option"
+import * as EmbeddingModel from "effect/unstable/ai/EmbeddingModel"
 
 /**
  * @since 1.0.0
@@ -152,6 +152,7 @@ export const layer = Layer.effect(
   ChunkRepo,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
+    const dimensions = yield* EmbeddingModel.Dimensions
     const loaders = yield* SqlModel.makeDataLoaders(Chunk, {
       tableName: "chunks",
       idColumn: "id",
@@ -164,7 +165,7 @@ export const layer = Layer.effect(
     const maybeQuantize = Effect.gen(function* () {
       if (!needsQuantization) return
       needsQuantization = false
-      yield* sql`select vector_init('chunks', 'vector', 'type=FLOAT32,dimension=1536')`
+      yield* sql`select vector_init('chunks', 'vector', 'type=FLOAT32,dimension=${sql.literal(String(dimensions))}')`
       yield* sql`select vector_quantize('chunks', 'vector')`
     }).pipe(Effect.mapError((reason) => new ChunkRepoError({ reason })))
 
@@ -228,4 +229,4 @@ export const layer = Layer.effect(
         ),
     })
   }),
-).pipe(Layer.provide(SqliteLayer))
+)

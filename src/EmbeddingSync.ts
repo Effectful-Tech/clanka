@@ -26,7 +26,10 @@ Effect.gen(function* () {
   const chunker = yield* CodeChunker.CodeChunker
   const repo = yield* ChunkRepo.ChunkRepo
   const embeddings = yield* EmbeddingModel.EmbeddingModel
-  const resolver = embeddings.resolver.pipe(RequestResolver.setDelay(50))
+  const resolver = embeddings.resolver.pipe(
+    RequestResolver.setDelay(50),
+    RequestResolver.batchN(100),
+  )
 
   const syncId = ChunkRepo.SyncId.makeUnsafe(crypto.randomUUID())
 
@@ -72,7 +75,7 @@ Effect.gen(function* () {
             chunk: `${chunk.path}/${chunk.startLine}`,
           }),
       ),
-      { concurrency: 100 },
+      { concurrency: 5000 },
     ),
     Stream.runDrain,
   )

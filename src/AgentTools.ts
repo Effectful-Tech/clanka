@@ -295,9 +295,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           recursive: true,
         })
         yield* fs.writeFileString(path, options.content)
-        yield* SemanticSearch.maybeUpdateFile(
-          pathService.relative(cwd, path).replaceAll("\\", "/"),
-        )
+        yield* SemanticSearch.maybeUpdateFile(pathService.relative(cwd, path))
       }, Effect.orDie),
       removeFile: Effect.fn("AgentTools.removeFile")(function* (path) {
         yield* Effect.logInfo(`Calling "removeFile"`).pipe(
@@ -307,7 +305,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         const absolutePath = pathService.resolve(cwd, path)
         yield* fs.remove(absolutePath, { force: true })
         yield* SemanticSearch.maybeRemoveFile(
-          pathService.relative(cwd, absolutePath).replaceAll("\\", "/"),
+          pathService.relative(cwd, absolutePath),
         )
       }, Effect.orDie),
       renameFile: Effect.fn("AgentTools.renameFile")(function* (options) {
@@ -321,12 +319,8 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           recursive: true,
         })
         yield* fs.rename(from, to)
-        yield* SemanticSearch.maybeRemoveFile(
-          pathService.relative(cwd, from).replaceAll("\\", "/"),
-        )
-        yield* SemanticSearch.maybeUpdateFile(
-          pathService.relative(cwd, to).replaceAll("\\", "/"),
-        )
+        yield* SemanticSearch.maybeRemoveFile(pathService.relative(cwd, from))
+        yield* SemanticSearch.maybeUpdateFile(pathService.relative(cwd, to))
       }, Effect.orDie),
       mkdir: Effect.fn("AgentTools.mkdir")(function* (path) {
         yield* Effect.logInfo(`Calling "mkdir"`).pipe(
@@ -470,8 +464,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
             }
         >
         const out = [] as Array<string>
-        const rel = (path: string) =>
-          pathService.relative(cwd, path).replaceAll("\\", "/")
+        const rel = (path: string) => pathService.relative(cwd, path)
         const load = Effect.fn("AgentTools.applyPatch.load")(function* (
           path: string,
           reason: "delete" | "update",

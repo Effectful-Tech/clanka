@@ -38,7 +38,6 @@ Effect.gen(function* () {
     Stream.tap(
       Effect.fnUntraced(
         function* (chunk) {
-          yield* Effect.log("Processing")
           const id = yield* repo.exists({
             path: chunk.path,
             startLine: chunk.startLine,
@@ -69,7 +68,7 @@ ${chunk.content}`,
               syncId,
             }),
           )
-          yield* Effect.log("Processed")
+          process.stdout.write(".")
         },
         Effect.ignore({
           log: "Warn",
@@ -86,8 +85,9 @@ ${chunk.content}`,
   )
 
   yield* repo.deleteForSyncId(syncId)
+  console.log(".")
 
-  const { vector } = yield* embeddings.embed("web search tool")
+  const { vector } = yield* embeddings.embed(process.argv.slice(2).join(" "))
   const results = yield* repo.search({
     vector: new Float32Array(vector),
     limit: 10,

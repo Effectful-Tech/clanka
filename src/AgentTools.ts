@@ -214,8 +214,7 @@ const SearchTool = Toolkit.make(
     parameters: Schema.Struct({
       query: Schema.String,
       limit: Schema.optional(Schema.Finite).annotate({
-        documentation:
-          "Number of results (defaults to 5). Try to keep it small as results can be large and may cause token limits issues.",
+        documentation: "Number of results (defaults to 4, max 10)",
       }),
     }),
     success: Schema.String,
@@ -342,7 +341,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         const ss = yield* SemanticSearch.SemanticSearch
         return yield* ss.search({
           query: options.query,
-          limit: options.limit ?? 5,
+          limit: Math.min(10, options.limit ?? 4),
         })
       }),
       rg: Effect.fn("AgentTools.rg")(function* (options) {

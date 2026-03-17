@@ -76,6 +76,9 @@
       "@vscode/ripgrep",
       "better-sqlite3",
       "esbuild"
-    ]
+    ],
+    "patchedDependencies": {
+      "@sqliteai/sqlite-vector": "patches/@sqliteai__sqlite-vector.patch"
+    }
   }
 }

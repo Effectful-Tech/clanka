@@ -233,7 +233,7 @@ export const isMeaningfulFile = (path: string): boolean => {
 }
 
 const resolveChunkSettings = (options?: ChunkCodebaseOptions) => {
-  const chunkSize = Math.max(1, Math.floor(options?.chunkSize ?? 30))
+  const chunkSize = Math.max(1, Math.floor(options?.chunkSize ?? 50))
   const chunkOverlap = Math.max(
     0,
     Math.min(chunkSize - 1, Math.floor(options?.chunkOverlap ?? 5)),
@@ -272,25 +272,26 @@ export const chunkFileContent = (
   const step = settings.chunkSize - settings.chunkOverlap
   const out = [] as Array<CodeChunk>
 
-  for (let index = 0; index < lines.length; index += step) {
-    const start = index
-    const end = Math.min(lines.length, start + settings.chunkSize)
-    const chunkLines = lines.slice(start, end)
-    const firstMeaningfulLineIndex = chunkLines.findIndex(isMeaningfulLine)
-    if (firstMeaningfulLineIndex === -1) {
+  for (let index = 0; index < lines.length; ) {
+    if (!isMeaningfulLine(lines[index]!)) {
+      index++
       continue
     }
 
-    const chunkStart = start + firstMeaningfulLineIndex
-    const chunkContent = chunkLines.slice(firstMeaningfulLineIndex).join("\n")
+    const start = index
+    const end = Math.min(lines.length, start + settings.chunkSize)
+    const chunkLines = lines.slice(start, end)
+    const chunkContent = chunkLines.join("\n")
 
     out.push({
       path: normalizedPath,
-      startLine: chunkStart + 1,
+      startLine: start + 1,
       endLine: end,
       contentHash: hashContent(chunkContent),
       content: chunkContent,
     })
+
+    index += step
 
     if (end >= lines.length) {
       break

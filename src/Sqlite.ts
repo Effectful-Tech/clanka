@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Vector from "@sqliteai/sqlite-vector"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
+import * as FileSystem from "effect/FileSystem"
 
 /**
  * @since 1.0.0
@@ -44,5 +45,13 @@ export const SqliteLayer = SqliteMigrator.layer({
     SqliteClient.layer({
       filename: ".clanka/db.sqlite",
     }),
+  ),
+  Layer.provide(
+    Layer.effectDiscard(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        yield* fs.makeDirectory(".clanka", { recursive: true })
+      }),
+    ),
   ),
 )

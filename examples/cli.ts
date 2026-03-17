@@ -1,5 +1,5 @@
-import { Effect, Layer, Stream } from "effect"
-import { Agent, Codex, Copilot, OutputFormatter } from "clanka"
+import { Config, Effect, Layer, Stream } from "effect"
+import { Agent, Codex, Copilot, OutputFormatter, SemanticSearch } from "clanka"
 import {
   NodeHttpClient,
   NodeRuntime,
@@ -8,6 +8,7 @@ import {
 } from "@effect/platform-node"
 import { KeyValueStore } from "effect/unstable/persistence"
 import * as NodePath from "node:path"
+import { OpenAiClient, OpenAiEmbeddingModel } from "@effect/ai-openai"
 
 const XDG_CONFIG_HOME =
   process.env.XDG_CONFIG_HOME ||
@@ -18,7 +19,7 @@ const ModelServices = Codex.layerClient.pipe(
   Layer.provide(
     KeyValueStore.layerFileSystem(NodePath.join(XDG_CONFIG_HOME, "clanka")),
   ),
-  Layer.provide(NodeServices.layer),
+  Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(NodeHttpClient.layerUndici),
   Layer.merge(NodeSocket.layerWebSocketConstructorWS),
 )
@@ -40,11 +41,23 @@ const SubAgentModel = Codex.model("gpt-5.4", {
   },
 }).pipe(Layer.provide(ModelServices))
 
+const Search = SemanticSearch.layer.pipe(
+  Layer.provide(OpenAiEmbeddingModel.model("text-embedding-3-small")),
+  Layer.provide(
+    OpenAiClient.layerConfig({
+      apiKey: Config.redacted("OPENAI_API_KEY"),
+    }),
+  ),
+  Layer.provide(NodeHttpClient.layerUndici),
+  Layer.provide(NodeServices.layer),
+)
+
 const AgentLayer = Agent.layerLocal({
   directory: process.cwd(),
 }).pipe(
   Layer.provide(NodeServices.layer),
   Layer.provide(NodeHttpClient.layerUndici),
+  Layer.provide(Search),
 )
 
 Effect.gen(function* () {

@@ -1,0 +1,18 @@
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 8133cbf0499979b4b04d43a3b3efed79daa81de1..5a845a3346606dcd9efb5b7747c7eb86bf59d956 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -103,12 +103,7 @@ var ExtensionNotFoundError = class extends Error {
+ function tryLoadPlatformPackage() {
+   try {
+     const packageName = getPlatformPackageName();
+-    const platformPackage = __require(packageName);
+-    if ((platformPackage == null ? void 0 : platformPackage.path) && typeof platformPackage.path === "string") {
+-      if (existsSync(platformPackage.path)) {
+-        return platformPackage.path;
+-      }
+-    }
++    return import.meta.resolve(packageName).replace("index.js", getBinaryName()).replace("file://", "")
+   } catch (error) {
+   }
+   return null;

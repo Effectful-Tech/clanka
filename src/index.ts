@@ -36,6 +36,11 @@ export * as OutputFormatter from "./OutputFormatter.ts"
 /**
  * @since 1.0.0
  */
+export * as SemanticSearch from "./SemanticSearch.ts"
+
+/**
+ * @since 1.0.0
+ */
 export * as ToolkitRenderer from "./ToolkitRenderer.ts"
 
 /**

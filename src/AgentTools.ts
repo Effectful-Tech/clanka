@@ -20,6 +20,7 @@ import { pipe } from "effect/Function"
 import * as Array from "effect/Array"
 import * as Data from "effect/Data"
 import * as Layer from "effect/Layer"
+import { SemanticSearch } from "./SemanticSearch.ts"
 
 /**
  * @since 1.0.0
@@ -73,6 +74,17 @@ export const AgentTools = Toolkit.make(
     }),
     success: Schema.NullOr(Schema.String),
     dependencies: [CurrentDirectory],
+  }),
+  Tool.make("search", {
+    description: "Semantic code search",
+    parameters: Schema.Struct({
+      query: Schema.String,
+      limit: Schema.optional(Schema.Finite).annotate({
+        documentation: "Number of results to return (defaults to 5)",
+      }),
+    }),
+    success: Schema.String,
+    dependencies: [SemanticSearch],
   }),
   Tool.make("rg", {
     description: "Search for a pattern in files using ripgrep",
@@ -311,6 +323,16 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
         return yield* fs
           .readDirectory(pathService.resolve(cwd, path))
           .pipe(Effect.orDie)
+      }),
+      search: Effect.fn("AgentTools.search")(function* (options) {
+        yield* Effect.logInfo(`Calling "search"`).pipe(
+          Effect.annotateLogs(options),
+        )
+        const ss = yield* SemanticSearch
+        return yield* ss.search({
+          query: options.query,
+          limit: options.limit ?? 5,
+        })
       }),
       rg: Effect.fn("AgentTools.rg")(function* (options) {
         yield* Effect.logInfo(`Calling "rg"`).pipe(Effect.annotateLogs(options))

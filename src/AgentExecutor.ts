@@ -36,6 +36,7 @@ import * as Schema from "effect/Schema"
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup"
 import * as Rpc from "effect/unstable/rpc/Rpc"
 import * as Result from "effect/Result"
+import type { SemanticSearch } from "./SemanticSearch.ts"
 
 /**
  * @since 1.0.0
@@ -247,6 +248,7 @@ export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
         : never,
       CurrentDirectory | SubagentExecutor | TaskCompleter
     >
+  | SemanticSearch
 > =>
   Layer.effect(AgentExecutor, makeLocal(options)).pipe(
     Layer.provide([AgentToolHandlers, ToolkitRenderer.layer]),
@@ -287,6 +289,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
         : never,
       CurrentDirectory | SubagentExecutor | TaskCompleter
     >
+  | SemanticSearch
 > =>
   RpcServer.layer(Rpcs, {
     spanPrefix: "AgentExecutorServer",

@@ -32,6 +32,7 @@ import * as Tool from "effect/unstable/ai/Tool"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
 import * as Semaphore from "effect/Semaphore"
 import * as Schedule from "effect/Schedule"
+import type { SemanticSearch } from "./SemanticSearch.ts"
 
 /**
  * @since 1.0.0
@@ -483,7 +484,7 @@ const generateSystemTools = (
 - Use \`console.log\` to print any output you need.
 - Top level await is supported.
 - AVOID passing scripts into the "bash" function, and instead write javascript.
-- When using "rg" over a large codebase, prefer using the "filesOnly" option before looking at file contents
+- AVOID using the "rg" function in favour of "search", unless you have something specific to find
 - Do as much work as possible in a single script, using \`Promise.all\` to run multiple functions in parallel.
 - Variables **are not shared** between executions, so you must include all necessary code in each script you execute.
 - Use the "delegate" function to assign complex jobs to another software engineer.
@@ -574,6 +575,7 @@ export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
         : never,
       CurrentDirectory | SubagentExecutor | TaskCompleter
     >
+  | SemanticSearch
 > => layer.pipe(Layer.provide(AgentExecutor.layerLocal(options)))
 
 /**

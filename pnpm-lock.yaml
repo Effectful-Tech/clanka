@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@sqliteai/sqlite-vector':
+    hash: afdd8bde9b18bf3052efeb94d22a0565295e4490fe42016011b1f145371f66fd
+    path: patches/@sqliteai__sqlite-vector.patch
+
 importers:
 
   .:
@@ -16,7 +21,7 @@ importers:
         version: 1.27.1(zod@3.25.76)
       '@sqliteai/sqlite-vector':
         specifier: ^0.9.93
-        version: 0.9.93
+        version: 0.9.93(patch_hash=afdd8bde9b18bf3052efeb94d22a0565295e4490fe42016011b1f145371f66fd)
       '@vscode/ripgrep':
         specifier: ^1.17.1
         version: 1.17.1
@@ -2530,7 +2535,7 @@ snapshots:
   '@sqliteai/sqlite-vector-win32-x86_64@0.9.93':
     optional: true
 
-  '@sqliteai/sqlite-vector@0.9.93':
+  '@sqliteai/sqlite-vector@0.9.93(patch_hash=afdd8bde9b18bf3052efeb94d22a0565295e4490fe42016011b1f145371f66fd)':
     optionalDependencies:
       '@sqliteai/sqlite-vector-darwin-arm64': 0.9.93
       '@sqliteai/sqlite-vector-darwin-x86_64': 0.9.93

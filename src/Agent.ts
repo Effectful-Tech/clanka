@@ -481,7 +481,7 @@ const generateSystemTools = (
 - AVOID passing scripts into the "bash" function, and instead write javascript.${
   capabilities.supportsSearch
     ? `
-- AVOID using the "rg" function in favour of "search", unless you have something specific to find`
+- PREFER USING the "search" function instead of "rg", unless you are targeting specific files or need regex.`
     : ""
 }
 - Do as much work as possible in a single script, using \`Promise.all\` to run multiple functions in parallel.

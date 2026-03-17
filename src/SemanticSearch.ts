@@ -21,6 +21,7 @@ import type * as SqliteMigrator from "@effect/sql-sqlite-node/SqliteMigrator"
 import type * as PlatformError from "effect/PlatformError"
 import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
 import type * as FileSystem from "effect/FileSystem"
+import * as Console from "effect/Console"
 
 /**
  * @since 1.0.0
@@ -72,6 +73,7 @@ export const layer = (options: {
         RequestResolver.batchN(options.embeddingBatchSize ?? 200),
       )
       const indexHandle = yield* FiberHandle.make()
+      const console = yield* Console.Console
 
       const index = Effect.gen(function* () {
         const syncId = ChunkRepo.SyncId.makeUnsafe(crypto.randomUUID())
@@ -136,6 +138,7 @@ ${chunk.content}`,
       }).pipe(
         Effect.withSpan("SemanticSearch.index"),
         Effect.withLogSpan("SemanticSearch.index"),
+        Effect.provideService(Console.Console, console),
       )
 
       const runIndex = FiberHandle.run(indexHandle, index, {

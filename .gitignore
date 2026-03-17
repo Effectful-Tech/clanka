@@ -7,3 +7,4 @@ lalph-plan.md
 *.tsbuildinfo
 data/
 .env
+.clanka/

@@ -30,7 +30,9 @@
   },
   "packageManager": "pnpm@10.28.0+sha512.05df71d1421f21399e053fde567cea34d446fa02c76571441bfc1c7956e98e363088982d940465fd34480d4d90a0668bc12362f8aa88000a64e83d0b0e47be48",
   "dependencies": {
+    "@effect/sql-sqlite-node": "4.0.0-beta.33",
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "@sqliteai/sqlite-vector": "^0.9.93",
     "@vscode/ripgrep": "^1.17.1",
     "chalk": "^5.6.2",
     "glob": "^13.0.6",
@@ -45,7 +47,7 @@
     "@changesets/changelog-github": "^0.6.0",
     "@changesets/cli": "^2.29.8",
     "@effect/ai-openai": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-openai@317f985",
-    "@effect/ai-openai-compat": "4.0.0-beta.33",
+    "@effect/ai-openai-compat": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-openai-compat@317f985",
     "@effect/language-service": "^0.80.0",
     "@effect/platform-node": "4.0.0-beta.33",
     "@effect/vitest": "4.0.0-beta.33",
@@ -71,7 +73,9 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "@vscode/ripgrep"
+      "@vscode/ripgrep",
+      "better-sqlite3",
+      "esbuild"
     ]
   }
 }

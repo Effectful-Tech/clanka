@@ -1,5 +1,11 @@
 # clanka
 
+## 0.1.20
+
+### Patch Changes
+
+- [`c605265`](https://github.com/Effectful-Tech/clanka/commit/c605265f57e7040d819f2324e820fd4224bd82f9) Thanks [@tim-smart](https://github.com/tim-smart)! - use rg max columns
+
 ## 0.1.19
 
 ### Patch Changes

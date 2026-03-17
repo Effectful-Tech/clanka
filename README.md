@@ -1,3 +1,3 @@
-# clanka
+# clanka 🤖
 
-Make the ai do stuff
+Make the ai do stuff ✨

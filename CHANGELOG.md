@@ -1,5 +1,11 @@
 # clanka
 
+## 0.1.21
+
+### Patch Changes
+
+- [#80](https://github.com/Effectful-Tech/clanka/pull/80) [`fdd0ff7`](https://github.com/Effectful-Tech/clanka/commit/fdd0ff7e20b6fada7d702c66da9bb6ddb32736b3) Thanks [@tim-smart](https://github.com/tim-smart)! - Add `SemanticSearch`
+
 ## 0.1.20
 
 ### Patch Changes

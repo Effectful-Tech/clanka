@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.9
+
+### Patch Changes
+
+- [`44a2da6`](https://github.com/Effectful-Tech/clanka/commit/44a2da695d57075c075c2aec6c2181c362d40ff2) Thanks [@tim-smart](https://github.com/tim-smart)! - downgrade tree sitter
+
 ## 0.2.8
 
 ### Patch Changes

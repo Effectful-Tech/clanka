@@ -24,7 +24,12 @@
             bun
             corepack
             nodejs
+            python3
+            clang
           ];
+          shellHook = ''
+            export CXXFLAGS="-std=c++20"
+          '';
         };
       }
     );

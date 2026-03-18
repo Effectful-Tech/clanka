@@ -35,8 +35,8 @@
     "@vscode/ripgrep": "^1.17.1",
     "chalk": "^5.6.2",
     "glob": "^13.0.6",
-    "tree-sitter": "^0.21.1",
-    "tree-sitter-javascript": "^0.23.1",
+    "tree-sitter": "^0.25.0",
+    "tree-sitter-javascript": "^0.25.0",
     "tree-sitter-typescript": "^0.23.2",
     "turndown": "^7.2.2"
   },
@@ -64,11 +64,11 @@
     "@effect/vitest": "4.0.0-beta.35",
     "@types/node": "^25.5.0",
     "@types/turndown": "^5.0.6",
-    "@typescript/native-preview": "7.0.0-dev.20260315.1",
+    "@typescript/native-preview": "7.0.0-dev.20260318.1",
     "effect": "4.0.0-beta.35",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
-    "oxlint": "^1.55.0",
+    "oxlint": "^1.56.0",
     "prettier": "^3.8.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
@@ -87,6 +87,7 @@
       "@vscode/ripgrep",
       "better-sqlite3",
       "esbuild",
+      "msgpackr-extract",
       "tree-sitter",
       "tree-sitter-javascript",
       "tree-sitter-typescript"

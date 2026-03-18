@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.10
+
+### Patch Changes
+
+- [`b1f690a`](https://github.com/Effectful-Tech/clanka/commit/b1f690addf7183876528d1971684aaa4fc00ea86) Thanks [@tim-smart](https://github.com/tim-smart)! - align tree sitter versions
+
 ## 0.2.9
 
 ### Patch Changes

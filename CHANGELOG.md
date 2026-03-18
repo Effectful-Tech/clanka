@@ -1,5 +1,13 @@
 # clanka
 
+## 0.2.5
+
+### Patch Changes
+
+- [#94](https://github.com/Effectful-Tech/clanka/pull/94) [`9489743`](https://github.com/Effectful-Tech/clanka/commit/9489743dd485770ac61c3b909b93477a0c6c1327) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix SemanticSearch embedding resolver wiring so `embeddingRequestDelay` controls `RequestResolver.setDelay` (defaulting to 50ms), instead of incorrectly deriving delay from `embeddingBatchSize`. Add regression tests for explicit and default delay behavior.
+
+- [`54fb2b8`](https://github.com/Effectful-Tech/clanka/commit/54fb2b89f5e64d2b280dbbd60c5983cbf2fd1773) Thanks [@tim-smart](https://github.com/tim-smart)! - demote delegate tool
+
 ## 0.2.4
 
 ### Patch Changes

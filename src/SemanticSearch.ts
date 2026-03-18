@@ -1,6 +1,7 @@
 /**
  * @since 1.0.0
  */
+import { createHash } from "node:crypto"
 import * as Effect from "effect/Effect"
 import * as ChunkRepo from "./ChunkRepo.ts"
 import * as CodeChunker from "./CodeChunker.ts"
@@ -60,6 +61,28 @@ export const makeEmbeddingResolver = (
     RequestResolver.batchN(options.embeddingBatchSize ?? 500),
   )
 
+export const chunkEmbeddingInput = (chunk: CodeChunker.CodeChunk): string => {
+  const headerLines = [
+    "File: " + chunk.path,
+    "Lines: " + String(chunk.startLine) + "-" + String(chunk.endLine),
+  ]
+
+  if (chunk.name !== undefined) {
+    headerLines.push("Name: " + chunk.name)
+  }
+  if (chunk.type !== undefined) {
+    headerLines.push("Type: " + chunk.type)
+  }
+  if (chunk.parent !== undefined) {
+    headerLines.push("Parent: " + chunk.parent)
+  }
+
+  return headerLines.join("\n") + "\n\n" + chunk.content
+}
+
+const hashChunkInput = (input: string): string =>
+  createHash("sha256").update(input).digest("hex")
+
 /**
  * @since 1.0.0
  * @category Layers
@@ -115,11 +138,14 @@ export const layer = (options: {
           readonly syncId: ChunkRepo.SyncId
           readonly checkExisting: boolean
         }) {
+          const input = chunkEmbeddingInput(options.chunk)
+          const hash = hashChunkInput(input)
+
           if (options.checkExisting) {
             const id = yield* repo.exists({
               path: options.chunk.path,
               startLine: options.chunk.startLine,
-              hash: options.chunk.contentHash,
+              hash,
             })
             if (Option.isSome(id)) {
               yield* repo.setSyncId(id.value, options.syncId)
@@ -128,12 +154,7 @@ export const layer = (options: {
           }
 
           const result = yield* Effect.request(
-            new EmbeddingModel.EmbeddingRequest({
-              input: `File: ${options.chunk.path}
-Lines: ${options.chunk.startLine}-${options.chunk.endLine}
-
-${options.chunk.content}`,
-            }),
+            new EmbeddingModel.EmbeddingRequest({ input }),
             resolver,
           )
           const vector = new Float32Array(result.vector)
@@ -142,7 +163,7 @@ ${options.chunk.content}`,
               path: options.chunk.path,
               startLine: options.chunk.startLine,
               endLine: options.chunk.endLine,
-              hash: options.chunk.contentHash,
+              hash,
               content: options.chunk.content,
               vector,
               syncId: options.syncId,

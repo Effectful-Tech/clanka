@@ -41,7 +41,112 @@ describe("isProbablyMinified", () => {
 })
 
 describe("chunkFileContent", () => {
-  it("emits chunks with metadata and deterministic hashes", () => {
+  it("splits TypeScript into AST chunks with metadata", () => {
+    const content = [
+      "export const alpha = 1",
+      "function beta() {",
+      "  return alpha",
+      "}",
+      "class Example {",
+      "  gamma() {",
+      "    return beta()",
+      "  }",
+      "}",
+    ].join("\n")
+
+    const chunks = chunkFileContent("src\\example.ts", content, {
+      chunkSize: 10,
+      chunkOverlap: 2,
+    })
+
+    expect(chunks).toHaveLength(4)
+    expect(chunks[0]).toMatchObject({
+      path: "src/example.ts",
+      startLine: 1,
+      endLine: 1,
+      name: "alpha",
+      type: "variable",
+      parent: undefined,
+      content: "export const alpha = 1",
+    })
+    expect(chunks[1]).toMatchObject({
+      startLine: 2,
+      endLine: 4,
+      name: "beta",
+      type: "function",
+      parent: undefined,
+      content: ["function beta() {", "  return alpha", "}"].join("\n"),
+    })
+    expect(chunks[2]).toMatchObject({
+      startLine: 5,
+      endLine: 9,
+      name: "Example",
+      type: "class",
+      parent: undefined,
+      content: [
+        "class Example {",
+        "  gamma() {",
+        "    return beta()",
+        "  }",
+        "}",
+      ].join("\n"),
+    })
+    expect(chunks[3]).toMatchObject({
+      startLine: 6,
+      endLine: 8,
+      name: "gamma",
+      type: "method",
+      parent: "class Example",
+      content: ["  gamma() {", "    return beta()", "  }"].join("\n"),
+    })
+
+    expect(
+      chunkFileContent("src/example.ts", content, {
+        chunkSize: 10,
+        chunkOverlap: 2,
+      })[0],
+    ).toEqual(chunks[0])
+  })
+
+  it("splits large AST ranges using chunk settings", () => {
+    const content = [
+      "export function large() {",
+      ...Array.from(
+        { length: 60 },
+        (_, index) =>
+          "  const line" + String(index + 1) + " = " + String(index + 1),
+      ),
+      "}",
+    ].join("\n")
+
+    const chunks = chunkFileContent("src/large.ts", content, {
+      chunkSize: 20,
+      chunkOverlap: 5,
+    })
+
+    expect(chunks).toHaveLength(4)
+    expect(chunks[0]).toMatchObject({
+      startLine: 1,
+      endLine: 20,
+      name: "large",
+      type: "function",
+      parent: undefined,
+    })
+    expect(chunks[1]).toMatchObject({
+      startLine: 16,
+      endLine: 35,
+    })
+    expect(chunks[2]).toMatchObject({
+      startLine: 31,
+      endLine: 50,
+    })
+    expect(chunks[3]).toMatchObject({
+      startLine: 46,
+      endLine: 62,
+    })
+  })
+
+  it("falls back to line windows for unsupported languages", () => {
     const content = [
       "line 1",
       "line 2",
@@ -51,57 +156,36 @@ describe("chunkFileContent", () => {
       "line 6",
     ].join("\n")
 
-    const chunks = chunkFileContent("src\\example.ts", content, {
+    const chunks = chunkFileContent("docs\\notes.txt", content, {
       chunkSize: 3,
       chunkOverlap: 1,
     })
 
     expect(chunks).toHaveLength(3)
     expect(chunks[0]).toMatchObject({
-      path: "src/example.ts",
+      path: "docs/notes.txt",
       startLine: 1,
       endLine: 3,
+      name: undefined,
+      type: undefined,
+      parent: undefined,
       content: ["line 1", "line 2", "line 3"].join("\n"),
     })
     expect(chunks[1]).toMatchObject({
       startLine: 3,
       endLine: 5,
+      name: undefined,
+      type: undefined,
+      parent: undefined,
       content: ["line 3", "line 4", "line 5"].join("\n"),
     })
     expect(chunks[2]).toMatchObject({
       startLine: 5,
       endLine: 6,
+      name: undefined,
+      type: undefined,
+      parent: undefined,
       content: ["line 5", "line 6"].join("\n"),
-    })
-
-    expect(chunks[0]?.contentHash).toMatch(/^[a-f0-9]{64}$/)
-    expect(chunks[0]?.contentHash).toBe(
-      chunkFileContent("src/example.ts", content, {
-        chunkSize: 3,
-        chunkOverlap: 1,
-      })[0]?.contentHash,
-    )
-  })
-
-  it("skips non-meaningful chunk starts", () => {
-    const content = [
-      "",
-      "   ",
-      "---",
-      "const alpha = 1",
-      "const beta = 2",
-    ].join("\n")
-
-    const chunks = chunkFileContent("src/example.ts", content, {
-      chunkSize: 3,
-      chunkOverlap: 1,
-    })
-
-    expect(chunks).toHaveLength(1)
-    expect(chunks[0]).toMatchObject({
-      startLine: 4,
-      endLine: 5,
-      content: ["const alpha = 1", "const beta = 2"].join("\n"),
     })
   })
 

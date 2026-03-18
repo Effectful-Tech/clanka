@@ -660,6 +660,19 @@ const chunksFromRanges = (
   ranges: ReadonlyArray<ChunkRange>,
   settings: ChunkSettings,
 ): ReadonlyArray<CodeChunk> => {
+  const hasMethodChildRange = (
+    classRange: LineRange & { readonly name: string | undefined },
+  ) => {
+    const parent = formatParent("class", classRange.name)
+    return ranges.some(
+      (range) =>
+        range.type === "method" &&
+        range.parent === parent &&
+        range.startLine >= classRange.startLine &&
+        range.endLine <= classRange.endLine,
+    )
+  }
+
   const out = [] as Array<CodeChunk>
   const seen = new Set<string>()
 
@@ -669,7 +682,15 @@ const chunksFromRanges = (
       continue
     }
 
-    for (const segment of splitRange(normalizedRange, settings)) {
+    const allSegments = splitRange(normalizedRange, settings)
+    const segments =
+      range.type === "class" &&
+      allSegments.length > 1 &&
+      hasMethodChildRange({ ...normalizedRange, name: range.name })
+        ? [allSegments[0]!]
+        : allSegments
+
+    for (const segment of segments) {
       const key =
         String(segment.startLine) +
         ":" +

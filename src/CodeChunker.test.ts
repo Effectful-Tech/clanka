@@ -160,6 +160,54 @@ describe("chunkFileContent", () => {
     })
   })
 
+  it("keeps only the first oversized class segment when methods are present", () => {
+    const content = [
+      "class Example {",
+      "  first() {",
+      "    const a = 1",
+      "    const b = 2",
+      "    return a + b",
+      "  }",
+      "",
+      "  second() {",
+      "    const c = 3",
+      "    const d = 4",
+      "    return c + d",
+      "  }",
+      "}",
+    ].join("\n")
+
+    const chunks = chunkFileContent("src/example.ts", content, {
+      chunkSize: 6,
+      chunkOverlap: 1,
+    })
+
+    const classChunks = chunks.filter((chunk) => chunk.type === "class")
+    expect(classChunks).toHaveLength(1)
+    expect(classChunks[0]).toMatchObject({
+      startLine: 1,
+      endLine: 6,
+      name: "Example",
+      type: "class",
+      parent: undefined,
+    })
+
+    expect(chunks.filter((chunk) => chunk.type === "method")).toMatchObject([
+      {
+        startLine: 2,
+        endLine: 6,
+        name: "first",
+        parent: "class Example",
+      },
+      {
+        startLine: 8,
+        endLine: 12,
+        name: "second",
+        parent: "class Example",
+      },
+    ])
+  })
+
   it("includes preceding comments in AST chunks", () => {
     const content = [
       "// alpha docs",

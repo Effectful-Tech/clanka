@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.3
+
+### Patch Changes
+
+- [`75c9040`](https://github.com/Effectful-Tech/clanka/commit/75c904068ffee38365a52afd4ddfe81be12d8d26) Thanks [@tim-smart](https://github.com/tim-smart)! - reset log anotations for executor
+
 ## 0.2.2
 
 ### Patch Changes

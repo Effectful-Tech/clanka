@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.1
+
+### Patch Changes
+
+- [`4b21675`](https://github.com/Effectful-Tech/clanka/commit/4b2167594eeb6f9b8c5c9b0cefa6111a7c5ee8f5) Thanks [@tim-smart](https://github.com/tim-smart)! - seperate context tokens from input in usage
+
 ## 0.2.0
 
 ### Minor Changes

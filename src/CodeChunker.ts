@@ -361,6 +361,55 @@ const lineRangeFromNode = (node: AstNode): LineRange => {
   }
 }
 
+const hasOnlyWhitespaceLines = (
+  lines: ReadonlyArray<string>,
+  startLine: number,
+  endLine: number,
+): boolean => {
+  if (startLine > endLine) {
+    return true
+  }
+
+  for (let lineIndex = startLine; lineIndex <= endLine; lineIndex++) {
+    if ((lines[lineIndex - 1] ?? "").trim().length > 0) {
+      return false
+    }
+  }
+
+  return true
+}
+
+const lineRangeWithLeadingComments = (
+  node: AstNode,
+  siblings: ReadonlyArray<AstNode>,
+  nodeIndex: number,
+  lines: ReadonlyArray<string>,
+): LineRange => {
+  const baseRange = lineRangeFromNode(node)
+  let startLine = baseRange.startLine
+
+  for (let index = nodeIndex - 1; index >= 0; index--) {
+    const sibling = siblings[index]!
+    if (sibling.type !== "comment") {
+      break
+    }
+
+    const commentRange = lineRangeFromNode(sibling)
+    if (
+      !hasOnlyWhitespaceLines(lines, commentRange.endLine + 1, startLine - 1)
+    ) {
+      break
+    }
+
+    startLine = commentRange.startLine
+  }
+
+  return {
+    startLine,
+    endLine: baseRange.endLine,
+  }
+}
+
 const normalizeLineRange = (
   range: LineRange,
   lineCount: number,
@@ -529,6 +578,7 @@ const formatParent = (
 const collectClassMethodRanges = (
   classNode: AstNode,
   parent: string | undefined,
+  lines: ReadonlyArray<string>,
 ): ReadonlyArray<ChunkRange> => {
   const body = classNode.childForFieldName("body")
   if (body === null) {
@@ -536,13 +586,14 @@ const collectClassMethodRanges = (
   }
 
   const out = [] as Array<ChunkRange>
-  for (const child of body.namedChildren) {
+  for (let index = 0; index < body.namedChildren.length; index++) {
+    const child = body.namedChildren[index]!
     if (!methodNodeTypes.has(child.type)) {
       continue
     }
 
     out.push({
-      ...lineRangeFromNode(child),
+      ...lineRangeWithLeadingComments(child, body.namedChildren, index, lines),
       name: nameFromNode(child),
       type: chunkTypeFromNode(child),
       parent,
@@ -555,6 +606,7 @@ const collectClassMethodRanges = (
 const collectAstRanges = (
   path: string,
   content: string,
+  lines: ReadonlyArray<string>,
 ): ReadonlyArray<ChunkRange> => {
   const language = resolveAstLanguage(path)
   if (language === undefined) {
@@ -567,7 +619,9 @@ const collectAstRanges = (
     const tree = parser.parse(content)
     const out = [] as Array<ChunkRange>
 
-    for (const topLevelNode of tree.rootNode.namedChildren) {
+    const topLevelNodes = tree.rootNode.namedChildren
+    for (let index = 0; index < topLevelNodes.length; index++) {
+      const topLevelNode = topLevelNodes[index]!
       if (ignoredTopLevelNodeTypes.has(topLevelNode.type)) {
         continue
       }
@@ -577,7 +631,12 @@ const collectAstRanges = (
       const name = nameFromNode(declarationNode)
 
       out.push({
-        ...lineRangeFromNode(topLevelNode),
+        ...lineRangeWithLeadingComments(
+          topLevelNode,
+          topLevelNodes,
+          index,
+          lines,
+        ),
         name,
         type,
         parent: undefined,
@@ -585,7 +644,7 @@ const collectAstRanges = (
 
       if (declarationNode.type === "class_declaration") {
         const parent = formatParent(type, name)
-        out.push(...collectClassMethodRanges(declarationNode, parent))
+        out.push(...collectClassMethodRanges(declarationNode, parent, lines))
       }
     }
 
@@ -716,7 +775,7 @@ export const chunkFileContent = (
   }
 
   const settings = resolveChunkSettings(options)
-  const astRanges = collectAstRanges(normalizedPath, normalizedContent)
+  const astRanges = collectAstRanges(normalizedPath, normalizedContent, lines)
   if (astRanges.length > 0) {
     const astChunks = chunksFromRanges(
       normalizedPath,

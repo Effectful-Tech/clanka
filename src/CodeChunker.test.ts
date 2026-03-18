@@ -146,6 +146,66 @@ describe("chunkFileContent", () => {
     })
   })
 
+  it("includes preceding comments in AST chunks", () => {
+    const content = [
+      "// alpha docs",
+      "export const alpha = 1",
+      "/**",
+      " * beta docs",
+      " */",
+      "function beta() {",
+      "  return alpha",
+      "}",
+      "class Example {",
+      "  // gamma docs",
+      "  gamma() {",
+      "    return beta()",
+      "  }",
+      "}",
+    ].join("\n")
+
+    const chunks = chunkFileContent("src/example.ts", content, {
+      chunkSize: 20,
+      chunkOverlap: 2,
+    })
+
+    expect(chunks).toHaveLength(4)
+    expect(chunks[0]).toMatchObject({
+      startLine: 1,
+      endLine: 2,
+      name: "alpha",
+      type: "variable",
+      content: ["// alpha docs", "export const alpha = 1"].join("\n"),
+    })
+    expect(chunks[1]).toMatchObject({
+      startLine: 3,
+      endLine: 8,
+      name: "beta",
+      type: "function",
+      content: [
+        "/**",
+        " * beta docs",
+        " */",
+        "function beta() {",
+        "  return alpha",
+        "}",
+      ].join("\n"),
+    })
+    expect(chunks[3]).toMatchObject({
+      startLine: 10,
+      endLine: 13,
+      name: "gamma",
+      type: "method",
+      parent: "class Example",
+      content: [
+        "  // gamma docs",
+        "  gamma() {",
+        "    return beta()",
+        "  }",
+      ].join("\n"),
+    })
+  })
+
   it("falls back to line windows for unsupported languages", () => {
     const content = [
       "line 1",

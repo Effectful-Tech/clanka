@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.6
+
+### Patch Changes
+
+- [#93](https://github.com/Effectful-Tech/clanka/pull/93) [`90ef4b7`](https://github.com/Effectful-Tech/clanka/commit/90ef4b7537033b2f024652c8d9ecca182db237cb) Thanks [@tim-smart](https://github.com/tim-smart)! - Switch CodeChunker to tree-sitter AST chunking for JavaScript and TypeScript files, add chunk metadata fields (name, type, parent), and remove contentHash from chunks. SemanticSearch now computes chunk hashes from embedding input instead.
+
 ## 0.2.5
 
 ### Patch Changes

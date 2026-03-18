@@ -24,13 +24,6 @@ import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessS
 import type * as FileSystem from "effect/FileSystem"
 import * as Console from "effect/Console"
 
-const normalizePath = (path: string) => path.replace(/\\/g, "/")
-
-const chunkConfig = {
-  chunkSize: 30,
-  chunkOverlap: 0,
-} as const
-
 /**
  * @since 1.0.0
  * @category Services
@@ -46,6 +39,13 @@ export class SemanticSearch extends ServiceMap.Service<
     removeFile(path: string): Effect.Effect<void>
   }
 >()("clanka/SemanticSearch/SemanticSearch") {}
+
+const normalizePath = (path: string) => path.replace(/\\/g, "/")
+
+const chunkConfig = {
+  chunkSize: 30,
+  chunkOverlap: 0,
+} as const
 
 export const makeEmbeddingResolver = (
   resolver: EmbeddingModel.Service["resolver"],
@@ -73,9 +73,18 @@ export const chunkEmbeddingInput = (chunk: CodeChunker.CodeChunk): string => {
   if (chunk.parent !== undefined) {
     headerLines.push("parent: " + chunk.parent)
   }
-  headerLines.push(`lines: ${chunk.startLine}-${chunk.endLine}`, `---`)
+  headerLines.push("---")
 
-  return headerLines.join("\n") + "\n\n" + chunk.content
+  const contentLines = chunk.content.split("\n")
+  let contentWithLines = ""
+  for (let i = 0; i < contentLines.length; i++) {
+    if (i > 0) {
+      contentWithLines += "\n"
+    }
+    contentWithLines += `${chunk.startLine + i}: ${contentLines[i]}`
+  }
+
+  return headerLines.join("\n") + "\n\n" + contentWithLines
 }
 
 const hashChunkInput = (input: string): string =>
@@ -162,7 +171,7 @@ export const layer = (options: {
               startLine: options.chunk.startLine,
               endLine: options.chunk.endLine,
               hash,
-              content: options.chunk.content,
+              content: input,
               vector,
               syncId: options.syncId,
             }),
@@ -228,7 +237,7 @@ export const layer = (options: {
             vector: new Float32Array(vector),
             limit: options.limit,
           })
-          return results.map((r) => r.format()).join("\n\n")
+          return results.map((r) => r.content).join("\n\n")
         }, Effect.orDie),
         updateFile: Effect.fn("SemanticSearch.updateFile")(function* (path) {
           yield* Fiber.join(initialIndex)

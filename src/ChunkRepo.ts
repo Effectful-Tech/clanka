@@ -81,18 +81,7 @@ export class Chunk extends Model.Class<Chunk>("Chunk")({
   hash: Schema.String,
   vector: Float32ArrayField,
   syncId: SyncId,
-}) {
-  format(): string {
-    const lines = this.content.split("\n")
-    let out = ""
-    for (let i = 0; i < lines.length; i++) {
-      out += `${this.startLine + i}: ${lines[i]}\n`
-    }
-    return `File: ${this.path}
-
-${out}`
-  }
-}
+}) {}
 
 /**
  * @since 1.0.0

@@ -46,6 +46,20 @@ export class SemanticSearch extends ServiceMap.Service<
   }
 >()("clanka/SemanticSearch/SemanticSearch") {}
 
+export const makeEmbeddingResolver = (
+  resolver: EmbeddingModel.Service["resolver"],
+  options: {
+    readonly embeddingBatchSize?: number | undefined
+    readonly embeddingRequestDelay?: Duration.Input | undefined
+  },
+): EmbeddingModel.Service["resolver"] =>
+  resolver.pipe(
+    RequestResolver.setDelay(
+      options.embeddingRequestDelay ?? Duration.millis(50),
+    ),
+    RequestResolver.batchN(options.embeddingBatchSize ?? 500),
+  )
+
 /**
  * @since 1.0.0
  * @category Layers
@@ -75,12 +89,7 @@ export const layer = (options: {
       const embeddings = yield* EmbeddingModel.EmbeddingModel
       const pathService = yield* Path.Path
       const root = pathService.resolve(options.directory)
-      const resolver = embeddings.resolver.pipe(
-        RequestResolver.setDelay(
-          options.embeddingBatchSize ?? Duration.millis(50),
-        ),
-        RequestResolver.batchN(options.embeddingBatchSize ?? 500),
-      )
+      const resolver = makeEmbeddingResolver(embeddings.resolver, options)
       const concurrency = options.concurrency ?? 2000
       const indexHandle = yield* FiberHandle.make()
       const console = yield* Console.Console

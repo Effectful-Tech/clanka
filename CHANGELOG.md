@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.8
+
+### Patch Changes
+
+- [`1fbe66c`](https://github.com/Effectful-Tech/clanka/commit/1fbe66c1702220e3e1c2d2b4370bbcc90dfc77ca) Thanks [@tim-smart](https://github.com/tim-smart)! - bump treesitter versions
+
 ## 0.2.7
 
 ### Patch Changes

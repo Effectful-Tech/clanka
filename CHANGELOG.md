@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.7
+
+### Patch Changes
+
+- [`a37a374`](https://github.com/Effectful-Tech/clanka/commit/a37a37473f8f3639d8e61553c35ad3cbc6a9f51f) Thanks [@tim-smart](https://github.com/tim-smart)! - update tree sitter parsers
+
 ## 0.2.6
 
 ### Patch Changes

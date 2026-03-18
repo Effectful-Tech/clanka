@@ -43,11 +43,14 @@ describe("isProbablyMinified", () => {
 describe("chunkFileContent", () => {
   it("splits TypeScript into AST chunks with metadata", () => {
     const content = [
+      "// alpha docs",
       "export const alpha = 1",
+      "// beta docs",
       "function beta() {",
       "  return alpha",
       "}",
       "class Example {",
+      "  // gamma docs",
       "  gamma() {",
       "    return beta()",
       "  }",
@@ -63,28 +66,34 @@ describe("chunkFileContent", () => {
     expect(chunks[0]).toMatchObject({
       path: "src/example.ts",
       startLine: 1,
-      endLine: 1,
+      endLine: 2,
       name: "alpha",
       type: "variable",
       parent: undefined,
-      content: "export const alpha = 1",
+      content: ["// alpha docs", "export const alpha = 1"].join("\n"),
     })
     expect(chunks[1]).toMatchObject({
-      startLine: 2,
-      endLine: 4,
+      startLine: 3,
+      endLine: 6,
       name: "beta",
       type: "function",
       parent: undefined,
-      content: ["function beta() {", "  return alpha", "}"].join("\n"),
+      content: [
+        "// beta docs",
+        "function beta() {",
+        "  return alpha",
+        "}",
+      ].join("\n"),
     })
     expect(chunks[2]).toMatchObject({
-      startLine: 5,
-      endLine: 9,
+      startLine: 7,
+      endLine: 12,
       name: "Example",
       type: "class",
       parent: undefined,
       content: [
         "class Example {",
+        "  // gamma docs",
         "  gamma() {",
         "    return beta()",
         "  }",
@@ -92,12 +101,17 @@ describe("chunkFileContent", () => {
       ].join("\n"),
     })
     expect(chunks[3]).toMatchObject({
-      startLine: 6,
-      endLine: 8,
+      startLine: 8,
+      endLine: 11,
       name: "gamma",
       type: "method",
       parent: "class Example",
-      content: ["  gamma() {", "    return beta()", "  }"].join("\n"),
+      content: [
+        "  // gamma docs",
+        "  gamma() {",
+        "    return beta()",
+        "  }",
+      ].join("\n"),
     })
 
     expect(

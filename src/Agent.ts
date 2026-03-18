@@ -483,19 +483,20 @@ const generateSystemTools = (
 - Top level await is supported.${
   capabilities.supportsSearch
     ? `
-- AVOID USING the "rg" function and instead use "search", unless you are targeting specific files or need regex.`
+- AVOID USING the "rg" function and instead use "search", unless you are targeting specific files or patterns.`
     : ""
 }
-- AVOID passing scripts into the "bash" function, and instead write javascript.
 - Do as much work as possible in a single script, using \`Promise.all\` to run multiple functions in parallel.
-- Variables **are not shared** between executions, so you must include all necessary code in each script you execute.
-- Use the "delegate" function to assign complex jobs to another software engineer.
+- AVOID passing scripts into the "bash" function, and instead write javascript.
+- **Variables are not shared** between executions, so you must include all necessary code in each script you execute.
+- Use the "delegate" function to assign jobs to another software engineer.
+- Make sure to escape strings correctly when calling functions.
 
-**When you have fully completed your task**, call the "taskComplete" function with the final output.
+When you have fully completed your task, call the "taskComplete" function with the final output.
 DO NOT output the final result without wrapping it with "taskComplete".
 Make sure every detail of the task is done before calling "taskComplete".
 
-Apart from standard javascript apis, **you only have** the following functions available to you:
+Apart from standard javascript apis, **you only have the following** functions available to you:
 
 \`\`\`ts
 ${capabilities.toolsDts}

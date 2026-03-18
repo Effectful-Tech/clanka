@@ -1,0 +1,5 @@
+---
+"clanka": patch
+---
+
+prompt tweaks

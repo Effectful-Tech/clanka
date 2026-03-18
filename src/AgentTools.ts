@@ -5,7 +5,7 @@ import * as Glob from "glob"
 import { parsePatch, patchChunks } from "./ApplyPatch.ts"
 import * as ExaSearch from "./ExaSearch.ts"
 import * as WebToMarkdown from "./WebToMarkdown.ts"
-import type * as HttpClient from "effect/unstable/http/HttpClient"
+import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as ServiceMap from "effect/ServiceMap"
 import * as Effect from "effect/Effect"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
@@ -192,6 +192,13 @@ export const AgentTools = Toolkit.make(
     }),
     success: Schema.String,
   }),
+  Tool.make("fetchJson", {
+    description: "Fetch a URL and decode the response as JSON.",
+    parameters: Schema.String.annotate({
+      identifier: "url",
+    }),
+    success: Schema.Unknown,
+  }),
   Tool.make("sleep", {
     description: "Sleep for a specified number of milliseconds",
     parameters: Schema.Finite.annotate({
@@ -239,6 +246,13 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const fs = yield* FileSystem.FileSystem
     const pathService = yield* Path.Path
+    const httpClient = (yield* HttpClient.HttpClient).pipe(
+      HttpClient.followRedirects(),
+      HttpClient.filterStatusOk,
+      HttpClient.retryTransient({
+        times: 3,
+      }),
+    )
     const webSearch = yield* ExaSearch.ExaSearch
     const fetchMarkdown = yield* WebToMarkdown.WebToMarkdown
 
@@ -433,6 +447,13 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           Effect.annotateLogs({ url }),
         )
         return yield* fetchMarkdown.convertUrl(url)
+      }, Effect.orDie),
+      fetchJson: Effect.fn("AgentTools.fetchJson")(function* (url) {
+        yield* Effect.logInfo(`Calling "fetchJson"`).pipe(
+          Effect.annotateLogs({ url }),
+        )
+        const response = yield* httpClient.get(url)
+        return yield* response.json
       }, Effect.orDie),
       sleep: Effect.fn("AgentTools.sleep")(function* (ms) {
         yield* Effect.logInfo(`Calling "sleep" for ${ms}ms`)

@@ -166,13 +166,6 @@ export const AgentTools = Toolkit.make(
     }),
     dependencies: [CurrentDirectory],
   }),
-  Tool.make("mkdir", {
-    description: "Make a directory, creating parent directories if needed.",
-    parameters: Schema.String.annotate({
-      identifier: "path",
-    }),
-    dependencies: [CurrentDirectory],
-  }),
   Tool.make("ls", {
     description: "List the contents of a directory",
     parameters: Schema.String.annotate({
@@ -324,15 +317,6 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         yield* fs.rename(from, to)
         yield* SemanticSearch.maybeRemoveFile(pathService.relative(cwd, from))
         yield* SemanticSearch.maybeUpdateFile(pathService.relative(cwd, to))
-      }, Effect.orDie),
-      mkdir: Effect.fn("AgentTools.mkdir")(function* (path) {
-        yield* Effect.logInfo(`Calling "mkdir"`).pipe(
-          Effect.annotateLogs({ path }),
-        )
-        const cwd = yield* CurrentDirectory
-        return yield* fs.makeDirectory(pathService.resolve(cwd, path), {
-          recursive: true,
-        })
       }, Effect.orDie),
       ls: Effect.fn("AgentTools.ls")(function* (path) {
         yield* Effect.logInfo(`Calling "ls"`).pipe(

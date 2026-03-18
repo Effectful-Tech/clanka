@@ -490,14 +490,13 @@ const generateSystemTools = (
 - AVOID passing scripts into the "bash" function, and instead write javascript.
 - **Variables are not shared** between executions, so you must include all necessary code in each script you execute.
 - Use the "delegate" function to assign jobs to another software engineer.
-- Make sure to escape strings correctly when calling functions.
+- DO NOT use \`require\`, \`import\`, \`process\`, or any other node apis.
 
 When you have fully completed your task, call the "taskComplete" function with the final output.
 DO NOT output the final result without wrapping it with "taskComplete".
 Make sure every detail of the task is done before calling "taskComplete".
 
-Apart from standard javascript apis, **you only have the following** functions available to you:
-DO NOT use \`require\` or \`import\` to access any other modules, as they are not available.
+You have these functions available to you:
 
 \`\`\`ts
 ${capabilities.toolsDts}

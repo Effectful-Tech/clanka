@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest"
+import { assert, describe, expect, it } from "@effect/vitest"
 import {
   chunkFileContent,
   isMeaningfulFile,
   isProbablyMinified,
 } from "./CodeChunker.ts"
+import { readFileSync } from "node:fs"
 
 describe("isMeaningfulFile", () => {
   it("keeps source and documentation files", () => {
@@ -317,5 +318,19 @@ describe("chunkFileContent", () => {
       chunkOverlap: 0,
     })
     expect(chunks).toEqual([])
+  })
+
+  it("seperates class methods into their own chunks", () => {
+    const fixture = readFileSync(
+      "/Volumes/Code/effect/effect-smol/packages/effect/src/internal/effect.ts",
+      "utf-8",
+    )
+    const chunks = chunkFileContent("src/fiber.ts", fixture, {
+      chunkSize: 30,
+      chunkOverlap: 0,
+    })
+    const runLoopChunk = chunks.find((chunk) => chunk.name === "runLoop")
+    assert(runLoopChunk, "Expected to find a chunk for the runLoop method")
+    assert.strictEqual(runLoopChunk.type, "method")
   })
 })

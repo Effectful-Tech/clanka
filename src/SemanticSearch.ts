@@ -27,8 +27,8 @@ import * as Console from "effect/Console"
 const normalizePath = (path: string) => path.replace(/\\/g, "/")
 
 const chunkConfig = {
-  chunkSize: 20,
-  chunkOverlap: 5,
+  chunkSize: 30,
+  chunkOverlap: 0,
 } as const
 
 /**
@@ -62,20 +62,18 @@ export const makeEmbeddingResolver = (
   )
 
 export const chunkEmbeddingInput = (chunk: CodeChunker.CodeChunk): string => {
-  const headerLines = [
-    "File: " + chunk.path,
-    "Lines: " + String(chunk.startLine) + "-" + String(chunk.endLine),
-  ]
+  const headerLines = ["---", "file: " + chunk.path]
 
   if (chunk.name !== undefined) {
-    headerLines.push("Name: " + chunk.name)
+    headerLines.push("name: " + chunk.name)
   }
   if (chunk.type !== undefined) {
-    headerLines.push("Type: " + chunk.type)
+    headerLines.push("type: " + chunk.type)
   }
   if (chunk.parent !== undefined) {
-    headerLines.push("Parent: " + chunk.parent)
+    headerLines.push("parent: " + chunk.parent)
   }
+  headerLines.push(`lines: ${chunk.startLine}-${chunk.endLine}`, `---`)
 
   return headerLines.join("\n") + "\n\n" + chunk.content
 }

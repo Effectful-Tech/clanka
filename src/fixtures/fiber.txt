@@ -1,0 +1,255 @@
+// ----------------------------------------------------------------------------
+// Fiber
+// ----------------------------------------------------------------------------
+
+/** @internal */
+export const FiberTypeId = `~effect/Fiber/${version}` as const
+
+const fiberVariance = {
+  _A: identity,
+  _E: identity,
+}
+
+const fiberIdStore = { id: 0 }
+
+/** @internal */
+export const getCurrentFiber = (): Fiber.Fiber<any, any> | undefined =>
+  (globalThis as any)[currentFiberTypeId]
+
+/** @internal */
+export class FiberImpl<A = any, E = any> implements Fiber.Fiber<A, E> {
+  constructor(
+    services: ServiceMap.ServiceMap<never>,
+    interruptible: boolean = true,
+  ) {
+    this[FiberTypeId] = fiberVariance as any
+    this.setServices(services)
+    this.id = ++fiberIdStore.id
+    this.currentOpCount = 0
+    this.currentLoopCount = 0
+    this.interruptible = interruptible
+    this._stack = []
+    this._observers = []
+    this._exit = undefined
+    this._children = undefined
+    this._interruptedCause = undefined
+    this._yielded = undefined
+  }
+
+  readonly [FiberTypeId]: Fiber.Fiber.Variance<A, E>
+
+  readonly id: number
+  interruptible: boolean
+  currentOpCount: number
+  currentLoopCount: number
+  readonly _stack: Array<Primitive>
+  readonly _observers: Array<(exit: Exit.Exit<A, E>) => void>
+  _exit: Exit.Exit<A, E> | undefined
+  _currentExit: Exit.Exit<A, E> | undefined
+  _children: Set<FiberImpl<any, any>> | undefined
+  _interruptedCause: Cause.Cause<never> | undefined
+  _yielded: Exit.Exit<any, any> | (() => void) | undefined
+
+  // set in setServices
+  services!: ServiceMap.ServiceMap<never>
+  currentScheduler!: Scheduler.Scheduler
+  currentTracerContext: Tracer.Tracer["context"]
+  currentSpan: Tracer.AnySpan | undefined
+  currentLogLevel!: LogLevel.LogLevel
+  minimumLogLevel!: LogLevel.LogLevel
+  currentStackFrame: StackFrame | undefined
+  runtimeMetrics: Metric.FiberRuntimeMetricsService | undefined
+  maxOpsBeforeYield!: number
+  currentPreventYield!: boolean
+
+  _dispatcher: Scheduler.SchedulerDispatcher | undefined = undefined
+  get currentDispatcher(): Scheduler.SchedulerDispatcher {
+    return (this._dispatcher ??= this.currentScheduler.makeDispatcher())
+  }
+
+  getRef<X>(ref: ServiceMap.Reference<X>): X {
+    return ServiceMap.getReferenceUnsafe(this.services, ref)
+  }
+  addObserver(cb: (exit: Exit.Exit<A, E>) => void): () => void {
+    if (this._exit) {
+      cb(this._exit)
+      return constVoid
+    }
+    this._observers.push(cb)
+    return () => {
+      const index = this._observers.indexOf(cb)
+      if (index >= 0) {
+        this._observers.splice(index, 1)
+      }
+    }
+  }
+  interruptUnsafe(
+    fiberId?: number | undefined,
+    annotations?: ServiceMap.ServiceMap<never> | undefined,
+  ): void {
+    if (this._exit) {
+      return
+    }
+    let cause = causeInterrupt(fiberId)
+    if (this.currentStackFrame) {
+      cause = causeAnnotate(
+        cause,
+        ServiceMap.make(CauseStackTrace, this.currentStackFrame),
+      )
+    }
+    if (annotations) {
+      cause = causeAnnotate(cause, annotations)
+    }
+    this._interruptedCause = this._interruptedCause
+      ? causeCombine(this._interruptedCause, cause)
+      : cause
+    if (this.interruptible) {
+      this.evaluate(failCause(this._interruptedCause) as any)
+    }
+  }
+  pollUnsafe(): Exit.Exit<A, E> | undefined {
+    return this._exit
+  }
+  evaluate(effect: Primitive): void {
+    this.runtimeMetrics?.recordFiberStart(this.services)
+    if (this._exit) {
+      return
+    } else if (this._yielded !== undefined) {
+      const yielded = this._yielded as () => void
+      this._yielded = undefined
+      yielded()
+    }
+    const exit = this.runLoop(effect)
+    if (exit === Yield) {
+      return
+    }
+    // the interruptChildren middleware is added in Effect.forkChild, so it can be
+    // tree-shaken if not used
+    const interruptChildren =
+      fiberMiddleware.interruptChildren &&
+      fiberMiddleware.interruptChildren(this)
+    if (interruptChildren !== undefined) {
+      return this.evaluate(flatMap(interruptChildren, () => exit) as any)
+    }
+
+    this._exit = exit
+    this.runtimeMetrics?.recordFiberEnd(this.services, this._exit)
+    for (let i = 0; i < this._observers.length; i++) {
+      this._observers[i](exit)
+    }
+    this._observers.length = 0
+  }
+  runLoop(effect: Primitive): Exit.Exit<A, E> | Yield {
+    const prevFiber = (globalThis as any)[currentFiberTypeId]
+    ;(globalThis as any)[currentFiberTypeId] = this
+    let yielding = false
+    let current: Primitive | Yield = effect
+    this.currentOpCount = 0
+    const currentLoop = ++this.currentLoopCount
+    try {
+      while (true) {
+        this.currentOpCount++
+        if (
+          !yielding &&
+          !this.currentPreventYield &&
+          this.currentScheduler.shouldYield(this as any)
+        ) {
+          yielding = true
+          const prev = current
+          current = flatMap(yieldNow, () => prev as any) as any
+        }
+        current = this.currentTracerContext
+          ? this.currentTracerContext(current as any, this)
+          : (current as any)[evaluate](this)
+        if (currentLoop !== this.currentLoopCount) {
+          // another effect has taken over the loop,
+          return Yield
+        } else if (current === Yield) {
+          const yielded = this._yielded!
+          if (ExitTypeId in yielded) {
+            this._yielded = undefined
+            return yielded
+          }
+          return Yield
+        }
+      }
+    } catch (error) {
+      if (!hasProperty(current, evaluate)) {
+        return exitDie(`Fiber.runLoop: Not a valid effect: ${String(current)}`)
+      }
+      return this.runLoop(exitDie(error) as any)
+    } finally {
+      ;(globalThis as any)[currentFiberTypeId] = prevFiber
+    }
+  }
+  getCont<S extends contA | contE>(
+    symbol: S,
+  ):
+    | (Primitive & Record<S, (value: any, fiber: FiberImpl) => Primitive>)
+    | undefined {
+    while (true) {
+      const op = this._stack.pop()
+      if (!op) return undefined
+      const cont = op[contAll] && op[contAll](this)
+      if (cont) {
+        ;(cont as any)[symbol] = cont
+        return cont as any
+      }
+      if (op[symbol]) return op as any
+    }
+  }
+  yieldWith(value: Exit.Exit<any, any> | (() => void)): Yield {
+    this._yielded = value
+    return Yield
+  }
+  children(): Set<Fiber.Fiber<any, any>> {
+    return (this._children ??= new Set())
+  }
+  pipe() {
+    return pipeArguments(this, arguments)
+  }
+  setServices(services: ServiceMap.ServiceMap<never>): void {
+    this.services = services
+    const scheduler = this.getRef(Scheduler.Scheduler)
+    if (scheduler !== this.currentScheduler) {
+      this.currentScheduler = scheduler
+      this._dispatcher = undefined
+    }
+    this.currentSpan = services.mapUnsafe.get(Tracer.ParentSpanKey)
+    this.currentLogLevel = this.getRef(CurrentLogLevel)
+    this.minimumLogLevel = this.getRef(MinimumLogLevel)
+    this.currentStackFrame = services.mapUnsafe.get(CurrentStackFrame.key)
+    this.maxOpsBeforeYield = this.getRef(Scheduler.MaxOpsBeforeYield)
+    this.currentPreventYield = this.getRef(Scheduler.PreventSchedulerYield)
+    this.runtimeMetrics = services.mapUnsafe.get(
+      InternalMetric.FiberRuntimeMetricsKey,
+    )
+    const currentTracer = services.mapUnsafe.get(Tracer.TracerKey)
+    this.currentTracerContext = currentTracer
+      ? currentTracer["context"]
+      : undefined
+  }
+  get currentSpanLocal(): Tracer.Span | undefined {
+    return this.currentSpan?._tag === "Span" ? this.currentSpan : undefined
+  }
+}
+
+const fiberMiddleware = {
+  interruptChildren: undefined as
+    | ((fiber: FiberImpl) => Effect.Effect<void> | undefined)
+    | undefined,
+}
+
+const fiberStackAnnotations = (fiber: Fiber.Fiber<any, any>) => {
+  if (!fiber.currentStackFrame) return undefined
+  const annotations = new Map<string, unknown>()
+  annotations.set(CauseStackTrace.key, fiber.currentStackFrame)
+  return ServiceMap.makeUnsafe(annotations)
+}
+
+const fiberInterruptChildren = (fiber: FiberImpl) => {
+  if (fiber._children === undefined || fiber._children.size === 0) {
+    return undefined
+  }
+  return fiberInterruptAll(fiber._children)
+}

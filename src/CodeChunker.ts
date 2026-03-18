@@ -11,7 +11,7 @@ import * as ServiceMap from "effect/ServiceMap"
 import * as Stream from "effect/Stream"
 import * as ChildProcess from "effect/unstable/process/ChildProcess"
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
-import TreeSitter from "tree-sitter"
+import TreeSitter, { type SyntaxNode } from "tree-sitter"
 import TreeSitterJavaScript from "tree-sitter-javascript"
 import TreeSitterTypeScript from "tree-sitter-typescript"
 
@@ -91,8 +91,6 @@ const sourceExtensions = new Set([
   "ini",
   "java",
   "js",
-  "json",
-  "jsonc",
   "jsx",
   "kt",
   "kts",
@@ -101,7 +99,6 @@ const sourceExtensions = new Set([
   "mjs",
   "mts",
   "php",
-  "properties",
   "py",
   "rb",
   "rs",
@@ -112,13 +109,10 @@ const sourceExtensions = new Set([
   "sql",
   "svelte",
   "swift",
-  "toml",
   "ts",
   "tsx",
   "vue",
   "xml",
-  "yaml",
-  "yml",
   "zsh",
 ])
 
@@ -129,29 +123,6 @@ const documentationExtensions = new Set([
   "mdx",
   "rst",
   "txt",
-])
-
-const allowedBareFileNames = new Set([
-  ".editorconfig",
-  ".gitignore",
-  ".npmrc",
-  ".nvmrc",
-  "dockerfile",
-  "justfile",
-  "license",
-  "makefile",
-  "readme",
-])
-
-const ignoredFileNames = new Set([
-  "bun.lock",
-  "bun.lockb",
-  "cargo.lock",
-  "composer.lock",
-  "package-lock.json",
-  "pnpm-lock.yaml",
-  "poetry.lock",
-  "yarn.lock",
 ])
 
 const ignoredDirectories = new Set([
@@ -193,56 +164,14 @@ interface ChunkRange extends LineRange {
   readonly parent: string | undefined
 }
 
-interface AstPoint {
-  readonly row: number
-}
-
-interface AstNode {
-  readonly type: string
-  readonly text: string
-  readonly startPosition: AstPoint
-  readonly endPosition: AstPoint
-  readonly namedChildren: ReadonlyArray<AstNode>
-  childForFieldName(name: string): AstNode | null
-}
-
-interface AstTree {
-  readonly rootNode: AstNode
-}
-
-interface AstParser {
-  setLanguage(language: unknown): void
-  parse(input: string): AstTree
-}
-
-type AstParserConstructor = new () => AstParser
-
-const AstParser = TreeSitter as unknown as AstParserConstructor
-
 const languageByExtension = new Map<string, unknown>([
-  ["cjs", TreeSitterJavaScript],
-  ["cts", TreeSitterTypeScript.typescript],
   ["js", TreeSitterJavaScript],
   ["jsx", TreeSitterJavaScript],
-  ["mjs", TreeSitterJavaScript],
-  ["mts", TreeSitterTypeScript.typescript],
   ["ts", TreeSitterTypeScript.typescript],
   ["tsx", TreeSitterTypeScript.tsx],
 ])
 
-const ignoredTopLevelNodeTypes = new Set(["comment", "import_statement"])
-
-const methodNodeTypes = new Set([
-  "generator_method_definition",
-  "method_definition",
-])
-
-const functionValueNodeTypes = new Set([
-  "arrow_function",
-  "function_expression",
-  "generator_function",
-  "generator_function_expression",
-])
+// const ignoredTopLevelNodeTypes = new Set(["comment", "import_statement"])
 
 /**
  * @since 1.0.0
@@ -286,20 +215,8 @@ export const isMeaningfulFile = (path: string): boolean => {
     return false
   }
 
-  if (ignoredFileNames.has(fileName)) {
-    return false
-  }
-
   if (/\.min\.(?:css|js)$/i.test(fileName)) {
     return false
-  }
-
-  if (fileName.endsWith(".map")) {
-    return false
-  }
-
-  if (allowedBareFileNames.has(fileName)) {
-    return true
   }
 
   const extensionIndex = fileName.lastIndexOf(".")
@@ -352,7 +269,7 @@ const resolveAstLanguage = (path: string): unknown => {
   return languageByExtension.get(extension)
 }
 
-const lineRangeFromNode = (node: AstNode): LineRange => {
+const lineRangeFromNode = (node: SyntaxNode): LineRange => {
   const startLine = node.startPosition.row + 1
   const endLine = Math.max(startLine, node.endPosition.row + 1)
   return {
@@ -380,8 +297,8 @@ const hasOnlyWhitespaceLines = (
 }
 
 const lineRangeWithLeadingComments = (
-  node: AstNode,
-  siblings: ReadonlyArray<AstNode>,
+  node: SyntaxNode,
+  siblings: ReadonlyArray<SyntaxNode>,
   nodeIndex: number,
   lines: ReadonlyArray<string>,
 ): LineRange => {
@@ -458,7 +375,7 @@ const splitRange = (
   return out
 }
 
-const nodeText = (node: AstNode | null): string | undefined => {
+const nodeText = (node: SyntaxNode | null): string | undefined => {
   if (node === null) {
     return undefined
   }
@@ -467,10 +384,12 @@ const nodeText = (node: AstNode | null): string | undefined => {
   return value.length === 0 ? undefined : value
 }
 
-const nodeFieldText = (node: AstNode, fieldName: string): string | undefined =>
-  nodeText(node.childForFieldName(fieldName))
+const nodeFieldText = (
+  node: SyntaxNode,
+  fieldName: string,
+): string | undefined => nodeText(node.childForFieldName(fieldName))
 
-const unwrapExportNode = (node: AstNode): AstNode => {
+const unwrapExportNode = (node: SyntaxNode): SyntaxNode => {
   if (node.type !== "export_statement") {
     return node
   }
@@ -478,18 +397,18 @@ const unwrapExportNode = (node: AstNode): AstNode => {
   return node.childForFieldName("declaration") ?? node
 }
 
-const variableDeclarators = (node: AstNode): ReadonlyArray<AstNode> =>
+const variableDeclarators = (node: SyntaxNode): ReadonlyArray<SyntaxNode> =>
   node.namedChildren.filter((child) => child.type === "variable_declarator")
 
-const variableTypeFromDeclarator = (node: AstNode): ChunkType => {
+const variableTypeFromDeclarator = (node: SyntaxNode): ChunkType => {
   const value = node.childForFieldName("value")
-  if (value !== null && functionValueNodeTypes.has(value.type)) {
+  if (value !== null && value.type.includes("function")) {
     return "function"
   }
   return "variable"
 }
 
-const variableTypeFromDeclaration = (node: AstNode): ChunkType => {
+const variableTypeFromDeclaration = (node: SyntaxNode): ChunkType => {
   const declarators = variableDeclarators(node)
   if (
     declarators.some(
@@ -501,7 +420,7 @@ const variableTypeFromDeclaration = (node: AstNode): ChunkType => {
   return "variable"
 }
 
-const chunkTypeFromNode = (node: AstNode): ChunkType | undefined => {
+const chunkTypeFromNode = (node: SyntaxNode): ChunkType | undefined => {
   switch (node.type) {
     case "class_declaration":
       return "class"
@@ -527,7 +446,7 @@ const chunkTypeFromNode = (node: AstNode): ChunkType | undefined => {
   }
 }
 
-const variableNamesFromDeclaration = (node: AstNode): string | undefined => {
+const variableNamesFromDeclaration = (node: SyntaxNode): string | undefined => {
   const names = variableDeclarators(node)
     .map((declarator) => nodeFieldText(declarator, "name"))
     .filter((name): name is string => name !== undefined)
@@ -539,7 +458,7 @@ const variableNamesFromDeclaration = (node: AstNode): string | undefined => {
   return names.join(", ")
 }
 
-const nameFromNode = (node: AstNode): string | undefined => {
+const nameFromNode = (node: SyntaxNode): string | undefined => {
   switch (node.type) {
     case "class_declaration":
     case "enum_declaration":
@@ -576,7 +495,7 @@ const formatParent = (
 }
 
 const collectClassMethodRanges = (
-  classNode: AstNode,
+  classNode: SyntaxNode,
   parent: string | undefined,
   lines: ReadonlyArray<string>,
 ): ReadonlyArray<ChunkRange> => {
@@ -588,7 +507,7 @@ const collectClassMethodRanges = (
   const out = [] as Array<ChunkRange>
   for (let index = 0; index < body.namedChildren.length; index++) {
     const child = body.namedChildren[index]!
-    if (!methodNodeTypes.has(child.type)) {
+    if (!child.type.includes("method")) {
       continue
     }
 
@@ -614,15 +533,20 @@ const collectAstRanges = (
   }
 
   try {
-    const parser = new AstParser()
+    const parser = new TreeSitter()
     parser.setLanguage(language)
-    const tree = parser.parse(content)
+    const tree = parser.parse(content, undefined, {
+      bufferSize: 1024 * 1024,
+    })
     const out = [] as Array<ChunkRange>
 
     const topLevelNodes = tree.rootNode.namedChildren
     for (let index = 0; index < topLevelNodes.length; index++) {
       const topLevelNode = topLevelNodes[index]!
-      if (ignoredTopLevelNodeTypes.has(topLevelNode.type)) {
+      if (
+        topLevelNode.type === "comment" ||
+        topLevelNode.type.includes("import")
+      ) {
         continue
       }
 

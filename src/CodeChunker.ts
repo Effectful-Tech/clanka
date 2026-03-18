@@ -534,7 +534,7 @@ const collectAstRanges = (
 
   try {
     const parser = new TreeSitter()
-    parser.setLanguage(language as TreeSitter.Language)
+    parser.setLanguage(language)
     const tree = parser.parse(content, undefined, {
       bufferSize: 1024 * 1024,
     })

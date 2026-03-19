@@ -1,5 +1,13 @@
 # clanka
 
+## 0.2.17
+
+### Patch Changes
+
+- [`279e496`](https://github.com/Effectful-Tech/clanka/commit/279e4967b20b0197f075b17ab90a3c7b38265fa2) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing for broken patch templates by handling standalone `patch` assignments and normalizing over-escaped quoted words inside patch bodies before escaping template delimiters.
+
+- [`8f43842`](https://github.com/Effectful-Tech/clanka/commit/8f43842d37316e960d5f1d4ff3a520d65e0b213b) Thanks [@tim-smart](https://github.com/tim-smart)! - update applyPatch description
+
 ## 0.2.16
 
 ### Patch Changes

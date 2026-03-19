@@ -5,6 +5,7 @@ import {
   isProbablyMinified,
 } from "./CodeChunker.ts"
 import { readFileSync } from "node:fs"
+import { join } from "node:path"
 
 describe("isMeaningfulFile", () => {
   it("keeps source and documentation files", () => {
@@ -322,7 +323,7 @@ describe("chunkFileContent", () => {
 
   it("seperates class methods into their own chunks", () => {
     const fixture = readFileSync(
-      "/Volumes/Code/effect/effect-smol/packages/effect/src/internal/effect.ts",
+      join(__dirname, "fixtures", "fiber.txt"),
       "utf-8",
     )
     const chunks = chunkFileContent("src/fiber.ts", fixture, {

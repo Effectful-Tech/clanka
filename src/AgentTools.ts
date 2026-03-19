@@ -22,6 +22,12 @@ import * as Data from "effect/Data"
 import * as Layer from "effect/Layer"
 import * as SemanticSearch from "./SemanticSearch.ts"
 
+const BASH_DEFAULT_TIMEOUT_MS = 120_000
+const BASH_MAX_TIMEOUT_MS = 240_000
+
+export const normalizeBashTimeoutMs = (timeoutMs: number | undefined): number =>
+  Math.min(timeoutMs ?? BASH_DEFAULT_TIMEOUT_MS, BASH_MAX_TIMEOUT_MS)
+
 /**
  * @since 1.0.0
  * @category Context
@@ -124,7 +130,7 @@ export const AgentTools = Toolkit.make(
     parameters: Schema.Struct({
       command: Schema.String,
       timeoutMs: Schema.optional(Schema.Finite).annotate({
-        documentation: "Timeout in ms (default: 120000)",
+        documentation: "Timeout in ms (default: 120000, max: 240000)",
       }),
     }).annotate({
       identifier: "command",
@@ -372,7 +378,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         return yield* Effect.promise(() => Glob.glob(pattern, { cwd }))
       }),
       bash: Effect.fn("AgentTools.bash")(function* (options) {
-        const timeoutMs = options.timeoutMs ?? 120_000
+        const timeoutMs = normalizeBashTimeoutMs(options.timeoutMs)
         yield* Effect.logInfo(`Calling "bash"`).pipe(
           Effect.annotateLogs({
             ...options,

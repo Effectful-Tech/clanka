@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.13
+
+### Patch Changes
+
+- [`6666be6`](https://github.com/Effectful-Tech/clanka/commit/6666be6a0e70f7486418af4c8befaf77ba5f3203) Thanks [@tim-smart](https://github.com/tim-smart)! - batch existence checks
+
 ## 0.2.12
 
 ### Patch Changes

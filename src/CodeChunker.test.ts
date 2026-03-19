@@ -346,5 +346,11 @@ describe("chunkFileContent", () => {
     })
     const names = chunks.map((chunk) => chunk.name)
     assert.deepStrictEqual(names, ["Yieldable", "Any", "Success"])
+    const parents = chunks.map((chunk) => chunk.parent)
+    assert.deepStrictEqual(parents, [
+      undefined,
+      "namespace Yieldable",
+      "namespace Yieldable",
+    ])
   })
 })

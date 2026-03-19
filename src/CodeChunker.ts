@@ -37,6 +37,7 @@ export type ChunkType =
   | "function"
   | "method"
   | "class"
+  | "namespace"
   | "interface"
   | "type-alias"
   | "enum"
@@ -389,12 +390,37 @@ const nodeFieldText = (
   fieldName: string,
 ): string | undefined => nodeText(node.childForFieldName(fieldName))
 
-const unwrapExportNode = (node: SyntaxNode): SyntaxNode => {
-  if (node.type !== "export_statement") {
-    return node
-  }
+const isNamespaceNode = (node: SyntaxNode): boolean =>
+  node.type === "internal_module" || node.type === "module"
 
-  return node.childForFieldName("declaration") ?? node
+const unwrapDeclarationNode = (node: SyntaxNode): SyntaxNode => {
+  let current = node
+
+  while (true) {
+    if (current.type === "export_statement") {
+      const declaration =
+        current.childForFieldName("declaration") ?? current.namedChildren[0]
+      if (declaration === undefined) {
+        return current
+      }
+      current = declaration
+      continue
+    }
+
+    if (current.type === "ambient_declaration") {
+      const declaration = current.namedChildren.find(
+        (child) =>
+          child.type.endsWith("_declaration") || isNamespaceNode(child),
+      )
+      if (declaration === undefined) {
+        return current
+      }
+      current = declaration
+      continue
+    }
+
+    return current
+  }
 }
 
 const variableDeclarators = (node: SyntaxNode): ReadonlyArray<SyntaxNode> =>
@@ -429,6 +455,9 @@ const chunkTypeFromNode = (node: SyntaxNode): ChunkType | undefined => {
     case "function_declaration":
     case "generator_function_declaration":
       return "function"
+    case "internal_module":
+    case "module":
+      return "namespace"
     case "interface_declaration":
       return "interface"
     case "generator_method_definition":
@@ -464,7 +493,9 @@ const nameFromNode = (node: SyntaxNode): string | undefined => {
     case "enum_declaration":
     case "function_declaration":
     case "generator_function_declaration":
+    case "internal_module":
     case "interface_declaration":
+    case "module":
     case "generator_method_definition":
     case "method_definition":
     case "type_alias_declaration":
@@ -538,41 +569,59 @@ const collectAstRanges = (
     const tree = parser.parse(content, undefined, {
       bufferSize: 1024 * 1024,
     })
-    const out = [] as Array<ChunkRange>
+    const collectDeclarationRanges = (
+      siblings: ReadonlyArray<SyntaxNode>,
+      parent: string | undefined,
+    ): ReadonlyArray<ChunkRange> => {
+      const out = [] as Array<ChunkRange>
 
-    const topLevelNodes = tree.rootNode.namedChildren
-    for (let index = 0; index < topLevelNodes.length; index++) {
-      const topLevelNode = topLevelNodes[index]!
-      if (
-        topLevelNode.type === "comment" ||
-        topLevelNode.type.includes("import")
-      ) {
-        continue
+      for (let index = 0; index < siblings.length; index++) {
+        const sibling = siblings[index]!
+        if (sibling.type === "comment" || sibling.type.includes("import")) {
+          continue
+        }
+
+        const declarationNode = unwrapDeclarationNode(sibling)
+        const type = chunkTypeFromNode(declarationNode)
+        const name = nameFromNode(declarationNode)
+        if (type === undefined && name === undefined) {
+          continue
+        }
+
+        out.push({
+          ...lineRangeWithLeadingComments(sibling, siblings, index, lines),
+          name,
+          type,
+          parent,
+        })
+
+        if (declarationNode.type === "class_declaration") {
+          out.push(
+            ...collectClassMethodRanges(
+              declarationNode,
+              formatParent(type, name),
+              lines,
+            ),
+          )
+        }
+
+        if (isNamespaceNode(declarationNode)) {
+          const body = declarationNode.childForFieldName("body")
+          if (body !== null) {
+            out.push(
+              ...collectDeclarationRanges(
+                body.namedChildren,
+                formatParent(type, name),
+              ),
+            )
+          }
+        }
       }
 
-      const declarationNode = unwrapExportNode(topLevelNode)
-      const type = chunkTypeFromNode(declarationNode)
-      const name = nameFromNode(declarationNode)
-
-      out.push({
-        ...lineRangeWithLeadingComments(
-          topLevelNode,
-          topLevelNodes,
-          index,
-          lines,
-        ),
-        name,
-        type,
-        parent: undefined,
-      })
-
-      if (declarationNode.type === "class_declaration") {
-        const parent = formatParent(type, name)
-        out.push(...collectClassMethodRanges(declarationNode, parent, lines))
-      }
+      return out
     }
 
-    return out
+    return collectDeclarationRanges(tree.rootNode.namedChildren, undefined)
   } catch {
     return []
   }

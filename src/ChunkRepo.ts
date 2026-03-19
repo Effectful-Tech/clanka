@@ -77,8 +77,6 @@ export const Float32ArrayField = Model.Field({
 export class Chunk extends Model.Class<Chunk>("Chunk")({
   id: Model.Generated(ChunkId),
   path: Schema.String,
-  startLine: Schema.Number,
-  endLine: Schema.Number,
   content: Schema.String,
   hash: Schema.String,
   vector: Float32ArrayField,
@@ -167,7 +165,7 @@ export const layer = Layer.effect(
       Result: Chunk,
       execute: ({ vector, limit }) =>
         sql`
-          select chunks.id, chunks.path, chunks.startLine, chunks.endLine, chunks.content, chunks.hash, chunks.syncId
+          select chunks.id, chunks.path, chunks.content, chunks.hash, chunks.syncId
           from chunks
           JOIN vector_quantize_scan('chunks', 'vector', ${vector}, CAST(${limit} AS INTEGER)) AS v
           ON chunks.id = v.rowid

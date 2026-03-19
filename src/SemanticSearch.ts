@@ -164,8 +164,6 @@ export const layer = (options: {
           yield* repo.insert(
             ChunkRepo.Chunk.insert.makeUnsafe({
               path: options.chunk.path,
-              startLine: options.chunk.startLine,
-              endLine: options.chunk.endLine,
               hash,
               content: input,
               vector,

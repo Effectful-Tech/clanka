@@ -21,17 +21,15 @@ export const SqliteLayer = (database: string) =>
         const sql = yield* SqlClient.SqlClient
 
         yield* sql`CREATE TABLE IF NOT EXISTS chunks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        path TEXT NOT NULL,
-        startLine INTEGER NOT NULL,
-        endLine INTEGER NOT NULL,
-        content TEXT NOT NULL,
-        hash TEXT NOT NULL,
-        vector BLOB NOT NULL,
-        syncId TEXT NOT NULL
-      )`
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          path TEXT NOT NULL,
+          content TEXT NOT NULL,
+          hash TEXT NOT NULL,
+          vector BLOB NOT NULL,
+          syncId TEXT NOT NULL
+        )`
 
-        yield* sql`CREATE INDEX IF NOT EXISTS idx_chunks_path_start_end ON chunks (path, startLine, hash)`
+        yield* sql`CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks (hash)`
       }),
     }),
   }).pipe(

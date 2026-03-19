@@ -74,7 +74,7 @@ Effect.gen(function* () {
     prompt: process.argv.slice(2).join(" "),
   })
   yield* output.pipe(
-    OutputFormatter.pretty,
+    OutputFormatter.pretty(),
     Stream.runForEachArray((chunk) => {
       for (const out of chunk) {
         process.stdout.write(out)

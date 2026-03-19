@@ -11,6 +11,7 @@ import type { AgentFinished, Output } from "./Agent.ts"
 import chalk from "chalk"
 import type * as Prompt from "effect/unstable/ai/Prompt"
 import * as Cause from "effect/Cause"
+import { identity } from "effect/Function"
 
 /**
  * @since 1.0.0
@@ -24,70 +25,87 @@ export type OutputFormatter = <E, R>(
  * @since 1.0.0
  * @category Pretty
  */
-export const pretty: OutputFormatter = (stream) =>
-  stream.pipe(
-    Stream.map((output) => {
-      let prefix = ""
-      if (output._tag === "SubagentPart") {
-        prefix = chalk.magenta(`Subagent #${output.id}:`) + " "
-        output = output.part
-      }
-      switch (output._tag) {
-        case "AgentStart": {
-          return `${chalkAgentHeading(`${subagentIcon} Agent #${output.id} starting (${output.modelAndProvider})`)}\n\n${promptToString(output.prompt)}\n\n`
+export const pretty = (options?: {
+  readonly outputTruncation?: number | boolean | undefined
+}): OutputFormatter => {
+  const maxLines =
+    typeof options?.outputTruncation === "number"
+      ? options.outputTruncation
+      : 20
+  const truncate =
+    options?.outputTruncation === true ||
+    typeof options?.outputTruncation === "number"
+      ? (text: string): string => {
+          const lines = text.split("\n")
+          if (lines.length > maxLines) {
+            return (
+              lines.slice(0, maxLines).join("\n") +
+              `\n... (truncated, total ${lines.length} lines)`
+            )
+          }
+          return text
         }
-        case "SubagentStart": {
-          return `${chalkSubagentHeading(`${subagentIcon} Subagent #${output.id} starting (${output.modelAndProvider})`)}
+      : identity
+  return (stream) =>
+    stream.pipe(
+      Stream.map((output) => {
+        let prefix = ""
+        if (output._tag === "SubagentPart") {
+          prefix = chalk.magenta(`Subagent #${output.id}:`) + " "
+          output = output.part
+        }
+        switch (output._tag) {
+          case "AgentStart": {
+            return `${chalkAgentHeading(`${subagentIcon} Agent #${output.id} starting (${output.modelAndProvider})`)}\n\n${promptToString(output.prompt)}\n\n`
+          }
+          case "SubagentStart": {
+            return `${chalkSubagentHeading(`${subagentIcon} Subagent #${output.id} starting (${output.modelAndProvider})`)}
 
 ${chalk.dim(output.prompt)}\n\n`
-        }
-        case "SubagentComplete": {
-          return `${chalkSubagentHeading(`${subagentIcon} Subagent #${output.id} complete`)}
+          }
+          case "SubagentComplete": {
+            return `${chalkSubagentHeading(`${subagentIcon} Subagent #${output.id} complete`)}
 
 ${output.summary}\n\n`
+          }
+          case "ReasoningStart": {
+            return (
+              prefix + chalkReasoningHeading(`${thinkingIcon} Thinking:`) + " "
+            )
+          }
+          case "ReasoningDelta": {
+            return output.delta
+          }
+          case "ReasoningEnd": {
+            return "\n\n"
+          }
+          case "ScriptStart": {
+            return `${prefix}${chalkScriptHeading(`${scriptIcon} Executing script`)}\n\n`
+          }
+          case "ScriptDelta": {
+            return chalk.dim(output.delta)
+          }
+          case "ScriptEnd": {
+            return "\n\n"
+          }
+          case "ScriptOutput": {
+            return `${prefix}${chalkScriptHeading(`${scriptIcon} Script output`)}\n\n${chalk.dim(truncate(output.output))}\n\n`
+          }
+          case "ErrorRetry": {
+            return `${prefix}${chalk.red(`Error: ${output.error.reason._tag}. Retrying...`)}\n\n${chalk.dim(Cause.pretty(Cause.fail(output.error)))}\n\n`
+          }
+          case "Usage": {
+            return `${prefix}${chalkInfoHeading(`${infoIcon} Usage:`)} ${numberFormat.format(output.contextTokens)} context / ${numberFormat.format(output.inputTokens)} input / ${numberFormat.format(output.outputTokens)} output\n\n`
+          }
         }
-        case "ReasoningStart": {
-          return (
-            prefix + chalkReasoningHeading(`${thinkingIcon} Thinking:`) + " "
-          )
-        }
-        case "ReasoningDelta": {
-          return output.delta
-        }
-        case "ReasoningEnd": {
-          return "\n\n"
-        }
-        case "ScriptStart": {
-          return `${prefix}${chalkScriptHeading(`${scriptIcon} Executing script`)}\n\n`
-        }
-        case "ScriptDelta": {
-          return chalk.dim(output.delta)
-        }
-        case "ScriptEnd": {
-          return "\n\n"
-        }
-        case "ScriptOutput": {
-          const lines = output.output.split("\n")
-          const truncated =
-            lines.length > 20
-              ? lines.slice(0, 20).join("\n") + "\n... (truncated)"
-              : output.output
-          return `${prefix}${chalkScriptHeading(`${scriptIcon} Script output`)}\n\n${chalk.dim(truncated)}\n\n`
-        }
-        case "ErrorRetry": {
-          return `${prefix}${chalk.red(`Error: ${output.error.reason._tag}. Retrying...`)}\n\n${chalk.dim(Cause.pretty(Cause.fail(output.error)))}\n\n`
-        }
-        case "Usage": {
-          return `${prefix}${chalkInfoHeading(`${infoIcon} Usage:`)} ${numberFormat.format(output.contextTokens)} context / ${numberFormat.format(output.inputTokens)} input / ${numberFormat.format(output.outputTokens)} output\n\n`
-        }
-      }
-    }),
-    Stream.catchTag("AgentFinished", (finished) =>
-      Stream.succeed(
-        `\n${chalk.bold.green(`${doneIcon} Task complete:`)}\n\n${(finished as AgentFinished).summary}`,
+      }),
+      Stream.catchTag("AgentFinished", (finished) =>
+        Stream.succeed(
+          `\n${chalk.bold.green(`${doneIcon} Task complete:`)}\n\n${(finished as AgentFinished).summary}`,
+        ),
       ),
-    ),
-  )
+    )
+}
 
 const promptToString = (prompt: Prompt.Prompt): string => {
   let textParts: Array<string> = []

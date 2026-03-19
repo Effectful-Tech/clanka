@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.18
+
+### Patch Changes
+
+- [`d6f06e3`](https://github.com/Effectful-Tech/clanka/commit/d6f06e35c2757778f86a4004d11cad323e1e2f7a) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing for task update descriptions by escaping broken backticks in `updateTask` `description` templates (including identifier assignments), while preserving existing non-patch escapes.
+
 ## 0.2.17
 
 ### Patch Changes

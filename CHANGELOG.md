@@ -1,5 +1,13 @@
 # clanka
 
+## 0.2.11
+
+### Patch Changes
+
+- [`bd4568f`](https://github.com/Effectful-Tech/clanka/commit/bd4568fd04d3f453b44fd359790ade4a41cf7a67) Thanks [@tim-smart](https://github.com/tim-smart)! - allow configuring output truncation in pretty formatter
+
+- [#101](https://github.com/Effectful-Tech/clanka/pull/101) [`78d1e07`](https://github.com/Effectful-Tech/clanka/commit/78d1e0774e11564284c9eeb64bbad7b95f1fb404) Thanks [@tim-smart](https://github.com/tim-smart)! - add script pre-processing fallback that escapes unescaped backticks in applyPatch, writeFile, and taskComplete template arguments before execution
+
 ## 0.2.10
 
 ### Patch Changes

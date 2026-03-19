@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.14
+
+### Patch Changes
+
+- [`25368c9`](https://github.com/Effectful-Tech/clanka/commit/25368c95e2c4098ffa9c577168e4a6fbde98f012) Thanks [@tim-smart](https://github.com/tim-smart)! - Add TypeScript namespace support to CodeChunker AST chunking, including namespace declarations and nested members.
+
 ## 0.2.13
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.15
+
+### Patch Changes
+
+- [`361800e`](https://github.com/Effectful-Tech/clanka/commit/361800eb3c2612bb873f9c80661465f50fbd03f2) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing for tool-call template arguments by locating the template end from the call boundary instead of the first `)`-adjacent backtick. This prevents partial escaping when markdown inline code inside `taskComplete` or `applyPatch` contains patterns like ``code`),`.
+
 ## 0.2.14
 
 ### Patch Changes

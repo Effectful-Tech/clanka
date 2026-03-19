@@ -1,0 +1,187 @@
+const patch = `*** Begin Patch
+*** Add File: src/ScriptPreprocessing.ts
++const isIdentifierChar = (char: string | undefined): boolean =>
++  char !== undefined && /[A-Za-z0-9_$]/.test(char)
++
++const hasIdentifierBoundary = (
++  text: string,
++  index: number,
++  length: number,
++): boolean =>
++  !isIdentifierChar(text[index - 1]) && !isIdentifierChar(text[index + length])
++
++const findNextIdentifier = (
++  text: string,
++  identifier: string,
++  from: number,
++): number => {
++  let index = text.indexOf(identifier, from)
++  while (index !== -1) {
++    if (hasIdentifierBoundary(text, index, identifier.length)) {
++      return index
++    }
++    index = text.indexOf(identifier, index + identifier.length)
++  }
++  return -1
++}
++
++const skipWhitespace = (text: string, start: number): number => {
++  let i = start
++  while (i < text.length && /\s/.test(text[i]!)) {
++    i++
++  }
++  return i
++}
++
++const isEscaped = (text: string, index: number): boolean => {
++  let slashCount = 0
++  let i = index - 1
++  while (i >= 0 && text[i] === "\\") {
++    slashCount++
++    i--
++  }
++  return slashCount % 2 === 1
++}
++
++const escapeUnescapedBackticks = (text: string): string => {
++  let out = ""
++  for (let i = 0; i < text.length; i++) {
++    const char = text[i]!
++    if (char === "`" && !isEscaped(text, i)) {
++      out += "\\`"
++      continue
++    }
++    out += char
++  }
++  return out
++}
++
++const findTemplateEnd = (
++  text: string,
++  start: number,
++  isTerminator: (char: string | undefined) => boolean,
++): number => {
++  for (let i = start + 1; i < text.length; i++) {
++    if (text[i] !== "`" || isEscaped(text, i)) {
++      continue
++    }
++    const next = skipWhitespace(text, i + 1)
++    if (isTerminator(text[next])) {
++      return i
++    }
++  }
++  return -1
++}
++
++const fixCallTemplateArgument = (
++  script: string,
++  functionName: string,
++  isTerminator: (char: string | undefined) => boolean,
++): string => {
++  let out = script
++  let cursor = 0
++
++  while (cursor < out.length) {
++    const callStart = findNextIdentifier(out, functionName, cursor)
++    if (callStart === -1) {
++      break
++    }
++
++    const openParen = skipWhitespace(out, callStart + functionName.length)
++    if (out[openParen] !== "(") {
++      cursor = callStart + functionName.length
++      continue
++    }
++
++    const templateStart = skipWhitespace(out, openParen + 1)
++    if (out[templateStart] !== "`") {
++      cursor = openParen + 1
++      continue
++    }
++
++    const templateEnd = findTemplateEnd(out, templateStart, isTerminator)
++    if (templateEnd === -1) {
++      cursor = templateStart + 1
++      continue
++    }
++
++    const original = out.slice(templateStart + 1, templateEnd)
++    const escaped = escapeUnescapedBackticks(original)
++    if (escaped !== original) {
++      out = `${out.slice(0, templateStart + 1)}${escaped}${out.slice(templateEnd)}`
++      cursor = templateEnd + (escaped.length - original.length) + 1
++      continue
++    }
++
++    cursor = templateEnd + 1
++  }
++
++  return out
++}
++
++const fixWriteFileContentTemplates = (script: string): string => {
++  let out = script
++  let cursor = 0
++
++  while (cursor < out.length) {
++    const callStart = findNextIdentifier(out, "writeFile", cursor)
++    if (callStart === -1) {
++      break
++    }
++
++    const openParen = skipWhitespace(out, callStart + "writeFile".length)
++    if (out[openParen] !== "(") {
++      cursor = callStart + "writeFile".length
++      continue
++    }
++
++    const contentKey = findNextIdentifier(out, "content", openParen + 1)
++    if (contentKey === -1) {
++      cursor = openParen + 1
++      continue
++    }
++
++    const colon = skipWhitespace(out, contentKey + "content".length)
++    if (out[colon] !== ":") {
++      cursor = contentKey + "content".length
++      continue
++    }
++
++    const templateStart = skipWhitespace(out, colon + 1)
++    if (out[templateStart] !== "`") {
++      cursor = templateStart + 1
++      continue
++    }
++
++    const templateEnd = findTemplateEnd(
++      out,
++      templateStart,
++      (char) => char === "}" || char === ",",
++    )
++    if (templateEnd === -1) {
++      cursor = templateStart + 1
++      continue
++    }
++
++    const original = out.slice(templateStart + 1, templateEnd)
++    const escaped = escapeUnescapedBackticks(original)
++    if (escaped !== original) {
++      out = `${out.slice(0, templateStart + 1)}${escaped}${out.slice(templateEnd)}`
++      cursor = templateEnd + (escaped.length - original.length) + 1
++      continue
++    }
++
++    cursor = templateEnd + 1
++  }
++
++  return out
++}
++
++export const preprocessScript = (script: string): string =>
++  ["applyPatch", "taskComplete"].reduce(
++    (current, functionName) =>
++      fixCallTemplateArgument(current, functionName, (char) => char === ")"),
++    fixWriteFileContentTemplates(script),
++  )
+*** End Patch`;
+console.log(await applyPatch(patch));

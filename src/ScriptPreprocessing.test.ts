@@ -1,5 +1,7 @@
 import { assert, describe, it } from "@effect/vitest"
 import { preprocessScript } from "./ScriptPreprocessing.ts"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 
 const tick = "`"
 const escaped = "\\`"
@@ -73,5 +75,17 @@ describe("preprocessScript", () => {
     const input = "await otherTool(`Keep `this` untouched.`)"
 
     assert.strictEqual(preprocessScript(input), input)
+  })
+
+  it("fixes broken patch", () => {
+    const content = readFileSync(
+      join(__dirname, "fixtures", "patch-broken.txt"),
+      "utf-8",
+    )
+    const fixed = readFileSync(
+      join(__dirname, "fixtures", "patch-fixed.txt"),
+      "utf-8",
+    )
+    assert.strictEqual(preprocessScript(content).trim(), fixed.trim())
   })
 })

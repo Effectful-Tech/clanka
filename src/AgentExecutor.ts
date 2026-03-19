@@ -38,6 +38,7 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup"
 import * as Rpc from "effect/unstable/rpc/Rpc"
 import * as Result from "effect/Result"
 import { SemanticSearch } from "./SemanticSearch.ts"
+import { preprocessScript } from "./ScriptPreprocessing.ts"
 import * as References from "effect/References"
 
 /**
@@ -144,9 +145,7 @@ export const makeLocal = Effect.fnUntraced(function* <
       const console = yield* Console.Console
       let running = 0
 
-      const vmScript = new NodeVm.Script(`async function main() {
-${opts.script}
-}`)
+      const vmScript = compileScript(opts.script)
       const sandbox: ScriptSandbox = {
         main: defaultMain,
         console,
@@ -431,6 +430,31 @@ interface ScriptSandbox {
   main: () => Promise<void>
   console: Console.Console
   [toolName: string]: unknown
+}
+
+const wrapScript = (script: string): string => `async function main() {
+${script}
+}`
+
+const compileScript = (script: string): NodeVm.Script => {
+  try {
+    return new NodeVm.Script(wrapScript(script))
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error
+    }
+
+    const preprocessed = preprocessScript(script)
+    if (preprocessed === script) {
+      throw error
+    }
+
+    try {
+      return new NodeVm.Script(wrapScript(preprocessed))
+    } catch {
+      throw error
+    }
+  }
 }
 
 const defaultMain = () => Promise.resolve()

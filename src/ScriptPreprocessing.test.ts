@@ -157,15 +157,15 @@ describe("preprocessScript", () => {
     )
   })
 
-  it("fixes broken patch", () => {
+  it.each(["patch", "patch2"])("fixes broken %s", (fixture) => {
     const content = readFileSync(
-      join(__dirname, "fixtures", "patch-broken.txt"),
+      join(__dirname, "fixtures", `${fixture}-broken.txt`),
       "utf-8",
     )
     const fixed = readFileSync(
-      join(__dirname, "fixtures", "patch-fixed.txt"),
+      join(__dirname, "fixtures", `${fixture}-fixed.txt`),
       "utf-8",
     )
-    assert.strictEqual(preprocessScript(content).trim(), fixed.trim())
+    assert.equal(preprocessScript(content), fixed)
   })
 })

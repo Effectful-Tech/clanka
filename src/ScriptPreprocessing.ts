@@ -104,16 +104,17 @@ const findTemplateEnd = (
   start: number,
   isTerminator: (char: string | undefined) => boolean,
 ): number => {
+  let end = -1
   for (let i = start + 1; i < text.length; i++) {
     if (text[i] !== "`" || isEscaped(text, i)) {
       continue
     }
     const next = skipWhitespace(text, i + 1)
     if (isTerminator(text[next])) {
-      return i
+      end = i
     }
   }
-  return -1
+  return end
 }
 
 const findTypeAnnotationAssignment = (text: string, start: number): number => {

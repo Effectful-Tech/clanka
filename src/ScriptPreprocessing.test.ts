@@ -157,15 +157,18 @@ describe("preprocessScript", () => {
     )
   })
 
-  it.each(["patch", "patch2", "patch3"])("fixes broken %s", (fixture) => {
-    const content = readFileSync(
-      join(__dirname, "fixtures", `${fixture}-broken.txt`),
-      "utf-8",
-    )
-    const fixed = readFileSync(
-      join(__dirname, "fixtures", `${fixture}-fixed.txt`),
-      "utf-8",
-    )
-    assert.equal(preprocessScript(content), fixed)
-  })
+  it.each(["patch", "patch2", "patch3", "patch4"])(
+    "fixes broken %s",
+    (fixture) => {
+      const content = readFileSync(
+        join(__dirname, "fixtures", `${fixture}-broken.txt`),
+        "utf-8",
+      )
+      const fixed = readFileSync(
+        join(__dirname, "fixtures", `${fixture}-fixed.txt`),
+        "utf-8",
+      )
+      assert.equal(preprocessScript(content), fixed)
+    },
+  )
 })

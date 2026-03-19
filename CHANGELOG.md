@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.16
+
+### Patch Changes
+
+- [`cefdea3`](https://github.com/Effectful-Tech/clanka/commit/cefdea32ee97f87ec66acd83120a015e3ddf69c2) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing for tool-call templates by selecting the last matching template delimiter instead of the first. This prevents premature termination when writeFile content contains markdown inline code spans with commas, and correctly escapes all internal backticks.
+
 ## 0.2.15
 
 ### Patch Changes

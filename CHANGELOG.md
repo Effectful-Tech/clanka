@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.12
+
+### Patch Changes
+
+- [`85f5bb9`](https://github.com/Effectful-Tech/clanka/commit/85f5bb9a1308490ad98ab2eeeb8dd089d272c3f4) Thanks [@tim-smart](https://github.com/tim-smart)! - simpilify search api
+
 ## 0.2.11
 
 ### Patch Changes

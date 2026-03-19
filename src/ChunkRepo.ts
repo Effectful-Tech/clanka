@@ -9,8 +9,10 @@ import * as SqlError from "effect/unstable/sql/SqlError"
 import * as SqlModel from "effect/unstable/sql/SqlModel"
 import * as SqlSchema from "effect/unstable/sql/SqlSchema"
 import type * as Cause from "effect/Cause"
-import * as Option from "effect/Option"
+import type * as Option from "effect/Option"
 import * as EmbeddingModel from "effect/unstable/ai/EmbeddingModel"
+import * as SqlResolver from "effect/unstable/sql/SqlResolver"
+import * as RequestResolver from "effect/RequestResolver"
 
 /**
  * @since 1.0.0
@@ -98,11 +100,7 @@ export class ChunkRepo extends ServiceMap.Service<
       id: ChunkId,
     ): Effect.Effect<Chunk, ChunkRepoError | Cause.NoSuchElementError>
 
-    exists(options: {
-      readonly path: string
-      readonly startLine: number
-      readonly hash: string
-    }): Effect.Effect<Option.Option<ChunkId>, ChunkRepoError>
+    exists(hash: string): Effect.Effect<Option.Option<ChunkId>, ChunkRepoError>
 
     search(options: {
       readonly vector: Float32Array
@@ -176,6 +174,19 @@ export const layer = Layer.effect(
         `,
     })
 
+    const exists = SqlResolver.findById({
+      Id: Schema.String, // hash
+      Result: Schema.Struct({
+        id: ChunkId,
+        hash: Schema.String,
+      }),
+      ResultId(result) {
+        return result.hash
+      },
+      execute: (hashes) =>
+        sql`select id, hash from chunks where ${sql.in("hash", hashes)}`,
+    }).pipe(RequestResolver.setDelay(5))
+
     return ChunkRepo.of({
       insert: (insert) => {
         needsQuantization = true
@@ -192,12 +203,14 @@ export const layer = Layer.effect(
             SchemaError: Effect.die,
           }),
         ),
-      exists: ({ path, startLine, hash }) =>
-        sql`select id from chunks where path = ${path} and startLine = ${startLine} and hash = ${hash}`.pipe(
-          Effect.map((result) =>
-            Option.fromNullishOr(result[0]?.id as ChunkId),
-          ),
-          Effect.mapError((reason) => new ChunkRepoError({ reason })),
+      exists: (hash) =>
+        SqlResolver.request(hash, exists).pipe(
+          Effect.map((result) => result.id),
+          Effect.catchNoSuchElement,
+          Effect.catchTags({
+            SqlError: (reason) => Effect.fail(new ChunkRepoError({ reason })),
+            SchemaError: Effect.die,
+          }),
         ),
       search: Effect.fn("ChunkRepo.search")(function* (options) {
         yield* maybeQuantize

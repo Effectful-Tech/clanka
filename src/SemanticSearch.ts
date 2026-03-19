@@ -149,11 +149,7 @@ export const layer = (options: {
           const hash = hashChunkInput(input)
 
           if (options.checkExisting) {
-            const id = yield* repo.exists({
-              path: options.chunk.path,
-              startLine: options.chunk.startLine,
-              hash,
-            })
+            const id = yield* repo.exists(hash)
             if (Option.isSome(id)) {
               yield* repo.setSyncId(id.value, options.syncId)
               return

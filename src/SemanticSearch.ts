@@ -12,7 +12,6 @@ import * as EmbeddingModel from "effect/unstable/ai/EmbeddingModel"
 import * as RequestResolver from "effect/RequestResolver"
 import * as Option from "effect/Option"
 import * as Path from "effect/Path"
-import * as ServiceMap from "effect/ServiceMap"
 import * as Fiber from "effect/Fiber"
 import * as Duration from "effect/Duration"
 import * as FiberHandle from "effect/FiberHandle"
@@ -23,22 +22,13 @@ import type * as PlatformError from "effect/PlatformError"
 import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
 import type * as FileSystem from "effect/FileSystem"
 import * as Console from "effect/Console"
+import { SemanticSearch } from "./SemanticSearch/Service.ts"
 
 /**
  * @since 1.0.0
  * @category Services
  */
-export class SemanticSearch extends ServiceMap.Service<
-  SemanticSearch,
-  {
-    search(options: {
-      readonly query: string
-      readonly limit: number
-    }): Effect.Effect<string>
-    updateFile(path: string): Effect.Effect<void>
-    removeFile(path: string): Effect.Effect<void>
-  }
->()("clanka/SemanticSearch/SemanticSearch") {}
+export * from "./SemanticSearch/Service.ts"
 
 const normalizePath = (path: string) => path.replace(/\\/g, "/")
 
@@ -289,32 +279,4 @@ export const layer = (options: {
         Layer.provide(SqliteLayer(options.database ?? ".clanka/search.sqlite")),
       ),
     ]),
-  )
-
-/**
- * @since 1.0.0
- * @category Utils
- */
-export const maybeUpdateFile = (path: string): Effect.Effect<void> =>
-  Effect.serviceOption(SemanticSearch).pipe(
-    Effect.flatMap(
-      Option.match({
-        onNone: () => Effect.void,
-        onSome: (service) => service.updateFile(path),
-      }),
-    ),
-  )
-
-/**
- * @since 1.0.0
- * @category Utils
- */
-export const maybeRemoveFile = (path: string): Effect.Effect<void> =>
-  Effect.serviceOption(SemanticSearch).pipe(
-    Effect.flatMap(
-      Option.match({
-        onNone: () => Effect.void,
-        onSome: (service) => service.removeFile(path),
-      }),
-    ),
   )

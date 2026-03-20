@@ -20,7 +20,7 @@ import { pipe } from "effect/Function"
 import * as Array from "effect/Array"
 import * as Data from "effect/Data"
 import * as Layer from "effect/Layer"
-import * as SemanticSearch from "./SemanticSearch.ts"
+import * as SemanticSearch from "./SemanticSearch/Service.ts"
 
 /**
  * @since 1.0.0

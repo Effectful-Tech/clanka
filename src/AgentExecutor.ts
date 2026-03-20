@@ -37,7 +37,7 @@ import * as Schema from "effect/Schema"
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup"
 import * as Rpc from "effect/unstable/rpc/Rpc"
 import * as Result from "effect/Result"
-import { SemanticSearch } from "./SemanticSearch.ts"
+import { SemanticSearch } from "./SemanticSearch/Service.ts"
 import { preprocessScript } from "./ScriptPreprocessing.ts"
 import * as References from "effect/References"
 

@@ -18,7 +18,6 @@ import * as Layer from "effect/Layer"
 import * as Path from "effect/Path"
 import * as Config from "effect/Config"
 import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
-import * as SemanticSearch from "./SemanticSearch.ts"
 import * as Option from "effect/Option"
 import { OpenAiClient, OpenAiEmbeddingModel } from "@effect/ai-openai"
 
@@ -62,11 +61,6 @@ const model = Flag.string("model").pipe(
 const semantic = Flag.boolean("search").pipe(
   Flag.withDescription("Use semantic search? (uses OPENAI_API_KEY env var)"),
   Flag.withAlias("s"),
-  Flag.withFallbackPrompt(
-    Prompt.confirm({
-      message: "Use semantic search? (uses OPENAI_API_KEY env var)",
-    }),
-  ),
 )
 
 const prompt = Flag.string("prompt").pipe(
@@ -99,6 +93,10 @@ const Search = Layer.unwrap(
     }
 
     const path = yield* Path.Path
+
+    const SemanticSearch = yield* Effect.promise(
+      () => import("./SemanticSearch.ts"),
+    )
 
     return SemanticSearch.layer({
       directory: process.cwd(),
@@ -170,7 +168,7 @@ Command.make("clanka", { provider, model, semantic, prompt }).pipe(
           return yield* pipe(
             agent.send({ prompt: nonInteractivePrompt.value }),
             Stream.unwrap,
-            OutputFormatter.pretty({ outputTruncation: 30 }),
+            OutputFormatter.pretty(),
             Stream.run(stdio.stdout()),
           )
         }
@@ -183,7 +181,7 @@ Command.make("clanka", { provider, model, semantic, prompt }).pipe(
           yield* pipe(
             agent.send({ prompt }),
             Stream.unwrap,
-            OutputFormatter.pretty({ outputTruncation: 30 }),
+            OutputFormatter.pretty({ outputTruncation: 20 }),
             Stream.run(stdio.stdout()),
           )
 

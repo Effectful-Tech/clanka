@@ -2,6 +2,8 @@
 import * as Effect from "effect/Effect"
 import * as Prompt from "effect/unstable/cli/Prompt"
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient"
+import * as Command from "effect/unstable/cli/Command"
+import * as Flag from "effect/unstable/cli/Flag"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
 import * as NodeSocket from "@effect/platform-node/NodeSocket"
@@ -19,6 +21,59 @@ import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
 import * as SemanticSearch from "./SemanticSearch.ts"
 import * as Option from "effect/Option"
 import { OpenAiClient, OpenAiEmbeddingModel } from "@effect/ai-openai"
+
+const provider = Flag.choice("provider", ["openai", "copilot"]).pipe(
+  Flag.withAlias("p"),
+  Flag.withFallbackPrompt(
+    Prompt.select({
+      message: "Select a provider",
+      choices: [
+        {
+          title: "openai",
+          value: "openai",
+          selected: true,
+        },
+        {
+          title: "copilot",
+          value: "copilot",
+        },
+      ],
+    }),
+  ),
+)
+
+const model = Flag.string("model").pipe(
+  Flag.withAlias("m"),
+  Flag.withFallbackPrompt(
+    Prompt.text({
+      message: "Enter a model",
+      default: "gpt-5.4/medium",
+      validate(value) {
+        const parts = value.split("/")
+        if (parts.length !== 2) {
+          return Effect.fail("Invalid model")
+        }
+        return Effect.succeed(value)
+      },
+    }),
+  ),
+)
+
+const semantic = Flag.boolean("search").pipe(
+  Flag.withDescription("Use semantic search? (uses OPENAI_API_KEY env var)"),
+  Flag.withAlias("s"),
+  Flag.withFallbackPrompt(
+    Prompt.confirm({
+      message: "Use semantic search? (uses OPENAI_API_KEY env var)",
+    }),
+  ),
+)
+
+const prompt = Flag.string("prompt").pipe(
+  Flag.withDescription("Pass a prompt in non-interactive mode"),
+  Flag.withAlias("p"),
+  Flag.optional,
+)
 
 const Kvs = Layer.unwrap(
   Effect.gen(function* () {
@@ -64,101 +119,91 @@ const Search = Layer.unwrap(
   }),
 ).pipe(Layer.provide([NodeServices.layer, NodeHttpClient.layerUndici]))
 
-Effect.gen(function* () {
-  const stdio = yield* Stdio.Stdio
+Command.make("clanka", { provider, model, semantic, prompt }).pipe(
+  Command.withHandler(
+    Effect.fnUntraced(function* ({
+      provider,
+      model: modelRaw,
+      semantic,
+      prompt: nonInteractivePrompt,
+    }) {
+      const stdio = yield* Stdio.Stdio
+      const [model, reasoning] = modelRaw.split("/") as [string, string]
+      const Model =
+        provider === "openai"
+          ? Codex.modelWebSocket(model, {
+              reasoning: {
+                effort: reasoning as any,
+              },
+            }).pipe(
+              Layer.merge(
+                Agent.layerSubagentModel(
+                  Codex.modelWebSocket("gpt-5.4-mini", {
+                    reasoning: {
+                      effort: "high",
+                    },
+                  }),
+                ),
+              ),
+              Layer.provide(Codex.layerClient),
+            )
+          : Copilot.model(model, {
+              reasoning: {
+                effort: reasoning,
+              },
+            }).pipe(
+              Layer.merge(
+                Agent.layerSubagentModel(
+                  Copilot.model(model, {
+                    reasoning: {
+                      effort: "medium",
+                    },
+                  }),
+                ),
+              ),
+              Layer.provide(Copilot.layerClient),
+            )
 
-  const provider = yield* Prompt.select({
-    message: "Select a provider",
-    choices: [
-      {
-        title: "openai",
-        value: "openai",
-        selected: true,
-      },
-      {
-        title: "copilot",
-        value: "copilot",
-      },
-    ],
-  })
-  const modelRaw = yield* Prompt.text({
-    message: "Enter a model",
-    default: "gpt-5.4/medium",
-    validate(value) {
-      const parts = value.split("/")
-      if (parts.length !== 2) {
-        return Effect.fail("Invalid model")
-      }
-      return Effect.succeed(value)
-    },
-  })
-  const semantic = yield* Prompt.confirm({
-    message: "Use semantic search? (uses OPENAI_API_KEY env var)",
-  })
+      return yield* Effect.gen(function* () {
+        const agent = yield* Agent.Agent
 
-  const [model, reasoning] = modelRaw.split("/") as [string, string]
-  const Model =
-    provider === "openai"
-      ? Codex.modelWebSocket(model, {
-          reasoning: {
-            effort: reasoning as any,
-          },
-        }).pipe(
-          Layer.merge(
-            Agent.layerSubagentModel(
-              Codex.modelWebSocket("gpt-5.4-mini", {
-                reasoning: {
-                  effort: "high",
-                },
-              }),
-            ),
-          ),
-          Layer.provide(Codex.layerClient),
-        )
-      : Copilot.model(model, {
-          reasoning: {
-            effort: reasoning,
-          },
-        }).pipe(
-          Layer.merge(
-            Agent.layerSubagentModel(
-              Copilot.model(model, {
-                reasoning: {
-                  effort: "medium",
-                },
-              }),
-            ),
-          ),
-          Layer.provide(Copilot.layerClient),
-        )
+        if (Option.isSome(nonInteractivePrompt)) {
+          return yield* pipe(
+            agent.send({ prompt: nonInteractivePrompt.value }),
+            Stream.unwrap,
+            OutputFormatter.pretty({ outputTruncation: 30 }),
+            Stream.run(stdio.stdout()),
+          )
+        }
 
-  return yield* Effect.gen(function* () {
-    const agent = yield* Agent.Agent
+        while (true) {
+          const prompt = yield* Prompt.text({
+            message: ">",
+          })
 
-    while (true) {
-      const prompt = yield* Prompt.text({
-        message: ">",
-      })
+          yield* pipe(
+            agent.send({ prompt }),
+            Stream.unwrap,
+            OutputFormatter.pretty({ outputTruncation: 30 }),
+            Stream.run(stdio.stdout()),
+          )
 
-      yield* pipe(
-        agent.send({ prompt }),
-        Stream.unwrap,
-        OutputFormatter.pretty({ outputTruncation: 30 }),
-        Stream.run(stdio.stdout()),
+          console.log("")
+        }
+      }).pipe(
+        Effect.provide([
+          Agent.layerLocal({
+            directory: process.cwd(),
+          }),
+          Model,
+          semantic ? Search : Layer.empty,
+        ]),
       )
-
-      console.log("")
-    }
-  }).pipe(
-    Effect.provide([
-      Agent.layerLocal({
-        directory: process.cwd(),
-      }),
-      Model,
-      semantic ? Search : Layer.empty,
-    ]),
-  )
-}).pipe(
+    }),
+  ),
+  Command.run({
+    version: "0.0.1",
+  }),
   Effect.provide([
     NodeServices.layer,
     Kvs,

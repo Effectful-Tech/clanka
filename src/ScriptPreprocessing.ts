@@ -51,6 +51,121 @@ const parseIdentifier = (
   }
 }
 
+const findPreviousNonWhitespace = (text: string, from: number): number => {
+  let i = from
+  while (i >= 0 && /\s/.test(text[i]!)) {
+    i--
+  }
+  return i
+}
+
+const findNextNonWhitespace = (text: string, from: number): number => {
+  let i = from
+  while (i < text.length && /\s/.test(text[i]!)) {
+    i++
+  }
+  return i
+}
+
+const findObjectValueTerminator = (text: string, start: number): number => {
+  let parenDepth = 0
+  let bracketDepth = 0
+  let braceDepth = 0
+  let stringDelimiter: '"' | "'" | "`" | undefined
+
+  for (let i = start; i < text.length; i++) {
+    const char = text[i]!
+
+    if (stringDelimiter !== undefined) {
+      if (char === stringDelimiter && !isEscaped(text, i)) {
+        stringDelimiter = undefined
+      }
+      continue
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      stringDelimiter = char
+      continue
+    }
+
+    if (char === "(") {
+      parenDepth++
+      continue
+    }
+    if (char === ")") {
+      if (parenDepth > 0) {
+        parenDepth--
+      }
+      continue
+    }
+    if (char === "[") {
+      bracketDepth++
+      continue
+    }
+    if (char === "]") {
+      if (bracketDepth > 0) {
+        bracketDepth--
+      }
+      continue
+    }
+    if (char === "{") {
+      braceDepth++
+      continue
+    }
+    if (char === "}") {
+      if (parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) {
+        return i
+      }
+      if (braceDepth > 0) {
+        braceDepth--
+      }
+      continue
+    }
+
+    if (
+      char === "," &&
+      parenDepth === 0 &&
+      bracketDepth === 0 &&
+      braceDepth === 0
+    ) {
+      return i
+    }
+  }
+
+  return -1
+}
+
+const collectExpressionIdentifiers = (
+  text: string,
+  start: number,
+  end: number,
+): ReadonlySet<string> => {
+  const out = new Set<string>()
+  let cursor = start
+
+  while (cursor < end) {
+    const identifier = parseIdentifier(text, cursor)
+    if (identifier === undefined) {
+      cursor++
+      continue
+    }
+
+    const previousNonWhitespace = findPreviousNonWhitespace(text, cursor - 1)
+    const nextNonWhitespace = findNextNonWhitespace(text, identifier.end)
+    if (
+      text[previousNonWhitespace] !== "." &&
+      text[nextNonWhitespace] !== "." &&
+      text[nextNonWhitespace] !== "("
+    ) {
+      out.add(identifier.name)
+    }
+
+    cursor = identifier.end
+  }
+
+  return out
+}
+
 const isEscaped = (text: string, index: number): boolean => {
   let slashCount = 0
   let i = index - 1
@@ -80,7 +195,9 @@ const normalizePatchEscapedQuotes = (text: string): string =>
     : text
 
 const normalizeNonPatchEscapedTemplateMarkers = (text: string): string =>
-  text.replace(/\\{2,}(?=`|\$\{)/g, "\\")
+  text
+    .replace(/\\{2,}(?=`|\$\{)/g, "\\")
+    .replace(/(^|\s)\\+(?=\.[A-Za-z0-9_-]+\/)/g, "$1")
 
 const escapeTemplateLiteralContent = (text: string): string => {
   const normalizedPatchQuotes = normalizePatchEscapedQuotes(text)
@@ -370,11 +487,14 @@ const collectCallObjectPropertyIdentifiers = (
     )
     if (script[afterProperty] === ":") {
       const valueStart = skipWhitespace(script, afterProperty + 1)
-      const identifier = parseIdentifier(script, valueStart)
-      if (identifier !== undefined) {
-        const valueEnd = skipWhitespace(script, identifier.end)
-        if (script[valueEnd] === "}" || script[valueEnd] === ",") {
-          out.add(identifier.name)
+      const valueEnd = findObjectValueTerminator(script, valueStart)
+      if (valueEnd !== -1) {
+        for (const identifier of collectExpressionIdentifiers(
+          script,
+          valueStart,
+          valueEnd,
+        )) {
+          out.add(identifier)
         }
       }
       cursor = valueStart + 1

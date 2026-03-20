@@ -1,0 +1,10 @@
+const tasks = await listTasks({});
+const task = tasks.find((t) => t.id === 'EFF-738');
+if (!task) throw new Error('Task EFF-738 not found');
+const addition = `\n\nDiscovery update:\n\n* Archived regression tests are in \\.repos/effect-old/packages/effect/test/Cron.test.ts (not Cron.ts) and include extensive \\`prev\\` + \\`sequenceReverse\\` coverage that maps cleanly to current APIs by renaming \\`unsafeParse\\` -> \\`parseUnsafe\\` and DateTime helpers to \\`zoneMakeNamedUnsafe\\` / \\`makeZonedUnsafe\\`.\n* Old \\`prev\\` implementation depends on internal cron metadata additions: \\`last\\` boundaries + reverse lookup tables \\`prev\\`; these need to be added to current \\`Cron.make\\` output before implementing reverse stepping.`;
+await updateTask({
+  taskId: 'EFF-738',
+  description: task.description + addition,
+  state: 'in-progress'
+});
+console.log('updated task');

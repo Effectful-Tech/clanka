@@ -42,10 +42,13 @@ export class SemanticSearch extends ServiceMap.Service<
 
 const normalizePath = (path: string) => path.replace(/\\/g, "/")
 
-const chunkConfig = {
+const resolveChunkConfig = (options: {
+  readonly chunkMaxCharacters?: number | undefined
+}) => ({
   chunkSize: 30,
   chunkOverlap: 0,
-} as const
+  chunkMaxCharacters: options.chunkMaxCharacters ?? 30_000,
+})
 
 export const makeEmbeddingResolver = (
   resolver: EmbeddingModel.Service["resolver"],
@@ -100,6 +103,7 @@ export const layer = (options: {
   readonly embeddingBatchSize?: number | undefined
   readonly embeddingRequestDelay?: Duration.Input | undefined
   readonly concurrency?: number | undefined
+  readonly chunkMaxCharacters?: number | undefined
 }): Layer.Layer<
   SemanticSearch,
   | SqlError.SqlError
@@ -121,6 +125,7 @@ export const layer = (options: {
       const root = pathService.resolve(options.directory)
       const resolver = makeEmbeddingResolver(embeddings.resolver, options)
       const concurrency = options.concurrency ?? 2000
+      const chunkConfig = resolveChunkConfig(options)
       const indexHandle = yield* FiberHandle.make()
       const console = yield* Console.Console
 

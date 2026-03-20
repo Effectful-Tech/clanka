@@ -162,6 +162,83 @@ describe("chunkFileContent", () => {
     })
   })
 
+  it("limits AST chunks by character count and drops punctuation-only segments", () => {
+    const content = [
+      "export function demo() {",
+      "  const alpha = 1",
+      "  const beta = 2",
+      "  return alpha + beta",
+      "}",
+    ].join("\n")
+
+    const chunks = chunkFileContent("src/demo.ts", content, {
+      chunkSize: 20,
+      chunkOverlap: 1,
+      chunkMaxCharacters: 21,
+    })
+
+    expect(chunks).toHaveLength(4)
+    expect(chunks).toMatchObject([
+      {
+        startLine: 1,
+        endLine: 1,
+        name: "demo",
+        type: "function",
+        content: "export function demo() {",
+      },
+      {
+        startLine: 2,
+        endLine: 2,
+        name: "demo",
+        type: "function",
+        content: "  const alpha = 1",
+      },
+      {
+        startLine: 3,
+        endLine: 3,
+        name: "demo",
+        type: "function",
+        content: "  const beta = 2",
+      },
+      {
+        startLine: 4,
+        endLine: 4,
+        name: "demo",
+        type: "function",
+        content: "  return alpha + beta",
+      },
+    ])
+  })
+
+  it("limits line-window chunks by character count while preserving overlap", () => {
+    const content = ["aaaaa", "bbbbb", "ccccc", "ddddd"].join("\n")
+
+    const chunks = chunkFileContent("docs/notes.txt", content, {
+      chunkSize: 4,
+      chunkOverlap: 1,
+      chunkMaxCharacters: 11,
+    })
+
+    expect(chunks).toHaveLength(3)
+    expect(chunks).toMatchObject([
+      {
+        startLine: 1,
+        endLine: 2,
+        content: ["aaaaa", "bbbbb"].join("\n"),
+      },
+      {
+        startLine: 2,
+        endLine: 3,
+        content: ["bbbbb", "ccccc"].join("\n"),
+      },
+      {
+        startLine: 3,
+        endLine: 4,
+        content: ["ccccc", "ddddd"].join("\n"),
+      },
+    ])
+  })
+
   it("keeps only the first oversized class segment when methods are present", () => {
     const content = [
       "class Example {",

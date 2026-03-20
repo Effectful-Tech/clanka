@@ -59,18 +59,21 @@ export class CodeChunker extends ServiceMap.Service<
       readonly path: string
       readonly chunkSize: number
       readonly chunkOverlap: number
+      readonly chunkMaxCharacters?: number | undefined
     }): Effect.Effect<ReadonlyArray<CodeChunk>>
     chunkFiles(options: {
       readonly root: string
       readonly paths: ReadonlyArray<string>
       readonly chunkSize: number
       readonly chunkOverlap: number
+      readonly chunkMaxCharacters?: number | undefined
     }): Stream.Stream<CodeChunk>
     chunkCodebase(options: {
       readonly root: string
       readonly maxFileSize?: string | undefined
       readonly chunkSize: number
       readonly chunkOverlap: number
+      readonly chunkMaxCharacters?: number | undefined
     }): Stream.Stream<CodeChunk>
   }
 >()("clanka/CodeChunker") {}
@@ -157,6 +160,7 @@ interface LineRange {
 interface ChunkSettings {
   readonly chunkSize: number
   readonly chunkOverlap: number
+  readonly chunkMaxCharacters: number
 }
 
 interface ChunkRange extends LineRange {
@@ -234,16 +238,23 @@ export const isMeaningfulFile = (path: string): boolean => {
 const resolveChunkSettings = (options: {
   readonly chunkSize: number
   readonly chunkOverlap: number
+  readonly chunkMaxCharacters?: number | undefined
 }): ChunkSettings => {
   const chunkSize = Math.max(1, options.chunkSize)
   const chunkOverlap = Math.max(
     0,
     Math.min(chunkSize - 1, options.chunkOverlap),
   )
+  const chunkMaxCharacters =
+    options.chunkMaxCharacters !== undefined &&
+    Number.isFinite(options.chunkMaxCharacters)
+      ? Math.max(1, Math.floor(options.chunkMaxCharacters))
+      : Number.POSITIVE_INFINITY
 
   return {
     chunkSize,
     chunkOverlap,
+    chunkMaxCharacters,
   }
 }
 
@@ -345,24 +356,76 @@ const normalizeLineRange = (
   }
 }
 
+const lineLengthPrefixSums = (
+  lines: ReadonlyArray<string>,
+): ReadonlyArray<number> => {
+  const sums = [0] as Array<number>
+
+  for (let index = 0; index < lines.length; index++) {
+    sums.push(sums[index]! + lines[index]!.length)
+  }
+
+  return sums
+}
+
+const lineRangeCharacterLength = (
+  prefixSums: ReadonlyArray<number>,
+  range: LineRange,
+): number =>
+  prefixSums[range.endLine]! -
+  prefixSums[range.startLine - 1]! +
+  (range.endLine - range.startLine)
+
+const resolveSegmentEndLine = (options: {
+  readonly startLine: number
+  readonly maxEndLine: number
+  readonly settings: ChunkSettings
+  readonly prefixSums: ReadonlyArray<number>
+}): number => {
+  if (options.settings.chunkMaxCharacters === Number.POSITIVE_INFINITY) {
+    return options.maxEndLine
+  }
+
+  let endLine = options.maxEndLine
+  while (
+    endLine > options.startLine &&
+    lineRangeCharacterLength(options.prefixSums, {
+      startLine: options.startLine,
+      endLine,
+    }) > options.settings.chunkMaxCharacters
+  ) {
+    endLine--
+  }
+
+  return endLine
+}
+
 const splitRange = (
   range: LineRange,
   settings: ChunkSettings,
+  prefixSums: ReadonlyArray<number>,
 ): ReadonlyArray<LineRange> => {
   const lineCount = range.endLine - range.startLine + 1
-  if (lineCount <= settings.chunkSize) {
+  if (
+    lineCount <= settings.chunkSize &&
+    lineRangeCharacterLength(prefixSums, range) <= settings.chunkMaxCharacters
+  ) {
     return [range]
   }
-
-  const step = settings.chunkSize - settings.chunkOverlap
   const out = [] as Array<LineRange>
 
-  for (
-    let startLine = range.startLine;
-    startLine <= range.endLine;
-    startLine += step
-  ) {
-    const endLine = Math.min(range.endLine, startLine + settings.chunkSize - 1)
+  for (let startLine = range.startLine; startLine <= range.endLine; ) {
+    const maxEndLine = Math.min(
+      range.endLine,
+      startLine + settings.chunkSize - 1,
+    )
+    const endLine = resolveSegmentEndLine({
+      startLine,
+      maxEndLine,
+      settings,
+      prefixSums,
+    })
+
     out.push({
       startLine,
       endLine,
@@ -371,6 +434,8 @@ const splitRange = (
     if (endLine >= range.endLine) {
       break
     }
+
+    startLine = Math.max(startLine + 1, endLine - settings.chunkOverlap + 1)
   }
 
   return out
@@ -648,6 +713,7 @@ const chunksFromRanges = (
 
   const out = [] as Array<CodeChunk>
   const seen = new Set<string>()
+  const prefixSums = lineLengthPrefixSums(lines)
 
   for (const range of ranges) {
     const normalizedRange = normalizeLineRange(range, lines.length)
@@ -655,7 +721,7 @@ const chunksFromRanges = (
       continue
     }
 
-    const allSegments = splitRange(normalizedRange, settings)
+    const allSegments = splitRange(normalizedRange, settings, prefixSums)
     const segments =
       range.type === "class" &&
       allSegments.length > 1 &&
@@ -709,8 +775,8 @@ const chunkWithLineWindows = (
   lines: ReadonlyArray<string>,
   settings: ChunkSettings,
 ): ReadonlyArray<CodeChunk> => {
-  const step = settings.chunkSize - settings.chunkOverlap
   const out = [] as Array<CodeChunk>
+  const prefixSums = lineLengthPrefixSums(lines)
 
   for (let index = 0; index < lines.length; ) {
     if (!isMeaningfulLine(lines[index]!)) {
@@ -718,25 +784,38 @@ const chunkWithLineWindows = (
       continue
     }
 
-    const start = index
-    const end = Math.min(lines.length, start + settings.chunkSize)
-    const chunkLines = lines.slice(start, end)
+    const startLine = index + 1
+    const maxEndLine = Math.min(
+      lines.length,
+      startLine + settings.chunkSize - 1,
+    )
+    const endLine = resolveSegmentEndLine({
+      startLine,
+      maxEndLine,
+      settings,
+      prefixSums,
+    })
+    const chunkLines = lines.slice(startLine - 1, endLine)
 
     out.push({
       path,
-      startLine: start + 1,
-      endLine: end,
+      startLine,
+      endLine,
       name: undefined,
       type: undefined,
       parent: undefined,
       content: chunkLines.join("\n"),
     })
 
-    index += step
-
-    if (end >= lines.length) {
+    if (endLine >= lines.length) {
       break
     }
+
+    const nextStartLine = Math.max(
+      startLine + 1,
+      endLine - settings.chunkOverlap + 1,
+    )
+    index = nextStartLine - 1
   }
 
   return out
@@ -752,6 +831,7 @@ export const chunkFileContent = (
   options: {
     readonly chunkSize: number
     readonly chunkOverlap: number
+    readonly chunkMaxCharacters?: number | undefined
   },
 ): ReadonlyArray<CodeChunk> => {
   if (content.trim().length === 0 || isProbablyMinified(content)) {
@@ -869,6 +949,9 @@ export const layer: Layer.Layer<
                 path,
                 chunkSize: options.chunkSize,
                 chunkOverlap: options.chunkOverlap,
+                ...(options.chunkMaxCharacters === undefined
+                  ? {}
+                  : { chunkMaxCharacters: options.chunkMaxCharacters }),
               }),
               Stream.fromArrayEffect,
             ),
@@ -891,6 +974,9 @@ export const layer: Layer.Layer<
           paths: files,
           chunkSize: options.chunkSize,
           chunkOverlap: options.chunkOverlap,
+          ...(options.chunkMaxCharacters === undefined
+            ? {}
+            : { chunkMaxCharacters: options.chunkMaxCharacters }),
         })
       }, Stream.unwrap)
 

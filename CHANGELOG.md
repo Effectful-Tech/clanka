@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.23
+
+### Patch Changes
+
+- [`d205b45`](https://github.com/Effectful-Tech/clanka/commit/d205b45d8cb8dbbb83b793bf06d232ef8921a713) Thanks [@tim-smart](https://github.com/tim-smart)! - fix duplicate flag
+
 ## 0.2.22
 
 ### Patch Changes

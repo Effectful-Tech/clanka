@@ -1,5 +1,15 @@
 # clanka
 
+## 0.2.20
+
+### Patch Changes
+
+- [`573f88a`](https://github.com/Effectful-Tech/clanka/commit/573f88a9cf2c40e7caf54049a16b4df50b9ca32d) Thanks [@tim-smart](https://github.com/tim-smart)! - update effect
+
+- [#112](https://github.com/Effectful-Tech/clanka/pull/112) [`fee2a1c`](https://github.com/Effectful-Tech/clanka/commit/fee2a1c517e172f960b3d6f35003dc4444bbdee2) Thanks [@tim-smart](https://github.com/tim-smart)! - Add character-based chunk size limits to CodeChunker with overlap-preserving splitting, and allow SemanticSearch chunking to configure chunkMaxCharacters (default 30,000).
+
+- [`8eef33e`](https://github.com/Effectful-Tech/clanka/commit/8eef33e253bb33647b78e793a26baef90c95f308) Thanks [@tim-smart](https://github.com/tim-smart)! - add note about applyPatch
+
 ## 0.2.19
 
 ### Patch Changes

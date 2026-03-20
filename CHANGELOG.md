@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.25
+
+### Patch Changes
+
+- [`5fbb010`](https://github.com/Effectful-Tech/clanka/commit/5fbb01010f0ff52a7e47f2553ca1a19d6a1a74b7) Thanks [@tim-smart](https://github.com/tim-smart)! - decrease embedding batch size
+
 ## 0.2.24
 
 ### Patch Changes

@@ -271,6 +271,10 @@ const findTemplateEnd = (
     if (text[i] !== "`" || isEscaped(text, i)) {
       continue
     }
+    if (isTerminator(text[i + 1])) {
+      end = i
+      continue
+    }
     const next = skipWhitespace(text, i + 1)
     if (isTerminator(text[next])) {
       end = i
@@ -587,6 +591,8 @@ const fixAssignedTemplate = (script: string, variableName: string): string => {
       templateStart,
       (char) =>
         char === undefined ||
+        char === "\n" ||
+        char === "\r" ||
         char === ";" ||
         char === "," ||
         char === ")" ||

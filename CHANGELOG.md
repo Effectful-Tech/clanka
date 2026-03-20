@@ -1,5 +1,13 @@
 # clanka
 
+## 0.2.24
+
+### Patch Changes
+
+- [`ae14234`](https://github.com/Effectful-Tech/clanka/commit/ae1423485147bb4c6e4dfc8a3796acd8697be37e) Thanks [@tim-smart](https://github.com/tim-smart)! - move some deps for cli
+
+- [`52fdb10`](https://github.com/Effectful-Tech/clanka/commit/52fdb10efc5128dd5fa8cffb3a5fcf5e21c7d41b) Thanks [@tim-smart](https://github.com/tim-smart)! - don't import SemanticSearch impl unless needed
+
 ## 0.2.23
 
 ### Patch Changes

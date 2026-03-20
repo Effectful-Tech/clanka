@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.21
+
+### Patch Changes
+
+- [`cc55066`](https://github.com/Effectful-Tech/clanka/commit/cc550665fd8520273538166618cd65bc1f879624) Thanks [@tim-smart](https://github.com/tim-smart)! - fix script preprocessing for writeFile content sourced from Object.entries maps by normalizing over-escaped template markers in assigned objects
+
 ## 0.2.20
 
 ### Patch Changes

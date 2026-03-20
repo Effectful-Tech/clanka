@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.22
+
+### Patch Changes
+
+- [`ceb557d`](https://github.com/Effectful-Tech/clanka/commit/ceb557df00c45167cf57f877a0488e721342139b) Thanks [@tim-smart](https://github.com/tim-smart)! - more cli options
+
 ## 0.2.21
 
 ### Patch Changes

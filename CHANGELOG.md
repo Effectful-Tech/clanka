@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.19
+
+### Patch Changes
+
+- [`7fb8e3b`](https://github.com/Effectful-Tech/clanka/commit/7fb8e3b59d188cf160d7224f2c2d2aea969cd8b5) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing for non-patch template literals that contain doubly escaped markdown markers (for example, \\`code\\`). These are now normalized to single escaped markers before preprocessing so task summaries remain stable and valid. Also fix assigned template detection to correctly handle multiline patch literals that close at end-of-line, ensuring trailing backticks inside patch content are escaped.
+
 ## 0.2.18
 
 ### Patch Changes

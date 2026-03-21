@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.26
+
+### Patch Changes
+
+- [`ae342db`](https://github.com/Effectful-Tech/clanka/commit/ae342dbc3999503bbfad6b084021a942f6a61068) Thanks [@tim-smart](https://github.com/tim-smart)! - Add an Agent conversation mode flag that exits when a reply completes without tool calls, while still honoring taskComplete.
+
 ## 0.2.25
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # clanka
 
+## 0.2.27
+
+### Patch Changes
+
+- [`383a372`](https://github.com/Effectful-Tech/clanka/commit/383a3723706b9d401a02e1d57e6090d6009091b5) Thanks [@tim-smart](https://github.com/tim-smart)! - remove taskComplete from system prompt in conversation mode
+
+- [`b27fa5a`](https://github.com/Effectful-Tech/clanka/commit/b27fa5a7c89f9f01a1f2224f86eef72aa1ccffe1) Thanks [@tim-smart](https://github.com/tim-smart)! - allow customizing search database directory
+
 ## 0.2.26
 
 ### Patch Changes

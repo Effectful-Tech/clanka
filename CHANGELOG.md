@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.28
+
+### Patch Changes
+
+- [`bbefa4a`](https://github.com/Effectful-Tech/clanka/commit/bbefa4a2c67f7db2a500d80e130a4c1c18ab705c) Thanks [@tim-smart](https://github.com/tim-smart)! - don't use reasoning parts in conversation final summary
+
 ## 0.2.27
 
 ### Patch Changes

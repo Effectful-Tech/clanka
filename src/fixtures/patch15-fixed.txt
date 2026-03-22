@@ -1,0 +1,90 @@
+const patch = `*** Begin Patch
+*** Update File: packages/sql/pg/src/PgClient.ts
+@@
+-  const listenClient = yield* RcRef.make({
+-    acquire: reserveRaw
+-  })
++  const onListenClientError = (_cause: Error) => {
++    //
++  }
++  const listenClient = yield* RcRef.make({
++    acquire: Effect.acquireRelease(
++      Effect.tryPromise({
++        try: async () => {
++          const client = new Pg.Client(pool.options)
++          client.on("error", onListenClientError)
++          await client.connect()
++          return client
++        },
++        catch: (cause) =>
++          new SqlError({
++            reason: classifyError(cause, "Failed to acquire connection for listen", "listen")
++          })
++      }),
++      (client) =>
++        Effect.promise(() => {
++          client.off("error", onListenClientError)
++          return client.end()
++        }).pipe(
++          Effect.timeoutOption(1000)
++        )
++    )
++  })
+*** Add File: packages/sql/pg/test/Listen.test.ts
++import { PgClient } from "@effect/sql-pg"
++import { assert, it } from "@effect/vitest"
++import { Effect, Fiber, Option, Stream } from "effect"
++import * as Reactivity from "effect/unstable/reactivity/Reactivity"
++import * as Pg from "pg"
++import { PgContainer } from "./utils.ts"
++
++it.layer(PgContainer.layer, { timeout: "30 seconds" })("PgClient listen", (it) => {
++  it.effect("uses a dedicated connection outside of the pool", () =>
++    Effect.scoped(
++      Effect.gen(function*() {
++        const container = yield* PgContainer
++        const pool = new Pg.Pool({
++          connectionString: container.getConnectionUri(),
++          max: 1,
++          application_name: "@effect/sql-pg-test-listen"
++        })
++        yield* Effect.addFinalizer(() => Effect.promise(() => pool.end()))
++
++        const client = yield* PgClient.fromPool({
++          acquire: Effect.succeed(pool)
++        }).pipe(
++          Effect.provide(Reactivity.layer)
++        )
++
++        const channel = \`listen_\${Date.now()}_\${Math.random().toString(36).slice(2)}\`
++        const listener = yield* client.listen(channel).pipe(
++          Stream.take(1),
++          Stream.runHead,
++          Effect.forkScoped
++        )
++
++        yield* Effect.sleep(200)
++        assert.strictEqual(pool.totalCount, 0)
++
++        const rows = yield* client<{ value: number }>(\`SELECT 1 AS value\`).pipe(
++          Effect.timeoutFail({
++            duration: "3 seconds",
++            onTimeout: () => new Error("query timed out while listen was active")
++          })
++        )
++        assert.deepEqual(rows, [{ value: 1 }])
++
++        yield* client.notify(channel, "payload")
++        const message = yield* Fiber.join(listener)
++        assert.deepEqual(message, Option.some("payload"))
++      })
++    ))
++})
+*** Add File: .changeset/ten-pens-rule.md
++---
++"@effect/sql-pg": patch
++---
++
++Change \`PgClient.listen\` to use a dedicated PostgreSQL connection instead of reserving one from the pool.
+*** End Patch`
+console.log(await applyPatch(patch))

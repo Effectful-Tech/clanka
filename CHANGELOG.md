@@ -1,5 +1,13 @@
 # clanka
 
+## 0.2.30
+
+### Patch Changes
+
+- [`d7f700f`](https://github.com/Effectful-Tech/clanka/commit/d7f700f446ec355fd972afd1792c293e5a3ae087) Thanks [@tim-smart](https://github.com/tim-smart)! - expose history ref
+
+- [`7286392`](https://github.com/Effectful-Tech/clanka/commit/7286392f9e149b2d01ea78b5df578cee28203eb2) Thanks [@tim-smart](https://github.com/tim-smart)! - add todo list
+
 ## 0.2.29
 
 ### Patch Changes

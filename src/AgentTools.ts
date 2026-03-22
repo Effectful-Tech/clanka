@@ -59,6 +59,14 @@ export const makeContextNoop = (cwd?: string) =>
     ServiceMap.add(TaskCompleter, () => Effect.void),
   )
 
+class TodoItem extends Schema.Opaque<TodoItem>()(
+  Schema.Struct({
+    id: Schema.Number,
+    text: Schema.String,
+    completed: Schema.Boolean,
+  }),
+) {}
+
 /**
  * @since 1.0.0
  * @category Toolkit
@@ -118,6 +126,29 @@ export const AgentTools = Toolkit.make(
     }),
     success: Schema.String,
     dependencies: [CurrentDirectory],
+  }),
+  Tool.make("listTodos", {
+    description: "Read your todo list",
+    parameters: Schema.Void,
+    success: Schema.Array(TodoItem),
+  }),
+  Tool.make("addTodo", {
+    description: "Add an item to your todo list",
+    parameters: Schema.String.annotate({
+      identifier: "text",
+    }),
+  }),
+  Tool.make("updateTodo", {
+    description: "Update an item in your todo list",
+    parameters: Schema.Struct({
+      id: Schema.Number,
+      text: Schema.optional(Schema.String),
+      completed: Schema.optional(Schema.Boolean),
+    }),
+  }),
+  Tool.make("clearTodos", {
+    description: "Clear all items in your todo list",
+    parameters: Schema.Void,
   }),
   Tool.make("bash", {
     description: "Run a bash command and return the output",
@@ -231,6 +262,8 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     const pathService = yield* Path.Path
     const webSearch = yield* ExaSearch.ExaSearch
     const fetchMarkdown = yield* WebToMarkdown.WebToMarkdown
+    const todoMap = new Map<number, TodoItem>()
+    let todoIdCounter = 0
 
     const execute = Effect.fn(function* (command: ChildProcess.Command) {
       const handle = yield* spawner.spawn(command)
@@ -370,6 +403,36 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         )
         const cwd = yield* CurrentDirectory
         return yield* Effect.promise(() => Glob.glob(pattern, { cwd }))
+      }),
+      listTodos: Effect.fn("AgentTools.listTodos")(function* () {
+        yield* Effect.logInfo(`Calling "listTodos"`)
+        return Array.fromIterable(todoMap.values())
+      }),
+      addTodo: Effect.fn("AgentTools.addTodo")(function* (text) {
+        yield* Effect.logInfo(`Calling "addTodo"`).pipe(
+          Effect.annotateLogs({ text }),
+        )
+        const id = ++todoIdCounter
+        const item = { id, text, completed: false }
+        todoMap.set(id, item)
+      }),
+      updateTodo: Effect.fn("AgentTools.updateTodo")(function* (options) {
+        yield* Effect.logInfo(`Calling "updateTodo"`).pipe(
+          Effect.annotateLogs(options),
+        )
+        const item = todoMap.get(options.id)
+        if (item === undefined) {
+          return yield* Effect.die(`Todo item ${options.id} not found`)
+        }
+        todoMap.set(item.id, {
+          ...item,
+          text: options.text ?? item.text,
+          completed: options.completed ?? item.completed,
+        })
+      }),
+      clearTodos: Effect.fn("AgentTools.clearTodos")(function* () {
+        yield* Effect.logInfo(`Calling "clearTodos"`)
+        todoMap.clear()
       }),
       bash: Effect.fn("AgentTools.bash")(function* (options) {
         const timeoutMs = Math.min(options.timeoutMs ?? 120_000, 240_000)

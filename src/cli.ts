@@ -197,12 +197,15 @@ Command.make("clanka", { provider, model, semantic, prompt }).pipe(
         Effect.provide([
           Agent.layerLocal({
             directory: process.cwd(),
-          }),
+          }).pipe(
+            Layer.provide(
+              Option.match(semantic, {
+                onNone: () => Layer.empty,
+                onSome: Search,
+              }),
+            ),
+          ),
           Model,
-          Option.match(semantic, {
-            onNone: () => Layer.empty,
-            onSome: Search,
-          }),
         ]),
       )
     }),

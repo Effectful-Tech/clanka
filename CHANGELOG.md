@@ -1,5 +1,15 @@
 # clanka
 
+## 0.2.29
+
+### Patch Changes
+
+- [`761957b`](https://github.com/Effectful-Tech/clanka/commit/761957b0335a9a6feec12b50a0b7c4a5a789c2a7) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing for applyPatch templates that include nested template literals in patch content.
+
+- [`82a0dfc`](https://github.com/Effectful-Tech/clanka/commit/82a0dfcc17cb2dc993d02b24c1eeeb4d162834fb) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing so applyPatch template content keeps already-escaped template markers while still escaping unescaped backticks.
+
+- [`d88f7f3`](https://github.com/Effectful-Tech/clanka/commit/d88f7f3add98954685fb25e94a4dccaa9e75c107) Thanks [@tim-smart](https://github.com/tim-smart)! - Rewrite ScriptPreprocessing with a clearer target-scanning pipeline while preserving template escaping behavior.
+
 ## 0.2.28
 
 ### Patch Changes

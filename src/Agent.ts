@@ -491,6 +491,7 @@ const generateSystemTools = (
 ) => `**YOU ONLY HAVE ACCESS TO ONE TOOL** "execute", to run javascript code to do your work.
 
 - Use \`console.log\` to print any output you need.
+  - Errors are automatically logged to the console, so if you don't need the success output avoid using console.log.
 - Top level await is supported - no need to wrap with async functions.${
   capabilities.supportsSearch
     ? `

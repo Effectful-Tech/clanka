@@ -313,6 +313,111 @@ const normalizeNonPatchEscapedTemplateMarkers = (text: string): string =>
     .replace(/\\{2,}(?=`|\$\{)/g, "\\")
     .replace(/(^|\s)\\+(?=\.[A-Za-z0-9_-]+\/)/g, "$1")
 
+const findStringLiteralEnd = (
+  text: string,
+  start: number,
+  delimiter: '"' | "'",
+): number => {
+  for (let index = start + 1; index < text.length; index++) {
+    if (text[index] === delimiter && !isEscaped(text, index)) {
+      return index
+    }
+  }
+  return -1
+}
+
+const findInterpolationExpressionEnd = (
+  text: string,
+  openBrace: number,
+): number => {
+  let depth = 1
+  let cursor = openBrace + 1
+
+  while (cursor < text.length) {
+    const char = text[cursor]!
+
+    if (char === '"' || char === "'") {
+      const stringEnd = findStringLiteralEnd(text, cursor, char)
+      if (stringEnd === -1) {
+        return -1
+      }
+      cursor = stringEnd + 1
+      continue
+    }
+
+    if (char === "`") {
+      const templateEnd = findTemplateLiteralEnd(text, cursor)
+      if (templateEnd === -1) {
+        return -1
+      }
+      cursor = templateEnd + 1
+      continue
+    }
+
+    if (char === "{") {
+      depth++
+      cursor++
+      continue
+    }
+
+    if (char === "}") {
+      depth--
+      if (depth === 0) {
+        return cursor
+      }
+      cursor++
+      continue
+    }
+
+    cursor++
+  }
+
+  return -1
+}
+
+const findTemplateLiteralEnd = (text: string, start: number): number => {
+  let cursor = start + 1
+
+  while (cursor < text.length) {
+    const char = text[cursor]!
+
+    if (char === "`" && !isEscaped(text, cursor)) {
+      return cursor
+    }
+
+    if (char === "$" && text[cursor + 1] === "{" && !isEscaped(text, cursor)) {
+      const interpolationEnd = findInterpolationExpressionEnd(text, cursor + 1)
+      if (interpolationEnd === -1) {
+        return -1
+      }
+      cursor = interpolationEnd + 1
+      continue
+    }
+
+    cursor++
+  }
+
+  return -1
+}
+
+const findLiteralInterpolationEnd = (text: string, start: number): number => {
+  const expressionStart = skipWhitespace(text, start + 2)
+  const delimiter = text[expressionStart]
+  if (delimiter !== '"' && delimiter !== "'" && delimiter !== "`") {
+    return -1
+  }
+
+  const literalEnd =
+    delimiter === "`"
+      ? findTemplateLiteralEnd(text, expressionStart)
+      : findStringLiteralEnd(text, expressionStart, delimiter)
+  if (literalEnd === -1) {
+    return -1
+  }
+
+  const expressionEnd = skipWhitespace(text, literalEnd + 1)
+  return text[expressionEnd] === "}" ? expressionEnd : -1
+}
 const escapeTemplateLiteralContent = (text: string): string => {
   const patchNormalized = normalizePatchEscapedQuotes(text)
   const isPatchContent = patchNormalized.includes("*** Begin Patch")
@@ -355,6 +460,16 @@ const escapeTemplateLiteralContent = (text: string): string => {
       normalized[index + 1] === "{" &&
       !isEscaped(normalized, index)
     ) {
+      const literalInterpolationEnd = findLiteralInterpolationEnd(
+        normalized,
+        index,
+      )
+      if (literalInterpolationEnd !== -1) {
+        out += normalized.slice(index, literalInterpolationEnd + 1)
+        index = literalInterpolationEnd
+        continue
+      }
+
       out += "\\$"
       continue
     }
@@ -886,5 +1001,6 @@ const rewriteAssignedTargets = (script: string): string => {
 
   return out
 }
+
 export const preprocessScript = (script: string): string =>
   rewriteAssignedTargets(rewriteDirectTemplates(script))

@@ -1,5 +1,13 @@
 # clanka
 
+## 0.2.33
+
+### Patch Changes
+
+- [`dcf255d`](https://github.com/Effectful-Tech/clanka/commit/dcf255dc2710ef79480c238c27083726d6be0d96) Thanks [@tim-smart](https://github.com/tim-smart)! - update prompt
+
+- [`11e5871`](https://github.com/Effectful-Tech/clanka/commit/11e58714a379442f5d5d71362a0910e8bf42598e) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing for applyPatch templates that intentionally preserve literal template markers via string-based interpolations.
+
 ## 0.2.32
 
 ### Patch Changes

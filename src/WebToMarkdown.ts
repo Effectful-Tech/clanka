@@ -75,7 +75,7 @@ export const layer = Layer.effect(
       toRemove.has(node.nodeName.toLowerCase()),
     )
 
-    const convertHtml = Effect.fn("WebToMarkdown.convertHtml")((html) =>
+    const convertHtml = Effect.fn("WebToMarkdown.convertHtml")((html: string) =>
       Effect.sync(() => turndown.turndown(html)),
     )
 

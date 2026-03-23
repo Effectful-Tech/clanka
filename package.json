@@ -33,9 +33,9 @@
   },
   "packageManager": "pnpm@10.28.0+sha512.05df71d1421f21399e053fde567cea34d446fa02c76571441bfc1c7956e98e363088982d940465fd34480d4d90a0668bc12362f8aa88000a64e83d0b0e47be48",
   "dependencies": {
-    "@effect/ai-openai": "4.0.0-beta.37",
-    "@effect/platform-node": "4.0.0-beta.37",
-    "@effect/sql-sqlite-node": "4.0.0-beta.37",
+    "@effect/ai-openai": "4.0.0-beta.38",
+    "@effect/platform-node": "4.0.0-beta.38",
+    "@effect/sql-sqlite-node": "4.0.0-beta.38",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@vscode/ripgrep": "^1.17.1",
     "chalk": "^5.6.2",
@@ -55,26 +55,26 @@
     "@sqliteai/sqlite-vector-win32-x86_64": "0.9.93"
   },
   "peerDependencies": {
-    "@effect/ai-openai": "4.0.0-beta.37",
-    "@effect/ai-openai-compat": "4.0.0-beta.37",
-    "effect": "4.0.0-beta.37"
+    "@effect/ai-openai": "4.0.0-beta.38",
+    "@effect/ai-openai-compat": "4.0.0-beta.38",
+    "effect": "4.0.0-beta.38"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.6.0",
     "@changesets/cli": "^2.29.8",
-    "@effect/ai-openai-compat": "4.0.0-beta.37",
-    "@effect/language-service": "^0.80.0",
-    "@effect/vitest": "4.0.0-beta.37",
+    "@effect/ai-openai-compat": "4.0.0-beta.38",
+    "@effect/language-service": "^0.82.0",
+    "@effect/vitest": "4.0.0-beta.38",
     "@types/node": "^25.5.0",
     "@types/turndown": "^5.0.6",
-    "@typescript/native-preview": "7.0.0-dev.20260318.1",
-    "effect": "4.0.0-beta.37",
+    "@typescript/native-preview": "7.0.0-dev.20260323.1",
+    "effect": "4.0.0-beta.38",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
     "oxlint": "^1.56.0",
     "prettier": "^3.8.1",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.0"
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.1"
   },
   "lint-staged": {
     "*.{ts,tsx}": [

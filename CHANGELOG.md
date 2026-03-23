@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.34
+
+### Patch Changes
+
+- [`e73b9b2`](https://github.com/Effectful-Tech/clanka/commit/e73b9b2b97caccac268372ef8e9782c5fc996201) Thanks [@tim-smart](https://github.com/tim-smart)! - update effect
+
 ## 0.2.33
 
 ### Patch Changes

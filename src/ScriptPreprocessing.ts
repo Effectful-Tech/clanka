@@ -359,18 +359,16 @@ const findEnclosingStringLiteral = (
   return { start, end }
 }
 
-const isRepeatedControlEscapeString = (
+const isControlEscapeCharacter = (char: string | undefined): boolean =>
+  char !== undefined && /[0bnrtvf]/.test(char)
+
+const isStringLiteralControlEscape = (
   text: string,
   index: number,
-): boolean => {
-  const bounds = findEnclosingStringLiteral(text, index)
-  if (bounds === undefined) {
-    return false
-  }
-
-  const content = text.slice(bounds.start + 1, bounds.end)
-  return /^(?:\\\\[0bnrtvf]|\\\\r\\\\n){2,}$/.test(content)
-}
+  nextChar: string | undefined,
+): boolean =>
+  isControlEscapeCharacter(nextChar) &&
+  findEnclosingStringLiteral(text, index) !== undefined
 
 const findInterpolationExpressionEnd = (
   text: string,
@@ -494,14 +492,15 @@ const escapeTemplateLiteralContent = (text: string): string => {
         (normalized[runEnd] === "$" && normalized[runEnd + 1] === "{")
       if (preservesTemplateMarker) {
         out +=
-          "\\".repeat(runLength * 2 + (runLength % 2 === 0 ? 1 : -1)) +
+          "\\".repeat(runLength + (runLength % 2 === 0 ? 1 : 0)) +
           normalized[runEnd]!
         index = runEnd
         continue
       }
 
       const escapedRunLength =
-        runLength % 2 === 0 && isRepeatedControlEscapeString(normalized, index)
+        runLength % 2 === 0 &&
+        isStringLiteralControlEscape(normalized, index, normalized[runEnd])
           ? runLength
           : runLength * 2
 
@@ -622,26 +621,21 @@ const findDirectCallTemplate = (
     let templateEnd = -1
     if (closeParen !== -1) {
       for (let index = closeParen - 1; index > templateStart; index--) {
-        if (text[index] === "`" && !isEscaped(text, index)) {
-          templateEnd = index
-          break
-        }
-      }
-    } else {
-      const patchEnd = text.indexOf("*** End Patch", templateStart)
-      const searchStart = patchEnd === -1 ? templateStart + 1 : patchEnd + 1
-      for (let index = searchStart; index < text.length; index++) {
         if (text[index] !== "`" || isEscaped(text, index)) {
           continue
         }
+
         const candidate = skipWhitespace(text, index + 1)
-        if (text[candidate] === ")") {
+        if (candidate === closeParen || text[candidate] === ")") {
           templateEnd = index
           break
         }
       }
     }
 
+    if (templateEnd === -1) {
+      templateEnd = findTemplateEnd(text, templateStart, (char) => char === ")")
+    }
     if (templateEnd === -1) {
       cursor = templateStart + 1
       continue

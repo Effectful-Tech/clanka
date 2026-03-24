@@ -48,7 +48,7 @@ const patch = `*** Begin Patch
 +  for (let i = 0; i < text.length; i++) {
 +    const char = text[i]!
 +    if (char === "\`" && !isEscaped(text, i)) {
-+      out += "\\\\\`"
++      out += "\\\`"
 +      continue
 +    }
 +    out += char

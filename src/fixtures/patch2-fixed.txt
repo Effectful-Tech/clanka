@@ -15,7 +15,7 @@ const patch = `*** Begin Patch
    return i
  }
 +
-+const hasNewline = (text: string): boolean => text.includes("\\\\n")
++const hasNewline = (text: string): boolean => text.includes("\\n")
 +
 +const parseIdentifier = (
 +  text: string,
@@ -49,7 +49,7 @@ const patch = `*** Begin Patch
 +    if (char === "=") {
 +      return i
 +    }
-+    if (char === "\\\\n" || char === ";") {
++    if (char === "\\n" || char === ";") {
 +      return -1
 +    }
 +    i++

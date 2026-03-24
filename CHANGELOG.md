@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.35
+
+### Patch Changes
+
+- [`825e376`](https://github.com/Effectful-Tech/clanka/commit/825e37619738f5ce64b62efcd8d75639400ca50a) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing so applyPatch templates keep repeated control-escape strings stable while still escaping broken nested template content.
+
 ## 0.2.34
 
 ### Patch Changes

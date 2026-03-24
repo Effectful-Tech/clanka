@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.36
+
+### Patch Changes
+
+- [`50143fb`](https://github.com/Effectful-Tech/clanka/commit/50143fb24bd17bb9f135b80361d16b6dff88cd5e) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing for nested applyPatch template literals without changing fixture inputs.
+
 ## 0.2.35
 
 ### Patch Changes

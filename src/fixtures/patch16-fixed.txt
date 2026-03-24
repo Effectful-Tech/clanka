@@ -1,0 +1,24 @@
+const patch=`*** Begin Patch
+*** Update File: packages/tools/openapi-generator/src/HttpApiTransformer.ts
+@@
+ export const toImplementation = (
+   _importName: string,
+   name: string,
+   parsed: ParsedOpenApi
+ ): string => {
++  const security = buildSecurityRenderModel(parsed)
+   const groups = groupOperations(parsed)
+-  const groupSources = groups.map(renderGroup)
++  const groupSources = groups.map((group) => renderGroup(group, security.endpointMiddlewares))
+   const metadataAnnotations = renderApiAnnotations(parsed)
+@@
+   return [
++    ...security.securityDeclarations,
++    ...security.middlewareDeclarations,
+     ...groupSources,
+     \`export class \${name} extends HttpApi.make(\${JSON.stringify(name)}) {}\`,
+     apiValue
+   ].join("\\n\\n")
+ }
+*** End Patch`;
+console.log(await applyPatch(patch));

@@ -326,6 +326,52 @@ const findStringLiteralEnd = (
   return -1
 }
 
+const findEnclosingStringLiteral = (
+  text: string,
+  index: number,
+):
+  | {
+      readonly start: number
+      readonly end: number
+    }
+  | undefined => {
+  let start = index - 1
+  while (start >= 0) {
+    const char = text[start]!
+    if ((char === '"' || char === "'") && !isEscaped(text, start)) {
+      break
+    }
+    if (char === "\n" || char === "\r") {
+      return undefined
+    }
+    start--
+  }
+
+  if (start < 0) {
+    return undefined
+  }
+
+  const end = findStringLiteralEnd(text, start, text[start] as '"' | "'")
+  if (end === -1 || index >= end) {
+    return undefined
+  }
+
+  return { start, end }
+}
+
+const isRepeatedControlEscapeString = (
+  text: string,
+  index: number,
+): boolean => {
+  const bounds = findEnclosingStringLiteral(text, index)
+  if (bounds === undefined) {
+    return false
+  }
+
+  const content = text.slice(bounds.start + 1, bounds.end)
+  return /^(?:\\\\[0bnrtvf]|\\\\r\\\\n){2,}$/.test(content)
+}
+
 const findInterpolationExpressionEnd = (
   text: string,
   openBrace: number,
@@ -437,16 +483,30 @@ const escapeTemplateLiteralContent = (text: string): string => {
     const char = normalized[index]!
 
     if (char === "\\") {
-      if (
-        (normalized[index + 1] === "`" && isEscaped(normalized, index + 1)) ||
-        (normalized[index + 1] === "$" &&
-          normalized[index + 2] === "{" &&
-          isEscaped(normalized, index + 1))
-      ) {
-        out += "\\"
+      let runEnd = index + 1
+      while (normalized[runEnd] === "\\") {
+        runEnd++
+      }
+
+      const runLength = runEnd - index
+      const preservesTemplateMarker =
+        normalized[runEnd] === "`" ||
+        (normalized[runEnd] === "$" && normalized[runEnd + 1] === "{")
+      if (preservesTemplateMarker) {
+        out +=
+          "\\".repeat(runLength * 2 + (runLength % 2 === 0 ? 1 : -1)) +
+          normalized[runEnd]!
+        index = runEnd
         continue
       }
-      out += "\\\\"
+
+      const escapedRunLength =
+        runLength % 2 === 0 && isRepeatedControlEscapeString(normalized, index)
+          ? runLength
+          : runLength * 2
+
+      out += "\\".repeat(escapedRunLength)
+      index = runEnd - 1
       continue
     }
 

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.39
+
+### Patch Changes
+
+- [`edaf4fb`](https://github.com/Effectful-Tech/clanka/commit/edaf4fb6f54dec10b3432d2389973833c0e4f1f8) Thanks [@tim-smart](https://github.com/tim-smart)! - claude can be dumb
+
 ## 0.2.38
 
 ### Patch Changes

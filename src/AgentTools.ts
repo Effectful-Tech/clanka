@@ -450,7 +450,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         return yield* execute(cmd).pipe(
           Effect.timeoutOrElse({
             duration: timeoutMs,
-            onTimeout: () =>
+            orElse: () =>
               Effect.die(new Error(`Command timed out after ${timeoutMs}ms`)),
           }),
         )

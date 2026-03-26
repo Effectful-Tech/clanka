@@ -32,7 +32,10 @@ import * as Tool from "effect/unstable/ai/Tool"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
 import * as Semaphore from "effect/Semaphore"
 import * as Schedule from "effect/Schedule"
+import * as Duration from "effect/Duration"
 import * as Cause from "effect/Cause"
+import * as Latch from "effect/Latch"
+import * as Clock from "effect/Clock"
 
 /**
  * @since 1.0.0
@@ -167,6 +170,7 @@ ${content}
     const subagentModel = yield* SubagentModel
     const modelConfig = yield* AgentModelConfig
     const conversationMode = yield* ConversationMode
+    const turnTimeout = yield* TurnTimeout
     let finalSummary = Option.none<string>()
 
     const output = yield* Queue.make<Output, AgentFinished | AiError.AiError>()
@@ -275,7 +279,34 @@ ${content}
       Effect.provideService(SubagentModel, subagentModel),
     )
 
+    // Turn timeout
+    const clock = yield* Clock.Clock
+    const turnTimeoutMs = Duration.toMillis(turnTimeout)
+    let turnExpires = 0
+    const turnTimeoutReset = () => {
+      turnExpires = clock.currentTimeMillisUnsafe() + turnTimeoutMs
+    }
+    const toolLatch = Latch.makeUnsafe(true)
+    const toolLatchAcquire = toolLatch.close
+    const toolLatchRelease = Effect.sync(() => {
+      turnTimeoutReset()
+      toolLatch.openUnsafe()
+    })
+    const turnTimeoutEffect = Effect.gen(function* () {
+      toolLatch.openUnsafe()
+      turnTimeoutReset()
+      while (true) {
+        yield* Effect.sleep(turnExpires - clock.currentTimeMillisUnsafe())
+        yield* toolLatch.await
+        const remaining = turnExpires - clock.currentTimeMillisUnsafe()
+        if (remaining > 0) continue
+        return yield* new Cause.TimeoutError()
+      }
+    })
+
+    // Script execution
     const executeScript = Effect.fnUntraced(function* (script: string) {
+      yield* toolLatchAcquire
       maybeSend({ agentId, part: new ScriptEnd(), release: true })
       const normalizedScript = stripWrappingCodeFence(script)
       const output = yield* pipe(
@@ -291,7 +322,7 @@ ${content}
       )
       maybeSend({ agentId, part: new ScriptOutput({ output }) })
       return output
-    })
+    }, Effect.ensuring(toolLatchRelease))
 
     if (!modelConfig.systemPromptTransform) {
       MutableRef.update(prompt, Prompt.setSystem(system))
@@ -343,6 +374,7 @@ ${content}
           }),
           Stream.runForEachArray((parts) => {
             response.push(...parts)
+            turnTimeoutReset()
 
             for (const part of parts) {
               switch (part.type) {
@@ -402,8 +434,13 @@ ${content}
             }
             return Effect.void
           }),
+          Effect.raceFirst(turnTimeoutEffect),
           Effect.retry({
             while: (err) => {
+              if (err._tag === "TimeoutError") {
+                response = []
+                return true
+              }
               if (err.isRetryable) {
                 maybeSend({ agentId, part: new ErrorRetry({ error: err }) })
                 switch (err.reason._tag) {
@@ -423,6 +460,7 @@ ${content}
             },
             schedule: retryPolicy,
           }),
+          Effect.catchTag("TimeoutError", Effect.die),
           modelConfig.systemPromptTransform
             ? (effect) => modelConfig.systemPromptTransform!(system, effect)
             : identity,
@@ -654,6 +692,22 @@ export class ConversationMode extends ServiceMap.Reference<boolean>(
 ) {
   static readonly layer = (enabled: boolean) =>
     Layer.succeed(ConversationMode, enabled)
+}
+
+/**
+ * Specify an inactivity timeout before retrying a turn.
+ *
+ * @since 1.0.0
+ * @category Turn timeout
+ */
+export class TurnTimeout extends ServiceMap.Reference<Duration.Duration>(
+  "clanka/Agent/TurnTimeout",
+  {
+    defaultValue: () => Duration.minutes(2),
+  },
+) {
+  static readonly layer = (timeout: Duration.Input) =>
+    Layer.succeed(TurnTimeout, Duration.fromInputUnsafe(timeout))
 }
 
 /**

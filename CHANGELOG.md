@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.42
+
+### Patch Changes
+
+- [`013f30d`](https://github.com/Effectful-Tech/clanka/commit/013f30d310c2e26c6a849ade9e6a5d7d09b8917f) Thanks [@tim-smart](https://github.com/tim-smart)! - bring back TurnTimeout
+
 ## 0.2.41
 
 ### Patch Changes

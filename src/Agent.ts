@@ -32,7 +32,6 @@ import * as Tool from "effect/unstable/ai/Tool"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
 import * as Semaphore from "effect/Semaphore"
 import * as Schedule from "effect/Schedule"
-import * as Duration from "effect/Duration"
 import * as Cause from "effect/Cause"
 
 /**
@@ -168,7 +167,6 @@ ${content}
     const subagentModel = yield* SubagentModel
     const modelConfig = yield* AgentModelConfig
     const conversationMode = yield* ConversationMode
-    const turnTimeout = yield* TurnTimeout
     let finalSummary = Option.none<string>()
 
     const output = yield* Queue.make<Output, AgentFinished | AiError.AiError>()
@@ -334,10 +332,6 @@ ${content}
           Stream.suspend(() =>
             ai.streamText({ prompt: prompt.current, toolkit: singleTool }),
           ),
-          Stream.timeoutOrElse({
-            duration: turnTimeout,
-            orElse: () => Stream.fail(new Cause.TimeoutError()),
-          }),
           Stream.takeUntil((part) => {
             if (
               (part.type === "text-end" || part.type === "reasoning-end") &&
@@ -410,10 +404,6 @@ ${content}
           }),
           Effect.retry({
             while: (err) => {
-              if (err._tag === "TimeoutError") {
-                response = []
-                return true
-              }
               if (err.isRetryable) {
                 maybeSend({ agentId, part: new ErrorRetry({ error: err }) })
                 switch (err.reason._tag) {
@@ -433,7 +423,6 @@ ${content}
             },
             schedule: retryPolicy,
           }),
-          Effect.catchTag("TimeoutError", Effect.die),
           modelConfig.systemPromptTransform
             ? (effect) => modelConfig.systemPromptTransform!(system, effect)
             : identity,
@@ -665,22 +654,6 @@ export class ConversationMode extends ServiceMap.Reference<boolean>(
 ) {
   static readonly layer = (enabled: boolean) =>
     Layer.succeed(ConversationMode, enabled)
-}
-
-/**
- * Specify an inactivity timeout before retrying a turn.
- *
- * @since 1.0.0
- * @category Turn timeout
- */
-export class TurnTimeout extends ServiceMap.Reference<Duration.Duration>(
-  "clanka/Agent/TurnTimeout",
-  {
-    defaultValue: () => Duration.minutes(2),
-  },
-) {
-  static readonly layer = (timeout: Duration.Input) =>
-    Layer.succeed(TurnTimeout, Duration.fromInputUnsafe(timeout))
 }
 
 /**

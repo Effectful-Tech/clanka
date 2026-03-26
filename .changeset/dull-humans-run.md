@@ -1,0 +1,5 @@
+---
+"clanka": patch
+---
+
+remove TurnTimeout

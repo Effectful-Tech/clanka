@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.44
+
+### Patch Changes
+
+- [`764be7b`](https://github.com/Effectful-Tech/clanka/commit/764be7bed9ed20bd7a611fc81777ec1c85175dbf) Thanks [@tim-smart](https://github.com/tim-smart)! - tweak turn timeout to append response
+
 ## 0.2.43
 
 ### Patch Changes

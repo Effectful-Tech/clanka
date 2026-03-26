@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.41
+
+### Patch Changes
+
+- [`e7a4178`](https://github.com/Effectful-Tech/clanka/commit/e7a4178b80de0baf1273153898606bcc9857e257) Thanks [@tim-smart](https://github.com/tim-smart)! - fix script preprocessing for String.raw tagged template literals so broken markdown code fences are escaped correctly
+
 ## 0.2.40
 
 ### Patch Changes

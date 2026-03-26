@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.43
+
+### Patch Changes
+
+- [`10f7003`](https://github.com/Effectful-Tech/clanka/commit/10f7003e2dc8201a3d9a427b7f3d3a3246e15662) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing for patch templates so doubly-escaped markdown code-span backticks are normalized without breaking valid escaped backticks inside code snippets.
+
 ## 0.2.42
 
 ### Patch Changes

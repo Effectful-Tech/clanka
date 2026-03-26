@@ -1,0 +1,1032 @@
+const spec = String.raw`# EventLogServerUnencrypted
+
+## Overview
+
+Update \
+	t	the unencrypted event-log server specification so the server can append its own
+client-visible events, while still supporting client-originated writes over the
+existing ` + "`EventLogRemote`" + String.raw` websocket protocol.
+
+The unencrypted server must no longer treat transport history as purely
+per-public-key. Instead it must introduce a persisted **store id** concept:
+
+- every client ` + "`publicKey`" + String.raw` resolves to a ` + "`StoreId`" + String.raw`
+- transport history is stored and sequenced per ` + "`StoreId`" + String.raw`, not per public key
+- multiple public keys may resolve to the same store id and therefore observe
+  the same outbound history and sequence numbers
+- client writes are appended to the resolved store feed
+- server-authored writes target a store id directly and are broadcast to all
+  clients mapped to that store
+
+The module remains intentionally **read-time compaction, not ingest-time
+compaction**:
+
+- all accepted client writes are stored and processed immediately
+- server-authored writes are stored immediately and optionally processed through
+  handlers / reactivity depending on configuration
+- compaction only affects what the server sends back from
+  ` + "`RequestChanges(startSequence)`" + String.raw`, and only for entries older than a
+  configurable fixed duration
+
+The design should still reuse existing EventLog patterns as much as possible:
+
+- ` + "`EventLog.group(...)`" + String.raw` remains the handler authoring API
+- grouping / payload decoding behavior from ` + "`EventLog.groupCompaction(...)`" + String.raw`
+  should be reused or factored into shared internal helpers
+- Reactivity invalidation semantics should match ` + "`EventLog`" + String.raw` whenever handler
+  replay is enabled
+- ` + "`SqlEventLogJournal`" + String.raw` remains the preferred journal implementation for
+  the server-side processing journal when persistence is needed
+- transport history and publicKey-to-store mapping should stay behind narrow
+  service contracts so a future SQL-backed implementation can be added without
+  reshaping the runtime
+
+## User Decisions Captured
+
+The specification reflects the following clarified requirements:
+
+1. authorization is handled by a new required ` + "`EventLogServerAuth`" + String.raw` service
+   for **client-originated** reads and writes
+2. backend handlers should reuse ` + "`EventLog.group(...)`" + String.raw`
+3. compaction applies only to events older than a configurable fixed duration
+4. unauthorized client writes reject the whole batch
+5. ` + "`Ack.sequenceNumbers`" + String.raw` must still use one sequence per originally
+   submitted event slot
+6. server reactivity invalidation must run for all accepted incoming client
+   events and for server-authored writes only when handler replay is enabled
+7. unencrypted protocol responses need an explicit error message type
+8. outbound compaction applies to the feed returned from
+   ` + "`RequestChanges(startSequence)`" + String.raw`
+9. server-authored events must be able to target a ` + "`StoreId`" + String.raw` directly
+10. public keys must map to store ids through a persistable mapping abstraction
+11. server-authored writes bypass ` + "`EventLogServerAuth`" + String.raw`
+12. whether server-authored writes run handlers / reactivity must be
+    configurable per write
+
+## Goals
+
+- Make ` + "`EventLogServerUnencrypted`" + String.raw` feature-complete enough to back a real
+  backend event-log endpoint.
+- Allow multiple client identities to share a single store feed through a
+  persisted publicKey-to-store mapping.
+- Allow the backend to append its own events to a store feed and have those
+  events broadcast to all mapped clients.
+- Allow the backend to execute the same event handlers authored with
+  ` + "`EventLog.group(...)`" + String.raw` that are already used by clients.
+- Ensure accepted client writes trigger the same Reactivity invalidation pattern
+  used by ` + "`EventLog`" + String.raw`, and ensure server-authored writes can opt into that
+  same processing path.
+- Finish the already-started unencrypted protocol support in ` + "`EventLogRemote`" + String.raw`.
+
+## Non-Goals
+
+- Adding encrypted-protocol error frames in the same change.
+- Mutating or deleting stored raw events as part of compaction. Compaction is a
+  read-time projection.
+- Replacing ` + "`EventLog.group(...)`" + String.raw` with a new handler DSL.
+- Requiring a dedicated SQL transport-storage adapter in the same PR.
+- Requiring a production-ready SQL implementation of the publicKey-to-store
+  registry in the same PR, as long as the service contract is explicitly
+  durable-friendly and the shipped runtime does not hard-code ephemeral
+  derivation.
+- Adding cross-store fan-out APIs in the initial change. Targeting one store per
+  write is sufficient.
+
+## Module Surface
+
+### Primary module
+
+- ` + "`packages/effect/src/unstable/eventlog/EventLogServerUnencrypted.ts`" + String.raw`
+
+### Existing modules that must change
+
+- ` + "`packages/effect/src/unstable/eventlog/EventLogRemote.ts`" + String.raw`
+- ` + "`packages/effect/src/unstable/eventlog/EventLog.ts`" + String.raw` (internal refactors /
+  shared helpers only, unless a small public adjustment is the cleanest option)
+- optionally ` + "`packages/effect/src/unstable/eventlog/EventJournal.ts`" + String.raw` only if a
+  small helper type is needed; avoid unnecessary public API churn
+
+### Tests
+
+- ` + "`packages/effect/test/unstable/eventlog/EventLogServerUnencrypted.test.ts`" + String.raw`
+- update/add targeted tests around ` + "`EventLogRemote.ts`" + String.raw` if needed
+
+## Public API
+
+### 1. ` + "`StoreId`" + String.raw`
+
+Add a stable server-visible store identifier.
+
+Suggested shape:
+
+\`\`\`ts
+export type StoreIdTypeId = "effect/eventlog/EventLogServerUnencrypted/StoreId"
+
+export type StoreId = string & Brand<StoreIdTypeId>
+
+export const StoreId = Schema.String.pipe(Schema.brand(StoreIdTypeId))
+\`\`\`
+
+The exact encoding can differ, but it must be:
+
+- stable across process restarts
+- serializable / persistable by user-provided infrastructure
+- suitable as the key for transport history and store-mapping persistence
+
+### 2. ` + "`EventLogServerStoreRegistry`" + String.raw`
+
+Add a required service responsible for resolving public keys to store ids.
+
+\`\`\`ts
+export class EventLogServerStoreRegistry extends ServiceMap.Service<EventLogServerStoreRegistry, {
+  readonly resolve: (publicKey: string) => Effect.Effect<StoreId, EventLogServerStoreRegistryError>
+  readonly assign: (options: {
+    readonly publicKey: string
+    readonly storeId: StoreId
+  }) => Effect.Effect<void, EventLogServerStoreRegistryError>
+}>()("effect/eventlog/EventLogServerUnencrypted/EventLogServerStoreRegistry") {}
+\`\`\`
+
+#### Required semantics
+
+- ` + "`resolve(publicKey)`" + String.raw` is used by all client-originated paths:
+  - ` + "`WriteEntriesUnencrypted`" + String.raw`
+  - ` + "`RequestChanges`" + String.raw`
+- two public keys assigned the same store id must observe the same outbound
+  history and sequence numbers
+- the mapping is domain state, not an ephemeral hash or in-memory-only default
+- the main server runtime must require this service explicitly
+- a helper such as ` + "`layerStoreRegistryMemory`" + String.raw` is recommended for tests and
+  local development
+- the service contract must support durable implementations, even if only a
+  memory helper ships in the first PR
+
+#### Notes
+
+- ` + "`assign(...)`" + String.raw` is included so tests and local setups can configure mappings
+  without reaching into implementation details
+- additional helpers such as ` + "`assignMany`" + String.raw`, ` + "`remove`" + String.raw`, or read-only admin APIs
+  are acceptable but not required
+
+### 3. ` + "`EventLogServerStoreRegistryError`" + String.raw`
+
+Add a structured error for store-resolution failures.
+
+\`\`\`ts
+export class EventLogServerStoreRegistryError extends Data.TaggedError("EventLogServerStoreRegistryError")<{
+  readonly reason: "NotMapped" | "AlreadyAssigned" | "Unavailable"
+  readonly publicKey?: string | undefined
+  readonly storeId?: StoreId | undefined
+  readonly message?: string | undefined
+}> {}
+\`\`\`
+
+Required behavior:
+
+- an unmapped client public key must not silently derive a store id
+- write / read requests for an unmapped public key must fail before any
+  transport persistence or subscription creation
+- protocol mapping for ` + "`NotMapped`" + String.raw` should use ` + "`ErrorUnencrypted`" + String.raw` with code
+  ` + '"InvalidRequest"' + String.raw` unless the implementation intentionally wants to conceal
+  store existence behind an auth failure; whichever mapping is chosen must be
+  consistent across read and write paths
+
+### 4. ` + "`EventLogServerAuth`" + String.raw`
+
+Keep the required auth service from the original spec for client-originated
+traffic.
+
+\`\`\`ts
+export class EventLogServerAuth extends ServiceMap.Service<EventLogServerAuth, {
+  readonly authorizeWrite: (options: {
+    readonly publicKey: string
+    readonly entries: ReadonlyArray<Entry>
+  }) => Effect.Effect<void, EventLogServerAuthError>
+  readonly authorizeRead: (publicKey: string) => Effect.Effect<void, EventLogServerAuthError>
+}>()("effect/eventlog/EventLogServerUnencrypted/EventLogServerAuth") {}
+\`\`\`
+
+#### Semantics
+
+- ` + "`authorizeWrite`" + String.raw` is called once per inbound client write request before any
+  persistence, handler execution, reactivity invalidation, or store resolution
+- authorization is batch-wide: if it fails, the entire write request is
+  rejected
+- ` + "`authorizeRead`" + String.raw` is called before creating a ` + "`RequestChanges`" + String.raw` subscription
+- server-authored writes targeting a store id bypass this service entirely
+- a helper layer such as ` + "`layerAuthAllowAll`" + String.raw` is recommended for tests and local
+  development, but the service itself must remain required by the main server
+  constructor APIs
+
+### 5. ` + "`EventLogServerAuthError`" + String.raw`
+
+Add a tagged error type for auth rejections.
+
+\`\`\`ts
+export class EventLogServerAuthError extends Data.TaggedError("EventLogServerAuthError")<{
+  readonly reason: "Unauthorized" | "Forbidden"
+  readonly publicKey: string
+  readonly message?: string | undefined
+}> {}
+\`\`\`
+
+Exact fields may vary, but the type must be structured enough to map to an
+unencrypted protocol error frame.
+
+### 6. ` + "`Storage`" + String.raw`
+
+Update the transport-history storage abstraction so it is keyed by ` + "`StoreId`" + String.raw`, not
+public key.
+
+\`\`\`ts
+export class Storage extends ServiceMap.Service<Storage, {
+  readonly getId: Effect.Effect<RemoteId>
+  readonly write: (options: {
+    readonly storeId: StoreId
+    readonly entries: ReadonlyArray<Entry>
+  }) => Effect.Effect<{
+    readonly sequenceNumbers: ReadonlyArray<number>
+    readonly committed: ReadonlyArray<RemoteEntry>
+  }>
+  readonly entries: (
+    storeId: StoreId,
+    startSequence: number
+  ) => Effect.Effect<ReadonlyArray<RemoteEntry>>
+  readonly changes: (
+    storeId: StoreId,
+    startSequence: number
+  ) => Effect.Effect<Queue.Dequeue<RemoteEntry, Cause.Done>, never, Scope.Scope>
+}>()("effect/eventlog/EventLogServerUnencrypted/Storage") {}
+\`\`\`
+
+#### Required semantics
+
+- transport history is sequenced independently per store id
+- duplicate detection is per store id and entry id
+- ` + "`sequenceNumbers`" + String.raw` must contain one output sequence per input slot, even when
+  an input is a duplicate
+- ` + "`committed`" + String.raw` contains only newly committed entries that still need replay into
+  the processing journal / handlers
+- ` + "`entries`" + String.raw` and ` + "`changes`" + String.raw` expose the shared store feed used by all mapped
+  public keys
+
+A helper layer such as ` + "`layerStorageMemory`" + String.raw` is recommended for tests and local
+workflows.
+
+### 7. ` + "`EventLogServerUnencrypted`" + String.raw` runtime service
+
+Add a server runtime service, parallel to the client-side ` + "`EventLog`" + String.raw` runtime,
+responsible for:
+
+- registering outbound compactors
+- registering reactivity mappings
+- processing accepted client entries through the server journal + handlers
+- serving store-backed outbound change feeds to client public keys
+- exposing a server-authored write path that targets store ids directly
+
+Suggested shape:
+
+\`\`\`ts
+export class EventLogServerUnencrypted extends ServiceMap.Service<EventLogServerUnencrypted, {
+  readonly ingestClient: (options: {
+    readonly publicKey: string
+    readonly entries: ReadonlyArray<Entry>
+  }) => Effect.Effect<{
+    readonly storeId: StoreId
+    readonly sequenceNumbers: ReadonlyArray<number>
+    readonly committed: ReadonlyArray<RemoteEntry>
+  }, EventLogServerAuthError | EventLogServerStoreRegistryError | EventJournal.EventJournalError>
+  readonly requestChanges: (
+    publicKey: string,
+    startSequence: number
+  ) => Effect.Effect<Queue.Dequeue<RemoteEntry, EventLogRemote.EventLogRemoteError>, never, Scope.Scope>
+  readonly writeToStore: (options: {
+    readonly storeId: StoreId
+    readonly entries: ReadonlyArray<Entry>
+    readonly runHandlers?: boolean | undefined
+  }) => Effect.Effect<{
+    readonly sequenceNumbers: ReadonlyArray<number>
+    readonly committed: ReadonlyArray<RemoteEntry>
+  }, EventJournal.EventJournalError>
+  readonly registerCompaction: (options: {
+    readonly events: ReadonlyArray<string>
+    readonly olderThan: Duration.DurationInput
+    readonly effect: (options: {
+      readonly entries: ReadonlyArray<Entry>
+      readonly write: (entry: Entry) => Effect.Effect<void>
+    }) => Effect.Effect<void>
+  }) => Effect.Effect<void, never, Scope.Scope>
+  readonly registerReactivity: (keys: Record<string, ReadonlyArray<string>>) => Effect.Effect<void, never, Scope.Scope>
+}>()("effect/eventlog/EventLogServerUnencrypted") {}
+\`\`\`
+
+#### Required behavior
+
+- ` + "`ingestClient(...)`" + String.raw` is the client-originated write path used by the websocket
+  handler
+- ` + "`writeToStore(...)`" + String.raw` is the server-authored write path
+- ` + "`writeToStore(...)`" + String.raw` bypasses auth and store resolution because the caller already
+  supplies a target store id
+- when ` + "`runHandlers`" + String.raw` is omitted, it should default to ` + "`true`" + String.raw`
+- when ` + "`runHandlers: true`" + String.raw`, committed entries must be replayed into the processing
+  journal and must trigger the same handler / reactivity behavior as client
+  writes
+- when ` + "`runHandlers: false`" + String.raw`, committed entries are transport-only:
+  - they are persisted to storage
+  - they are visible to ` + "`RequestChanges`" + String.raw` readers for that store
+  - they are **not** replayed into the processing journal
+  - they do **not** execute handlers
+  - they do **not** trigger reactivity invalidation
+  - they do **not** participate in conflict detection until a future feature
+    explicitly introduces a second processing mode
+
+### 8. ` + "`layer`" + String.raw`
+
+Add a layer constructor, parallel to ` + "`EventLog.layer(...)`" + String.raw`, for building the
+server runtime from handler layers and a processing journal.
+
+\`\`\`ts
+export const layer: <Groups extends EventGroup.Any>(
+  schema: EventLog.EventLogSchema<Groups>
+) => Layer.Layer<
+  EventLogServerUnencrypted,
+  never,
+  EventGroup.ToService<Groups>
+    | EventJournal.EventJournal
+    | EventLogServerStoreRegistry
+    | EventLogServerAuth
+    | Storage
+>
+\`\`\`
+
+#### Notes
+
+- handlers are still authored with ` + "`EventLog.group(...)`" + String.raw`
+- the server runtime should read those handler registrations from the produced
+  service map exactly like ` + "`EventLog`" + String.raw` does
+- this keeps domain handler code portable between client and server runtimes
+
+### 9. ` + "`groupCompaction`" + String.raw`
+
+Keep the existing compaction helper from the original spec, but clarify that it
+now operates on per-store transport history served through client public keys.
+
+\`\`\`ts
+export const groupCompaction: <Events extends Event.Any, R>(
+  group: EventGroup.EventGroup<Events>,
+  options: {
+    readonly olderThan: Duration.DurationInput
+  },
+  effect: (options: {
+    readonly primaryKey: string
+    readonly entries: ReadonlyArray<Entry>
+    readonly events: ReadonlyArray<Event.TaggedPayload<Events>>
+    readonly write: <Tag extends Event.Tag<Events>>(
+      tag: Tag,
+      payload: Event.PayloadWithTag<Events, Tag>
+    ) => Effect.Effect<void, never, Event.PayloadSchemaWithTag<Events, Tag>["EncodingServices"]>
+  }) => Effect.Effect<void, never, R>
+) => Layer.Layer<never, never, EventLogServerUnencrypted | R | Event.PayloadSchema<Events>["DecodingServices"]>
+\`\`\`
+
+Behavior remains the same as the prior spec except that:
+
+- eligible entries come from the resolved store feed
+- a compacted response is shared by all public keys reading that store from the
+  same cursor
+
+### 10. ` + "`groupReactivity`" + String.raw`
+
+Add a server-local helper mirroring ` + "`EventLog.groupReactivity(...)`" + String.raw` so a server
+runtime can register per-event invalidation keys without depending on the
+client-side ` + "`EventLog`" + String.raw` service.
+
+### 11. ` + "`makeHandler`" + String.raw` and ` + "`makeHandlerHttp`" + String.raw`
+
+Add websocket / HTTP upgrade handlers parallel to ` + "`EventLogServer.makeHandler`" + String.raw`
+and ` + "`makeHandlerHttp`" + String.raw`.
+
+\`\`\`ts
+export const makeHandler: Effect.Effect<
+  (socket: Socket.Socket) => Effect.Effect<void, Socket.SocketError>,
+  never,
+  EventLogServerUnencrypted | Storage | EventLogServerAuth | EventLogServerStoreRegistry
+>
+
+export const makeHandlerHttp: Effect.Effect<
+  Effect.Effect<
+    HttpServerResponse.HttpServerResponse,
+    HttpServerError.HttpServerError | Socket.SocketError,
+    HttpServerRequest.HttpServerRequest | Scope.Scope
+  >,
+  never,
+  EventLogServerUnencrypted | Storage | EventLogServerAuth | EventLogServerStoreRegistry
+>
+\`\`\`
+
+## EventLogRemote Changes
+
+The existing unencrypted support in ` + "`EventLogRemote.ts`" + String.raw` is incomplete and must
+be finished as part of this work.
+
+### Protocol additions
+
+Add an explicit unencrypted error response:
+
+\`\`\`ts
+export class ErrorUnencrypted extends Schema.Class<ErrorUnencrypted>(
+  "effect/eventlog/EventLogRemote/ErrorUnencrypted"
+)({
+  _tag: Schema.tag("Error"),
+  requestTag: Schema.String,
+  id: Schema.optional(Schema.Number),
+  publicKey: Schema.optional(Schema.String),
+  code: Schema.Literal("Unauthorized", "InvalidRequest", "InternalServerError"),
+  message: Schema.String
+}) {}
+\`\`\`
+
+The exact schema can differ, but it must support:
+
+- correlating write failures to a pending ` + "`WriteEntries`" + String.raw` request id
+- indicating read-subscription failures for ` + "`RequestChanges`" + String.raw`
+- communicating auth failures in a machine-readable form
+- communicating store-resolution failures for unmapped public keys
+
+Update:
+
+- ` + "`ProtocolResponseUnencrypted`" + String.raw`
+- ` + "`ProtocolResponseUnencryptedMsgpack`" + String.raw`
+- ` + "`decodeResponseUnencrypted`" + String.raw`
+- ` + "`encodeResponseUnencrypted`" + String.raw`
+
+### Codec correctness
+
+Complete the unfinished unencrypted protocol path in ` + "`EventLogRemote.ts`" + String.raw`:
+
+- ` + "`fromSocketUnencrypted`" + String.raw` must use the unencrypted request encoder and response
+  decoder consistently
+- the misspelled ` + "`encodeRequestUnsencrypted`" + String.raw` helper should be corrected to
+  ` + "`encodeRequestUnencrypted`" + String.raw`
+- if the typo is already exported, keep a temporary backwards-compatible alias
+  or deprecate it in-place rather than silently breaking consumers
+
+### Error surfacing
+
+Because the server now sends explicit unencrypted protocol errors, the remote
+client API must surface them.
+
+#### Required behavior
+
+- a write rejection for a pending request must fail the corresponding
+  ` + "`remote.write(...)`" + String.raw` effect with ` + "`EventLogRemoteError`" + String.raw`
+- a rejected ` + "`RequestChanges`" + String.raw` subscription must fail the returned dequeue, or an
+  equivalent fallible subscription mechanism, with ` + "`EventLogRemoteError`" + String.raw`
+- downstream ` + "`EventLog.registerRemote(...)`" + String.raw` consumption must handle those
+  failures by logging and continuing its normal reconnection / retry behavior
+
+Since these APIs are unstable, it is acceptable to widen the public error types
+if needed.
+
+## Runtime Architecture
+
+### 1. Separate transport history, store mapping, and processing journal
+
+The server has three distinct responsibilities:
+
+1. maintain a per-store transport feed used by ` + "`RequestChanges`" + String.raw`
+2. resolve client public keys to store ids through a durable-friendly registry
+3. run handlers / conflicts / reactivity against a backend processing journal
+
+Use:
+
+- the new unencrypted ` + "`Storage`" + String.raw` service for (1)
+- the new ` + "`EventLogServerStoreRegistry`" + String.raw` service for (2)
+- the existing ` + "`EventJournal`" + String.raw` service for (3)
+
+This keeps the design aligned with existing abstractions while allowing store
+broadcast semantics.
+
+### 2. Stable journal origin per store id
+
+Accepted client writes and server-authored writes that replay handlers must be
+replayed into the processing journal via ` + "`journal.writeFromRemote(...)`" + String.raw`. That
+requires a stable ` + "`RemoteId`" + String.raw`.
+
+The runtime should derive a deterministic ` + "`RemoteId`" + String.raw` from ` + "`StoreId`" + String.raw`, not from
+public key.
+
+Recommended approach:
+
+- compute a stable 16-byte digest from the UTF-8 encoded store id
+- brand the first 16 bytes as ` + "`RemoteId`" + String.raw`
+- keep this derivation internal to the server runtime
+
+This ensures:
+
+- all public keys mapped to the same store share the same processing-journal
+  remote origin
+- server-authored writes targeting that store participate in the same remote
+  sequence space whenever handler replay is enabled
+
+### 3. Client ingest pipeline
+
+For each ` + "`WriteEntriesUnencrypted`" + String.raw` request:
+
+1. decode request
+2. authorize the entire batch via ` + "`EventLogServerAuth.authorizeWrite`" + String.raw`
+3. resolve ` + "`publicKey -> storeId`" + String.raw` via the store registry
+4. if auth or store resolution fails, send ` + "`ErrorUnencrypted`" + String.raw` and do not persist
+   anything
+5. persist raw entries into transport ` + "`Storage.write({ storeId, entries })`" + String.raw`
+6. send ` + "`Ack`" + String.raw` with ` + "`sequenceNumbers.length === request.entries.length`" + String.raw`
+7. replay only ` + "`committed`" + String.raw` entries into ` + "`EventJournal.writeFromRemote(...)`" + String.raw`
+8. during replay, run backend handlers and reactivity invalidation exactly once
+   per committed entry
+9. do not compact during ingest
+
+### 4. Server-authored write pipeline
+
+For each ` + "`writeToStore({ storeId, entries, runHandlers })`" + String.raw` call:
+
+1. validate the supplied entries and target store id
+2. persist raw entries into transport ` + "`Storage.write({ storeId, entries })`" + String.raw`
+3. broadcast those committed entries to all current and future readers of that
+   store via the normal ` + "`RequestChanges`" + String.raw` path
+4. if ` + "`runHandlers`" + String.raw` is ` + "`true`" + String.raw`, replay committed entries into the
+   processing journal using the deterministic store remote id
+5. if ` + "`runHandlers`" + String.raw` is ` + "`false`" + String.raw`, stop after transport persistence and
+   do not touch the processing journal
+
+This path bypasses ` + "`EventLogServerAuth`" + String.raw` entirely.
+
+### 5. Shared-store visibility semantics
+
+Because the feed is keyed by store id:
+
+- two public keys assigned to the same store must receive the same event stream
+  when reading from the same ` + "`startSequence`" + String.raw`
+- a client write from public key A must be visible to public key B if both map to
+  the same store
+- a server-authored write to store S must be visible to all clients mapped to S
+- a newly mapped public key requesting sequence ` + "`0`" + String.raw` for an existing store should
+  observe the full store backlog
+
+### 6. Duplicate handling
+
+If the same entry id is written again for the same store:
+
+- ` + "`Ack.sequenceNumbers`" + String.raw` or equivalent server-write metadata still includes a
+  sequence for that input slot
+- the duplicate entry is not re-committed to storage
+- the duplicate entry is not re-run through handlers
+- the duplicate entry does not re-trigger reactivity invalidation
+
+Duplicate identity is store-local. The same entry id written to two different
+stores may be treated as distinct transport entries.
+
+### 7. Handler execution semantics
+
+Server-side handler execution should match the remote-consumption path already
+implemented inside ` + "`EventLog`" + String.raw`.
+
+For each committed entry whose replay path is enabled:
+
+- locate the handler via the service key compiled from ` + "`EventLog.group(...)`" + String.raw`
+- decode the payload with the event schema
+- decode conflict payloads with the same schema
+- merge handler-required services into the effect environment
+- execute the handler
+- log handler failures the same way ` + "`EventLog`" + String.raw` does, rather than failing the
+  websocket protocol loop
+
+Implementation should extract or share the common decode / execute / invalidate
+logic from ` + "`EventLog.ts`" + String.raw` rather than copying it into two places.
+
+### 8. Reactivity semantics
+
+Reactivity invalidation must behave the same as accepted remote writes in the
+client-side ` + "`EventLog`" + String.raw` runtime whenever replay is enabled.
+
+For each committed entry whose replay path is enabled:
+
+- look up registered reactivity keys for ` + "`entry.event`" + String.raw`
+- invalidate ` + "`{ [key]: [entry.primaryKey] }`" + String.raw` for each configured key
+- perform invalidation after successful handler execution, matching current
+  ` + "`EventLog`" + String.raw` semantics
+
+When ` + "`runHandlers: false`" + String.raw` is used for a server-authored write, reactivity does not
+run.
+
+## Outbound Compaction
+
+### 1. When compaction runs
+
+Compaction runs only while serving ` + "`RequestChanges(publicKey, startSequence)`" + String.raw`.
+
+- the server first resolves ` + "`publicKey -> storeId`" + String.raw`
+- compaction operates on that store's transport history
+- recent entries remain unmodified in the outbound stream
+- only entries older than the configured threshold are eligible
+- authorization happens before the subscription is created
+
+### 2. Eligibility rule
+
+For a compactor registered with ` + "`olderThan`" + String.raw`, an entry is eligible when:
+
+\`\`\`ts
+entry.createdAtMillis <= now - olderThan
+\`\`\`
+
+If an entry is newer than the cutoff, it must be sent through unchanged even if
+its event tag belongs to a compaction group.
+
+### 3. Compaction grouping model
+
+Use the same high-level grouping semantics as ` + "`EventLog.groupCompaction(...)`" + String.raw`:
+
+- only event tags registered by the compactor participate
+- decode payloads with the event schemas from the ` + "`EventGroup`" + String.raw`
+- group the candidate entries by ` + "`primaryKey`" + String.raw`
+- pass ` + "`{ primaryKey, entries, events, write(...) }`" + String.raw` to the compaction effect
+- ` + "`write(...)`" + String.raw` encodes replacement entries back into ` + "`Entry`" + String.raw`
+
+### 4. Sequence assignment for compacted outputs
+
+Compaction happens on raw transport history that already has ` + "`remoteSequence`" + String.raw`
+values. Replacement entries sent to clients must preserve cursor monotonicity.
+
+Rule:
+
+- each compacted output entry must be emitted as a ` + "`RemoteEntry`" + String.raw`
+- its ` + "`remoteSequence`" + String.raw` must be the **maximum** raw sequence consumed for that
+  output entry's source bucket
+- when a single primary-key bucket produces multiple replacement entries, each
+  emitted replacement entry may share that maximum sequence
+
+### 5. Filtering relative to ` + "`startSequence`" + String.raw`
+
+The server must compact first, then apply the outbound sequence filter using the
+representative ` + "`remoteSequence`" + String.raw` of the emitted entries.
+
+That means old raw entries below ` + "`startSequence`" + String.raw` may still influence a compacted
+replacement entry whose representative sequence is at or above the cursor.
+
+### 6. Streaming behavior
+
+` + "`requestChanges(publicKey, startSequence)`" + String.raw` should:
+
+1. authorize the read request
+2. resolve the public key to a store id
+3. subscribe to raw storage changes for that store
+4. read the initial backlog plus live updates
+5. compact the eligible historical portion on each emission batch
+6. emit recent raw entries unchanged
+7. preserve monotonic ordering by ` + "`remoteSequence`" + String.raw`
+
+A simple and acceptable first implementation may compact the initial backlog and
+then pass through live updates unchanged until they age past the threshold on a
+future subscription.
+
+## Authorization, Store Resolution, and Protocol Errors
+
+### Client write rejection
+
+If ` + "`authorizeWrite`" + String.raw` fails:
+
+- send ` + "`ErrorUnencrypted`" + String.raw` with a write-correlated request id
+- do not send ` + "`Ack`" + String.raw`
+- do not resolve the store id
+- do not persist transport entries
+- do not replay into the processing journal
+- do not run handlers
+- do not invalidate reactivity
+
+### Client read rejection
+
+If ` + "`authorizeRead`" + String.raw` fails:
+
+- send ` + "`ErrorUnencrypted`" + String.raw` describing the rejected ` + "`RequestChanges`" + String.raw`
+- do not resolve the store id
+- do not create a subscription
+- do not leak queue resources or a live FiberMap registration
+
+### Store resolution failure
+
+If the public key cannot be resolved to a store id:
+
+- send ` + "`ErrorUnencrypted`" + String.raw` for the relevant request
+- do not persist transport entries
+- do not create a subscription
+- do not leak resources
+- do not fall back to hashing the public key into an implicit store id
+
+### Internal failures
+
+Internal operational failures should be mapped as follows:
+
+- expected auth failures -> ` + "`ErrorUnencrypted`" + String.raw`
+- expected store-resolution failures -> ` + "`ErrorUnencrypted`" + String.raw`
+- expected request validation failures in the unencrypted path ->
+  ` + "`ErrorUnencrypted`" + String.raw`
+- unexpected defects / decode corruption / chunk reassembly corruption -> log and
+  use the existing connection failure behavior unless an explicit protocol error
+  can be sent safely
+
+## Persistence Requirements
+
+### 1. Store mapping persistence
+
+The publicKey-to-store mapping is durable domain state.
+
+Therefore:
+
+- the runtime must not derive store ids from public keys on the fly as its only
+  mapping strategy
+- the mapping must live behind the required
+  ` + "`EventLogServerStoreRegistry`" + String.raw` service
+- the service contract must support implementations backed by durable storage
+- a memory helper is acceptable for tests and local development only
+
+### 2. Transport history persistence
+
+This specification still does **not** require ` + "`SqlEventLogJournal`" + String.raw` to also become the
+transport history store used by outbound ` + "`RequestChanges`" + String.raw`.
+
+Reason:
+
+- transport history is keyed by ` + "`StoreId`" + String.raw`
+- read-time compaction needs direct access to each store's outbound stream
+- keeping the transport feed as a dedicated server storage abstraction keeps the
+  protocol-serving path simpler and mirrors the existing encrypted server module
+
+### 3. Relationship to ` + "`SqlEventLogJournal`" + String.raw`
+
+` + "`SqlEventLogJournal`" + String.raw` remains a good fit for the **processing journal** side of
+this feature because it already supports:
+
+- ` + "`writeFromRemote(...)`" + String.raw`
+- remote sequence tracking
+- conflict-aware effect execution
+- local journal persistence
+
+Implementation should keep the transport-store and store-registry contracts
+narrow enough that future SQL-backed adapters can be added without refactoring
+the runtime.
+
+## Testing Requirements
+
+Add focused tests that follow existing repository patterns.
+
+### Core server tests
+
+Create ` + "`packages/effect/test/unstable/eventlog/EventLogServerUnencrypted.test.ts`" + String.raw`
+covering at minimum:
+
+1. **client writes run handlers for the resolved store**
+   - compose a runtime from ` + "`EventLog.group(...)`" + String.raw`
+   - map a public key to a store id
+   - write an unencrypted batch through the server handler or runtime ingest path
+   - assert handler side effects ran
+
+2. **two public keys mapped to the same store share transport history**
+   - assign public keys A and B to the same store
+   - write from A
+   - request changes from B
+   - assert B receives the same entries and sequence numbers
+
+3. **server-authored writes broadcast to mapped clients**
+   - assign two public keys to the same store
+   - call ` + "`writeToStore({ storeId, ... })`" + String.raw`
+   - assert both readers observe the appended entries
+
+4. **server-authored writes bypass auth**
+   - provide an auth service that rejects all client traffic
+   - call ` + "`writeToStore`" + String.raw`
+   - assert the write still succeeds and is observable by mapped clients
+
+5. **server-authored writes with ` + "`runHandlers: true`" + String.raw` run handlers and reactivity**
+   - register a handler and Reactivity observer
+   - write to the store with replay enabled
+   - assert handler side effects and invalidation occur exactly once per
+     committed entry
+
+6. **server-authored writes with ` + "`runHandlers: false`" + String.raw` are transport-only**
+   - write to the store with replay disabled
+   - assert clients receive the events
+   - assert handlers do not run
+   - assert reactivity does not invalidate
+
+7. **unauthorized client write rejects the full batch**
+   - ` + "`authorizeWrite`" + String.raw` fails
+   - assert ` + "`ErrorUnencrypted`" + String.raw` is returned
+   - assert no ` + "`Ack`" + String.raw`
+   - assert storage and handler state remain unchanged
+
+8. **unmapped public key rejects read and write requests**
+   - do not assign a store id
+   - assert both client write and ` + "`RequestChanges`" + String.raw` fail with the expected
+     protocol error
+
+9. **duplicate writes are idempotent but still ack every input slot**
+   - write the same entries twice into the same store
+   - assert the second ack has the same number of sequence numbers as inputs
+   - assert handlers/reactivity only run once per unique entry id
+
+10. **read-time compaction only affects old entries in a shared store feed**
+    - store an old history batch and a recent batch
+    - assert only the old portion is compacted
+    - assert recent entries pass through raw
+
+11. **compacted outputs preserve cursor progression across public keys mapped to the same store**
+    - request from sequence ` + "`0`" + String.raw` and from a later cursor through different keys
+    - assert representative output sequences are monotonic and compatible with
+      follow-up requests
+
+### Remote client tests
+
+Add or update tests around ` + "`EventLogRemote`" + String.raw` to verify:
+
+1. ` + "`fromSocketUnencrypted`" + String.raw` uses the unencrypted codec path
+2. ` + "`ErrorUnencrypted`" + String.raw` fails pending writes with ` + "`EventLogRemoteError`" + String.raw`
+3. rejected read subscriptions surface an ` + "`EventLogRemoteError`" + String.raw`
+4. store-resolution failures surface as the expected unencrypted protocol error
+5. chunked unencrypted messages round-trip correctly
+
+## Validation Expectations
+
+Any implementation produced from this spec must run:
+
+- ` + "`pnpm lint-fix`" + String.raw`
+- targeted tests, at minimum:
+  - ` + "`pnpm test packages/effect/test/unstable/eventlog/EventLogServerUnencrypted.test.ts`" + String.raw`
+  - any updated ` + "`EventLog`" + String.raw` / ` + "`EventLogRemote`" + String.raw` tests
+- ` + "`pnpm check:tsgo`" + String.raw`
+- ` + "`pnpm docgen`" + String.raw`
+- ` + "`pnpm codegen`" + String.raw` if new module exports or barrel changes are introduced
+- add a changeset for the unstable eventlog package changes
+
+## Implementation Plan
+
+The work should be broken into the following atomic, validation-safe tasks.
+Tasks are intentionally grouped so each step can pass linting, tests, and type
+checking on its own.
+
+### Task 1: Finish unencrypted protocol plumbing in ` + "`EventLogRemote`" + String.raw`
+
+Scope:
+
+- add ` + "`ErrorUnencrypted`" + String.raw` to the protocol model
+- fix unencrypted encode/decode usage in ` + "`fromSocketUnencrypted`" + String.raw`
+- correct the misspelled unencrypted request encoder export
+- plumb protocol errors into pending write handling and read-subscription
+  handling
+- update/add focused remote protocol tests, including store-resolution failures
+
+Why this task is grouped:
+
+- protocol message additions and client-side handling must land together or the
+  code will not typecheck and tests will fail
+- this task is independently shippable because it only completes the unfinished
+  unencrypted client transport behavior
+
+Validation for this task:
+
+- targeted ` + "`EventLogRemote`" + String.raw` tests
+- any affected ` + "`EventLog`" + String.raw` tests if public remote signatures widen
+
+### Task 2: Add store-id, registry, auth, and transport-storage foundations
+
+Scope:
+
+- define ` + "`StoreId`" + String.raw`, ` + "`EventLogServerStoreRegistry`" + String.raw`, and
+  ` + "`EventLogServerStoreRegistryError`" + String.raw`
+- define ` + "`EventLogServerAuth`" + String.raw` and ` + "`EventLogServerAuthError`" + String.raw`
+- define store-keyed ` + "`Storage`" + String.raw`, ` + "`layerStorageMemory`" + String.raw`, and a memory
+  store-registry helper
+- implement duplicate-aware write results with one ack sequence per input entry
+- add focused registry / storage / auth tests
+
+Why this task is grouped:
+
+- store resolution, auth, and per-store transport sequencing are inseparable
+  foundations for every later runtime behavior
+- splitting duplicate-aware sequencing away from storage would create failing
+  intermediate states
+
+Validation for this task:
+
+- new registry / storage / auth tests
+- compile checks for the new public APIs
+
+### Task 3: Build the store-aware client ingest runtime and handler/reactivity integration
+
+Scope:
+
+- add ` + "`EventLogServerUnencrypted`" + String.raw` runtime service and ` + "`layer(...)`" + String.raw`
+- wire accepted client writes through the store registry, transport storage, and
+  processing journal using deterministic store-derived remote ids
+- reuse ` + "`EventLog.group(...)`" + String.raw`-compiled handlers
+- extract or share common handler execution / reactivity helpers from
+  ` + "`EventLog.ts`" + String.raw`
+- add ` + "`groupReactivity`" + String.raw`
+- add tests proving handlers and reactivity fire exactly once per committed
+  client entry
+- add tests proving two public keys mapped to the same store share history
+
+Why this task is grouped:
+
+- handler execution, deterministic store identity, and shared-feed semantics all
+  depend on the same ingest path
+- the resulting runtime is independently shippable even before server-authored
+  writes are exposed
+
+Validation for this task:
+
+- new server runtime tests
+- existing ` + "`EventLog`" + String.raw` tests to ensure shared refactors do not regress client
+  behavior
+
+### Task 4: Add server-authored store writes with configurable replay
+
+Scope:
+
+- add ` + "`writeToStore(...)`" + String.raw` or the equivalent public server-authored write API
+- bypass auth for that path
+- support ` + "`runHandlers: true | false`" + String.raw` semantics
+- ensure transport-only writes are still broadcast to clients
+- add tests for broadcast visibility, auth bypass, replay-enabled behavior, and
+  replay-disabled behavior
+
+Why this task is grouped:
+
+- the write API, replay switch, and broadcast tests must land together to avoid
+  ambiguous intermediate behavior
+- this task is independently shippable once the client ingest runtime exists
+
+Validation for this task:
+
+- focused ` + "`EventLogServerUnencrypted`" + String.raw` tests for server-authored writes
+- any affected ` + "`EventLog`" + String.raw` tests if shared helpers change again
+
+### Task 5: Add read-time compaction over store feeds
+
+Scope:
+
+- add server-side ` + "`groupCompaction(...)`" + String.raw` with ` + "`olderThan`" + String.raw`
+- implement compaction of outbound initial backlog / eligible batches for a
+  resolved store feed
+- preserve representative remote sequences for cursor compatibility across all
+  public keys mapped to the same store
+- add tests for old-vs-recent eligibility and cursor progression
+
+Why this task is grouped:
+
+- helper registration, runtime projection logic, and cursor-preservation tests
+  must land together to avoid broken feed semantics
+- it is independently shippable once store-aware ingest and server writes exist
+
+Validation for this task:
+
+- server compaction tests
+- existing event log compaction tests, if any shared helper extraction affects
+  client behavior
+
+### Task 6: Expose websocket / HTTP handlers and complete integration coverage
+
+Scope:
+
+- implement ` + "`makeHandler`" + String.raw` and ` + "`makeHandlerHttp`" + String.raw`
+- connect auth, store resolution, storage, runtime, chunk handling, ack/error
+  responses, and change subscriptions
+- add end-to-end websocket-level tests for authorized writes, unmapped-key
+  errors, server-authored broadcast behavior, and change subscriptions
+- regenerate exports if necessary and add the required changeset
+
+Why this task is grouped:
+
+- the transport handlers are the first point where all preceding contracts meet;
+  partial integration would leave validation broken
+- this task yields the complete user-facing module
+
+Validation for this task:
+
+- end-to-end ` + "`EventLogServerUnencrypted`" + String.raw` tests
+- ` + "`pnpm lint-fix`" + String.raw`
+- ` + "`pnpm check:tsgo`" + String.raw`
+- ` + "`pnpm docgen`" + String.raw`
+- ` + "`pnpm codegen`" + String.raw` if needed
+
+## Open Follow-Ups
+
+These are explicitly out of scope for the initial implementation but should be
+kept in mind while designing the API:
+
+- a SQL-backed transport storage implementation for unencrypted server history
+- a SQL-backed ` + "`EventLogServerStoreRegistry`" + String.raw` helper or companion module
+- optional success acknowledgements for ` + "`RequestChanges`" + String.raw` subscriptions
+- extending explicit protocol error frames to the encrypted server path
+- richer typed convenience APIs for server-authored writes so callers do not
+  need to manually construct ` + "`Entry`" + String.raw` values when that ergonomics becomes
+  important
+`

@@ -123,6 +123,29 @@ const findTemplateEnd = (
   return end
 }
 
+const findTemplateEndFirst = (
+  text: string,
+  start: number,
+  isTerminator: (char: string | undefined) => boolean,
+): number => {
+  for (let index = start + 1; index < text.length; index++) {
+    if (text[index] !== "`" || isEscaped(text, index)) {
+      continue
+    }
+
+    if (isTerminator(text[index + 1])) {
+      return index
+    }
+
+    const next = skipWhitespace(text, index + 1)
+    if (isTerminator(text[next])) {
+      return index
+    }
+  }
+
+  return -1
+}
+
 const findTypeAnnotationAssignment = (text: string, start: number): number => {
   let index = start
   while (index < text.length) {
@@ -542,6 +565,28 @@ const escapeTemplateLiteralContent = (text: string): string => {
 const normalizeObjectLiteralTemplateMarkers = (text: string): string =>
   text.replace(/\\{2,}(?=`|\$\{)/g, "\\")
 
+const escapeTaggedTemplateLiteralContent = (text: string): string => {
+  if (!needsTemplateEscaping(text)) {
+    return text
+  }
+
+  let out = ""
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]!
+    if (char === "`" && !isEscaped(text, index)) {
+      out += "\\`"
+      continue
+    }
+    if (char === "$" && text[index + 1] === "{" && !isEscaped(text, index)) {
+      out += "\\$"
+      continue
+    }
+    out += char
+  }
+
+  return out
+}
+
 const replaceSlice = (
   text: string,
   start: number,
@@ -705,6 +750,58 @@ const findObjectPropertyTemplate = (
       text,
       templateStart,
       (char) => char === "}" || char === ",",
+    )
+    if (templateEnd === -1) {
+      cursor = templateStart + 1
+      continue
+    }
+
+    return {
+      contentStart: templateStart + 1,
+      contentEnd: templateEnd,
+      nextCursor: templateEnd + 1,
+    }
+  }
+
+  return undefined
+}
+
+const findTaggedTemplate = (
+  text: string,
+  tag: string,
+  from: number,
+):
+  | {
+      readonly contentStart: number
+      readonly contentEnd: number
+      readonly nextCursor: number
+    }
+  | undefined => {
+  let cursor = from
+
+  while (cursor < text.length) {
+    const tagStart = findNextIdentifier(text, tag, cursor)
+    if (tagStart === -1) {
+      return undefined
+    }
+
+    const templateStart = skipWhitespace(text, tagStart + tag.length)
+    if (text[templateStart] !== "`") {
+      cursor = tagStart + tag.length
+      continue
+    }
+
+    const templateEnd = findTemplateEndFirst(
+      text,
+      templateStart,
+      (char) =>
+        char === undefined ||
+        char === "+" ||
+        char === "," ||
+        char === ";" ||
+        char === ")" ||
+        char === "}" ||
+        char === "]",
     )
     if (templateEnd === -1) {
       cursor = templateStart + 1
@@ -981,6 +1078,12 @@ const collectObjectEntryMapSources = (
 
 const rewriteDirectTemplates = (script: string): string => {
   let out = script
+
+  out = rewriteTemplateContents(
+    out,
+    (text, from) => findTaggedTemplate(text, "String.raw", from),
+    escapeTaggedTemplateLiteralContent,
+  )
 
   for (const target of objectPropertyTargets) {
     out = rewriteTemplateContents(

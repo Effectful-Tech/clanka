@@ -450,10 +450,6 @@ ${content}
                     }),
                   }),
                 })
-                MutableRef.update(
-                  prompt,
-                  Prompt.concat(Prompt.fromResponseParts(response)),
-                )
                 response = []
                 return true
               }

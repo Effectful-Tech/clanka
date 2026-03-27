@@ -1,5 +1,13 @@
 # clanka
 
+## 0.2.46
+
+### Patch Changes
+
+- [`33beb46`](https://github.com/Effectful-Tech/clanka/commit/33beb4686a87845c1f3bc99c2fcd9e0a2bf77e57) Thanks [@tim-smart](https://github.com/tim-smart)! - update effect
+
+- [`037b522`](https://github.com/Effectful-Tech/clanka/commit/037b522c7d1b8371c463fcf8dae7823ded2384c5) Thanks [@tim-smart](https://github.com/tim-smart)! - increase turn timeout to 5 minute
+
 ## 0.2.45
 
 ### Patch Changes

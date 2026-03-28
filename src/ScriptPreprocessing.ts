@@ -926,6 +926,57 @@ const collectObjectPropertyIdentifiers = (
   return identifiers
 }
 
+const collectAssignedValueRootIdentifiers = (
+  script: string,
+  variableName: string,
+): ReadonlySet<string> => {
+  const identifiers = new Set<string>()
+  let cursor = 0
+
+  while (cursor < script.length) {
+    const variableStart = findNextIdentifier(script, variableName, cursor)
+    if (variableStart === -1) {
+      break
+    }
+
+    let assignmentStart = skipWhitespace(
+      script,
+      variableStart + variableName.length,
+    )
+    if (script[assignmentStart] === ":") {
+      assignmentStart = findTypeAnnotationAssignment(
+        script,
+        assignmentStart + 1,
+      )
+      if (assignmentStart === -1) {
+        cursor = variableStart + variableName.length
+        continue
+      }
+    }
+
+    if (
+      script[assignmentStart] !== "=" ||
+      script[assignmentStart + 1] === "=" ||
+      script[assignmentStart + 1] === ">"
+    ) {
+      cursor = variableStart + variableName.length
+      continue
+    }
+
+    const valueStart = skipWhitespace(script, assignmentStart + 1)
+    const rootIdentifier = parseIdentifier(script, valueStart)
+    if (rootIdentifier !== undefined) {
+      identifiers.add(rootIdentifier.name)
+      cursor = rootIdentifier.end
+      continue
+    }
+
+    cursor = valueStart + 1
+  }
+
+  return identifiers
+}
+
 const rewriteAssignedTemplate = (
   script: string,
   variableName: string,
@@ -1136,6 +1187,26 @@ const collectReferencedTemplateIdentifiers = (
 
   if (script.includes("*** Begin Patch")) {
     templateIdentifiers.add("patch")
+  }
+
+  const pendingIdentifiers = Array.from(templateIdentifiers)
+  const visitedIdentifiers = new Set<string>()
+  while (pendingIdentifiers.length > 0) {
+    const identifier = pendingIdentifiers.pop()!
+    if (visitedIdentifiers.has(identifier)) {
+      continue
+    }
+
+    visitedIdentifiers.add(identifier)
+    for (const source of collectAssignedValueRootIdentifiers(
+      script,
+      identifier,
+    )) {
+      if (!templateIdentifiers.has(source)) {
+        templateIdentifiers.add(source)
+        pendingIdentifiers.push(source)
+      }
+    }
   }
 
   const objectIdentifiers = new Set<string>()

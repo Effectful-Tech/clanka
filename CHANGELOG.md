@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.48
+
+### Patch Changes
+
+- [`652709e`](https://github.com/Effectful-Tech/clanka/commit/652709e24dae66135adc439942814ef610d4576b) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing to follow assignment root identifiers so template literals are escaped even when a writeFile content value is derived from another variable (e.g. `content = spec.replaceAll(...)`). This resolves the failing patch20 preprocessing fixture.
+
 ## 0.2.47
 
 ### Patch Changes

@@ -21,6 +21,7 @@ const makeExecutor = (
   AgentExecutor.AgentExecutor.of({
     capabilities: Effect.succeed(capabilities),
     execute,
+    executeUnsafe: () => Effect.die("executeUnsafe not implemented"),
   })
 
 const runAgent = (options: {

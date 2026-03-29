@@ -54,6 +54,10 @@ export class AgentExecutor extends ServiceMap.Service<
       readonly onTaskComplete: (summary: string) => Effect.Effect<void>
       readonly onSubagent: (message: string) => Effect.Effect<string>
     }): Stream.Stream<string>
+    executeUnsafe<Tool extends keyof typeof AgentTools.tools>(options: {
+      readonly tool: Tool
+      readonly params: (typeof AgentTools.tools)[Tool]["parametersSchema"]["Encoded"]
+    }): Effect.Effect<Schema.Json>
   }
 >()("clanka/AgentExecutor") {}
 
@@ -207,6 +211,22 @@ export const makeLocal = Effect.fnUntraced(function* <
       })
     }),
     execute,
+    executeUnsafe: (opts) => {
+      const tool = tools.tools[opts.tool as keyof typeof tools.tools]
+      const handler = services.mapUnsafe.get(opts.tool) as Tool.Handler<string>
+      if (!handler || !tool) {
+        return Effect.die(new Error(`Unknown tool: ${opts.tool}`))
+      }
+      const encodeSuccess = Schema.encodeUnknownEffect(
+        Schema.toCodecJson(tool.successSchema as Schema.Top),
+      )
+      return pipe(
+        handler.handler(opts.params, {}),
+        Effect.flatMap(encodeSuccess),
+        Effect.provideServices(handler.services),
+        Effect.orDie,
+      ) as Effect.Effect<Schema.Json>
+    },
   })
 })
 
@@ -250,6 +270,9 @@ export const makeRpc = Effect.gen(function* () {
           ),
         ),
       ).pipe(Stream.unwrap),
+    executeUnsafe(options) {
+      return client.executeUnsafe(options).pipe(Effect.orDie)
+    },
   })
 })
 
@@ -382,6 +405,9 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
 
               return queue
             }),
+            executeUnsafe(opts) {
+              return local.executeUnsafe(opts as any)
+            },
           })
         }),
       ),
@@ -419,6 +445,13 @@ export class Rpcs extends RpcGroup.make(
     }),
     success: ExecuteOutput,
     stream: true,
+  }),
+  Rpc.make("executeUnsafe", {
+    payload: Schema.Struct({
+      tool: Schema.String,
+      params: Schema.Json,
+    }),
+    success: Schema.Json,
   }),
 ) {}
 

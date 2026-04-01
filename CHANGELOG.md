@@ -1,5 +1,13 @@
 # clanka
 
+## 0.2.50
+
+### Patch Changes
+
+- [`f7b2960`](https://github.com/Effectful-Tech/clanka/commit/f7b296080fbf60db9a59504d1a274ae7ac420139) Thanks [@tim-smart](https://github.com/tim-smart)! - allow providing custom verfication code handling
+
+- [`5c88bb9`](https://github.com/Effectful-Tech/clanka/commit/5c88bb9cab83ac152b48d01a3a4b7cc44a51da20) Thanks [@tim-smart](https://github.com/tim-smart)! - add AgentExecutor.executeUnsafe
+
 ## 0.2.49
 
 ### Patch Changes

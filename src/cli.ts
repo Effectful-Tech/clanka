@@ -20,6 +20,8 @@ import * as Config from "effect/Config"
 import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
 import * as Option from "effect/Option"
 import { OpenAiClient, OpenAiEmbeddingModel } from "@effect/ai-openai"
+import { CodexVerification } from "./CodexAuth.ts"
+import { CopilotVerification } from "./CopilotAuth.ts"
 
 const provider = Flag.choice("provider", ["openai", "copilot"]).pipe(
   Flag.withAlias("p"),
@@ -149,6 +151,7 @@ Command.make("clanka", { provider, model, semantic, prompt }).pipe(
                 ),
               ),
               Layer.provide(Codex.layerClient),
+              Layer.provide(CodexVerification.layerConsole),
             )
           : Copilot.model(model, {
               reasoning: {
@@ -165,6 +168,7 @@ Command.make("clanka", { provider, model, semantic, prompt }).pipe(
                 ),
               ),
               Layer.provide(Copilot.layerClient),
+              Layer.provide(CopilotVerification.layerConsole),
             )
 
       return yield* Effect.gen(function* () {

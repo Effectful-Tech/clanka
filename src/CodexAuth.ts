@@ -33,6 +33,21 @@ const DEFAULT_DEVICE_POLL_INTERVAL_SECONDS = 5
 const DEFAULT_TOKEN_EXPIRY_SECONDS = 3600
 const ACCOUNT_ID_HEADER = "ChatGPT-Account-Id"
 
+export class CodexVerification extends ServiceMap.Service<
+  CodexVerification,
+  {
+    onCode(options: {
+      readonly verifyUrl: string
+      readonly code: string
+    }): Effect.Effect<void, CodexAuthError>
+  }
+>()("clanka/CodexAuth/CodexVerification") {
+  static readonly layerConsole = Layer.succeed(this, {
+    onCode: (options) =>
+      Console.log(`Open ${options.verifyUrl} and enter code ${options.code}`),
+  })
+}
+
 export class TokenData extends Schema.Class<TokenData>(
   "clanka/CodexAuth/TokenData",
 )({
@@ -287,12 +302,14 @@ export const toTokenStore = (store: KeyValueStore.KeyValueStore) =>
 export class CodexAuth extends ServiceMap.Service<
   CodexAuth,
   {
+    readonly verifyUrl: string
     readonly get: Effect.Effect<TokenData, CodexAuthError>
     readonly authenticate: Effect.Effect<TokenData, CodexAuthError>
     readonly logout: Effect.Effect<void>
   }
 >()("clanka/CodexAuth") {
   static readonly make = Effect.gen(function* () {
+    const verfication = yield* CodexVerification
     const tokenStore = toTokenStore(yield* KeyValueStore.KeyValueStore)
     const httpClient = (yield* HttpClient.HttpClient).pipe(
       HttpClient.mapRequest(
@@ -310,7 +327,7 @@ export class CodexAuth extends ServiceMap.Service<
 
     let currentToken = yield* tokenStore.get(STORE_TOKEN_KEY).pipe(
       Effect.catchTag("SchemaError", (error) =>
-        Console.warn(
+        Effect.logDebug(
           `Failed to decode persisted Codex token, clearing it: ${error.message}`,
         ).pipe(
           Effect.andThen(tokenStore.remove(STORE_TOKEN_KEY)),
@@ -340,22 +357,23 @@ export class CodexAuth extends ServiceMap.Service<
 
     const authenticateWithDeviceFlow = Effect.gen(function* () {
       const deviceCode = yield* requestDeviceCode
-      yield* Console.log(
-        `Open ${ISSUER}${DEVICE_VERIFICATION_URL} and enter code: ${deviceCode.userCode}`,
-      )
+      yield* verfication.onCode({
+        verifyUrl: ISSUER + DEVICE_VERIFICATION_URL,
+        code: deviceCode.userCode,
+      })
       const authorization = yield* pollAuthorization(deviceCode)
       return yield* exchangeAuthorizationCode(authorization)
     })
 
-    const authenticateNoLock = Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
+    const authenticateNoLock = Effect.uninterruptibleMask(
+      Effect.fnUntraced(function* (restore) {
         const token = yield* restore(authenticateWithDeviceFlow)
         return yield* saveToken(token)
       }),
     )
 
-    const getNoLock = Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
+    const getNoLock = Effect.uninterruptibleMask(
+      Effect.fnUntraced(function* (restore) {
         if (Option.isSome(currentToken) && !currentToken.value.isExpired()) {
           return currentToken.value
         }
@@ -366,14 +384,7 @@ export class CodexAuth extends ServiceMap.Service<
         }
 
         const refreshedToken = yield* restore(
-          refreshToken(currentToken.value.refresh).pipe(
-            Effect.tapError((error) =>
-              Console.warn(
-                `Codex token refresh failed, falling back to device auth: ${error.message}`,
-              ),
-            ),
-            Effect.option,
-          ),
+          refreshToken(currentToken.value.refresh).pipe(Effect.option),
         )
 
         if (Option.isSome(refreshedToken)) {
@@ -537,6 +548,7 @@ export class CodexAuth extends ServiceMap.Service<
     })
 
     return CodexAuth.of({
+      verifyUrl: ISSUER + DEVICE_VERIFICATION_URL,
       get: semaphore.withPermit(getNoLock),
       authenticate: semaphore.withPermit(authenticateNoLock),
       logout: semaphore.withPermit(Effect.uninterruptible(clearToken)),
@@ -544,6 +556,10 @@ export class CodexAuth extends ServiceMap.Service<
   })
 
   static readonly layer = Layer.effect(CodexAuth, CodexAuth.make)
+
+  static readonly layerConsole = this.layer.pipe(
+    Layer.provide(CodexVerification.layerConsole),
+  )
 
   static readonly layerClientNoDeps = Layer.effect(
     HttpClient.HttpClient,

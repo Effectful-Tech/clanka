@@ -1,8 +1,8 @@
 /**
  * @since 1.0.0
  */
-import * as Console from "effect/Console"
 import * as Effect from "effect/Effect"
+import * as Console from "effect/Console"
 import * as Function from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
@@ -31,6 +31,21 @@ export const DEFAULT_USER_AGENT = "clanka"
 const DEVICE_CODE_URL = "/login/device/code"
 const ACCESS_TOKEN_URL = "/login/oauth/access_token"
 const DEFAULT_POLL_INTERVAL_SECONDS = 5
+
+export class CopilotVerification extends ServiceMap.Service<
+  CopilotVerification,
+  {
+    onCode(options: {
+      readonly verifyUrl: string
+      readonly code: string
+    }): Effect.Effect<void, GithubCopilotAuthError>
+  }
+>()("clanka/CopilotAuth/CopilotVerification") {
+  static readonly layerConsole = Layer.succeed(this, {
+    onCode: (options) =>
+      Console.log(`Open ${options.verifyUrl} and enter code: ${options.code}`),
+  })
+}
 
 export class TokenData extends Schema.Class<TokenData>(
   "clanka/GithubCopilotAuth/TokenData",
@@ -216,12 +231,14 @@ export const toTokenStore = (store: KeyValueStore.KeyValueStore) =>
 export class GithubCopilotAuth extends ServiceMap.Service<
   GithubCopilotAuth,
   {
+    readonly verifyUrl: string
     readonly get: Effect.Effect<TokenData, GithubCopilotAuthError>
     readonly authenticate: Effect.Effect<TokenData, GithubCopilotAuthError>
     readonly logout: Effect.Effect<void>
   }
 >()("clanka/GithubCopilotAuth") {
   static readonly make = Effect.gen(function* () {
+    const verfication = yield* CopilotVerification
     const tokenStore = toTokenStore(yield* KeyValueStore.KeyValueStore)
     const httpClient = (yield* HttpClient.HttpClient).pipe(
       HttpClient.mapRequest(
@@ -242,7 +259,7 @@ export class GithubCopilotAuth extends ServiceMap.Service<
 
     let currentToken = yield* tokenStore.get(STORE_TOKEN_KEY).pipe(
       Effect.catchTag("SchemaError", (error) =>
-        Console.warn(
+        Effect.logDebug(
           `Failed to decode persisted GitHub Copilot token, clearing it: ${error.message}`,
         ).pipe(
           Effect.andThen(tokenStore.remove(STORE_TOKEN_KEY)),
@@ -373,9 +390,10 @@ export class GithubCopilotAuth extends ServiceMap.Service<
 
     const authenticateWithDeviceFlow = Effect.gen(function* () {
       const deviceCode = yield* requestDeviceCode()
-      yield* Console.log(
-        `Open ${deviceCode.verificationUri} and enter code: ${deviceCode.userCode}`,
-      )
+      yield* verfication.onCode({
+        verifyUrl: deviceCode.verificationUri,
+        code: deviceCode.userCode,
+      })
       return yield* pollAccessToken(deviceCode)
     })
 
@@ -402,6 +420,7 @@ export class GithubCopilotAuth extends ServiceMap.Service<
     )
 
     return GithubCopilotAuth.of({
+      verifyUrl: ISSUER + DEVICE_VERIFICATION_URL,
       get: semaphore.withPermit(getNoLock),
       authenticate: semaphore.withPermit(authenticateNoLock),
       logout: semaphore.withPermit(Effect.uninterruptible(clearToken)),
@@ -411,6 +430,10 @@ export class GithubCopilotAuth extends ServiceMap.Service<
   static readonly layer = Layer.effect(
     GithubCopilotAuth,
     GithubCopilotAuth.make,
+  )
+
+  static readonly layerConsole = this.layer.pipe(
+    Layer.provide(CopilotVerification.layerConsole),
   )
 
   static readonly layerClientNoDeps = Layer.effect(

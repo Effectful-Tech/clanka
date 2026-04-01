@@ -12,6 +12,7 @@ import {
 import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
 import {
   COPILOT_VISION_REQUEST_HEADER,
+  CopilotVerification,
   DEFAULT_OPENAI_INTENT,
   DEFAULT_USER_AGENT,
   GithubCopilotAuth,
@@ -52,8 +53,8 @@ const makeClient = Effect.fn("makeClient")(function* (
   const requests = yield* Ref.make<Array<HttpClientRequest.HttpClientRequest>>(
     [],
   )
-  const client = HttpClient.make((request) =>
-    Effect.gen(function* () {
+  const client = HttpClient.make(
+    Effect.fnUntraced(function* (request) {
       const attempt = yield* Ref.updateAndGet(attempts, (count) => count + 1)
       yield* Ref.update(requests, (current) => [...current, request])
       return HttpClientResponse.fromWeb(request, handler(request, attempt))
@@ -181,6 +182,7 @@ describe("GithubCopilotAuth", () => {
 
       const auth = yield* GithubCopilotAuth.make.pipe(
         Effect.provideService(HttpClient.HttpClient, client),
+        Effect.provide(CopilotVerification.layerConsole),
       )
 
       const token = yield* auth.get
@@ -220,6 +222,7 @@ describe("GithubCopilotAuth", () => {
 
         const auth = yield* GithubCopilotAuth.make.pipe(
           Effect.provideService(HttpClient.HttpClient, client),
+          Effect.provide(CopilotVerification.layerConsole),
         )
 
         const authenticated = yield* auth.authenticate
@@ -282,6 +285,7 @@ describe("GithubCopilotAuth", () => {
 
       const auth = yield* GithubCopilotAuth.make.pipe(
         Effect.provideService(HttpClient.HttpClient, client),
+        Effect.provide(CopilotVerification.layerConsole),
       )
 
       assert.strictEqual(
@@ -328,6 +332,7 @@ describe("GithubCopilotAuth", () => {
 
       const auth = yield* GithubCopilotAuth.make.pipe(
         Effect.provideService(HttpClient.HttpClient, client),
+        Effect.provide(CopilotVerification.layerConsole),
       )
 
       const firstFiber = yield* auth.get.pipe(
@@ -373,15 +378,14 @@ describe("GithubCopilotAuth", () => {
           jsonResponse({ ok: true }),
         )
 
-        const wrappedClient = yield* Effect.gen(function* () {
-          return yield* HttpClient.HttpClient
-        }).pipe(
+        const wrappedClient = yield* HttpClient.HttpClient.asEffect().pipe(
           Effect.provide(GithubCopilotAuth.layerClientNoDeps),
           Effect.provideService(HttpClient.HttpClient, client),
-          Effect.provideService(
+          Effect.provideServiceEffect(
             GithubCopilotAuth,
-            yield* GithubCopilotAuth.make.pipe(
+            GithubCopilotAuth.make.pipe(
               Effect.provideService(HttpClient.HttpClient, client),
+              Effect.provide(CopilotVerification.layerConsole),
             ),
           ),
         )

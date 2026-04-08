@@ -1,9 +1,9 @@
 import * as Console from "effect/Console"
 import type * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 
-export class DeviceCodeHandler extends ServiceMap.Service<
+export class DeviceCodeHandler extends Context.Service<
   DeviceCodeHandler,
   {
     onCode(options: {

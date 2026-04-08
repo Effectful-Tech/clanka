@@ -19,7 +19,7 @@ export const getCurrentFiber = (): Fiber.Fiber<any, any> | undefined =>
 /** @internal */
 export class FiberImpl<A = any, E = any> implements Fiber.Fiber<A, E> {
   constructor(
-    services: ServiceMap.ServiceMap<never>,
+    services: Context.Context<never>,
     interruptible: boolean = true,
   ) {
     this[FiberTypeId] = fiberVariance as any
@@ -51,7 +51,7 @@ export class FiberImpl<A = any, E = any> implements Fiber.Fiber<A, E> {
   _yielded: Exit.Exit<any, any> | (() => void) | undefined
 
   // set in setServices
-  services!: ServiceMap.ServiceMap<never>
+  services!: Context.Context<never>
   currentScheduler!: Scheduler.Scheduler
   currentTracerContext: Tracer.Tracer["context"]
   currentSpan: Tracer.AnySpan | undefined
@@ -67,8 +67,8 @@ export class FiberImpl<A = any, E = any> implements Fiber.Fiber<A, E> {
     return (this._dispatcher ??= this.currentScheduler.makeDispatcher())
   }
 
-  getRef<X>(ref: ServiceMap.Reference<X>): X {
-    return ServiceMap.getReferenceUnsafe(this.services, ref)
+  getRef<X>(ref: Context.Reference<X>): X {
+    return Context.getReferenceUnsafe(this.services, ref)
   }
   addObserver(cb: (exit: Exit.Exit<A, E>) => void): () => void {
     if (this._exit) {
@@ -85,7 +85,7 @@ export class FiberImpl<A = any, E = any> implements Fiber.Fiber<A, E> {
   }
   interruptUnsafe(
     fiberId?: number | undefined,
-    annotations?: ServiceMap.ServiceMap<never> | undefined,
+    annotations?: Context.Context<never> | undefined,
   ): void {
     if (this._exit) {
       return
@@ -94,7 +94,7 @@ export class FiberImpl<A = any, E = any> implements Fiber.Fiber<A, E> {
     if (this.currentStackFrame) {
       cause = causeAnnotate(
         cause,
-        ServiceMap.make(CauseStackTrace, this.currentStackFrame),
+        Context.make(CauseStackTrace, this.currentStackFrame),
       )
     }
     if (annotations) {
@@ -208,7 +208,7 @@ export class FiberImpl<A = any, E = any> implements Fiber.Fiber<A, E> {
   pipe() {
     return pipeArguments(this, arguments)
   }
-  setServices(services: ServiceMap.ServiceMap<never>): void {
+  setServices(services: Context.Context<never>): void {
     this.services = services
     const scheduler = this.getRef(Scheduler.Scheduler)
     if (scheduler !== this.currentScheduler) {
@@ -244,7 +244,7 @@ const fiberStackAnnotations = (fiber: Fiber.Fiber<any, any>) => {
   if (!fiber.currentStackFrame) return undefined
   const annotations = new Map<string, unknown>()
   annotations.set(CauseStackTrace.key, fiber.currentStackFrame)
-  return ServiceMap.makeUnsafe(annotations)
+  return Context.makeUnsafe(annotations)
 }
 
 const fiberInterruptChildren = (fiber: FiberImpl) => {

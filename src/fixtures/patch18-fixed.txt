@@ -138,7 +138,7 @@ The exact encoding can differ, but it must be:
 Add a required service responsible for resolving public keys to store ids.
 
 \`\`\`ts
-export class EventLogServerStoreRegistry extends ServiceMap.Service<EventLogServerStoreRegistry, {
+export class EventLogServerStoreRegistry extends Context.Service<EventLogServerStoreRegistry, {
   readonly resolve: (publicKey: string) => Effect.Effect<StoreId, EventLogServerStoreRegistryError>
   readonly assign: (options: {
     readonly publicKey: string
@@ -197,7 +197,7 @@ Keep the required auth service from the original spec for client-originated
 traffic.
 
 \`\`\`ts
-export class EventLogServerAuth extends ServiceMap.Service<EventLogServerAuth, {
+export class EventLogServerAuth extends Context.Service<EventLogServerAuth, {
   readonly authorizeWrite: (options: {
     readonly publicKey: string
     readonly entries: ReadonlyArray<Entry>
@@ -239,7 +239,7 @@ Update the transport-history storage abstraction so it is keyed by ` + "`StoreId
 public key.
 
 \`\`\`ts
-export class Storage extends ServiceMap.Service<Storage, {
+export class Storage extends Context.Service<Storage, {
   readonly getId: Effect.Effect<RemoteId>
   readonly write: (options: {
     readonly storeId: StoreId
@@ -287,7 +287,7 @@ responsible for:
 Suggested shape:
 
 \`\`\`ts
-export class EventLogServerUnencrypted extends ServiceMap.Service<EventLogServerUnencrypted, {
+export class EventLogServerUnencrypted extends Context.Service<EventLogServerUnencrypted, {
   readonly ingestClient: (options: {
     readonly publicKey: string
     readonly entries: ReadonlyArray<Entry>

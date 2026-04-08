@@ -4,7 +4,7 @@
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 import { Client } from "@modelcontextprotocol/sdk/client"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
@@ -13,7 +13,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
  * @since 1.0.0
  * @category Services
  */
-export class McpClient extends ServiceMap.Service<
+export class McpClient extends Context.Service<
   McpClient,
   {
     connect(options: {

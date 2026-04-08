@@ -157,7 +157,7 @@ export const layer = (options: {
           )
           const vector = new Float32Array(result.vector)
           yield* repo.insert(
-            ChunkRepo.Chunk.insert.makeUnsafe({
+            ChunkRepo.Chunk.insert.make({
               path: options.chunk.path,
               hash,
               content: input,
@@ -177,7 +177,7 @@ export const layer = (options: {
       )
 
       const index = Effect.gen(function* () {
-        const syncId = ChunkRepo.SyncId.makeUnsafe(crypto.randomUUID())
+        const syncId = ChunkRepo.SyncId.make(crypto.randomUUID())
         yield* Effect.logInfo("Starting SemanticSearch index")
 
         yield* pipe(
@@ -246,7 +246,7 @@ export const layer = (options: {
             return
           }
 
-          const syncId = ChunkRepo.SyncId.makeUnsafe(crypto.randomUUID())
+          const syncId = ChunkRepo.SyncId.make(crypto.randomUUID())
 
           yield* pipe(
             Stream.fromArray(chunks),

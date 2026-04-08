@@ -4,7 +4,7 @@
 import * as Array from "effect/Array"
 import * as Layer from "effect/Layer"
 import * as SchemaAST from "effect/SchemaAST"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 import type * as Tool from "effect/unstable/ai/Tool"
 import type * as Toolkit from "effect/unstable/ai/Toolkit"
 import * as TypeBuilder from "./TypeBuilder.ts"
@@ -14,7 +14,7 @@ import * as Function from "effect/Function"
  * @since 1.0.0
  * @category Services
  */
-export class ToolkitRenderer extends ServiceMap.Service<
+export class ToolkitRenderer extends Context.Service<
   ToolkitRenderer,
   {
     render<Tools extends Record<string, Tool.Any>>(

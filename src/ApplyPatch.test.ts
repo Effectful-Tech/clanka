@@ -35,7 +35,7 @@ describe("patchContent", () => {
           "*** Begin Patch",
           "*** Update File: src/ExaSearch.ts",
           "@@",
-          " export class ExaSearch extends ServiceMap.Service<",
+          " export class ExaSearch extends Context.Service<",
           "   ExaSearch,",
           "   {",
           "-    search(query: string): Effect.Effect<Array<SearchResponse<{}>>, ExaError>",
@@ -51,7 +51,7 @@ describe("patchContent", () => {
         chunks: [
           {
             old: [
-              "export class ExaSearch extends ServiceMap.Service<",
+              "export class ExaSearch extends Context.Service<",
               "  ExaSearch,",
               "  {",
               "    search(query: string): Effect.Effect<Array<SearchResponse<{}>>, ExaError>",
@@ -59,7 +59,7 @@ describe("patchContent", () => {
               '>()("clanka/ExaSearch") {}',
             ],
             next: [
-              "export class ExaSearch extends ServiceMap.Service<",
+              "export class ExaSearch extends Context.Service<",
               "  ExaSearch,",
               "  {",
               "    search(query: string): Effect.Effect<SearchResponse<{}>, ExaError>",

@@ -20,7 +20,7 @@ import * as Stream from "effect/Stream"
 import type * as Scope from "effect/Scope"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as AiError from "effect/unstable/ai/AiError"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 import * as Option from "effect/Option"
 import { identity, pipe } from "effect/Function"
 import * as MutableRef from "effect/MutableRef"
@@ -102,7 +102,7 @@ export interface Agent {
  * @since 1.0.0
  * @category Service
  */
-export const Agent = ServiceMap.Service<Agent>("clanka/Agent")
+export const Agent = Context.Service<Agent>("clanka/Agent")
 
 /**
  * @since 1.0.0
@@ -607,7 +607,7 @@ ${capabilities.toolsDts}
 declare const fetch: typeof globalThis.fetch
 \`\`\``
 
-class ScriptExecutor extends ServiceMap.Service<
+class ScriptExecutor extends Context.Service<
   ScriptExecutor,
   (script: string) => Effect.Effect<string>
 >()("clanka/Agent/ScriptExecutor") {}
@@ -664,7 +664,7 @@ export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
  * @since 1.0.0
  * @category Subagent model
  */
-export class SubagentModel extends ServiceMap.Service<
+export class SubagentModel extends Context.Service<
   SubagentModel,
   Layer.Layer<
     LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName
@@ -685,9 +685,9 @@ export const layerSubagentModel = <E, R>(
   Layer.effect(
     SubagentModel,
     Effect.gen(function* () {
-      const services = yield* Effect.services<R>()
+      const services = yield* Effect.context<R>()
       return Layer.orDie(layer).pipe(
-        Layer.provide(Layer.succeedServices(services)),
+        Layer.provide(Layer.succeedContext(services)),
       )
     }),
   )
@@ -696,7 +696,7 @@ export const layerSubagentModel = <E, R>(
  * @since 1.0.0
  * @category Conversation mode
  */
-export class ConversationMode extends ServiceMap.Reference<boolean>(
+export class ConversationMode extends Context.Reference<boolean>(
   "clanka/Agent/ConversationMode",
   {
     defaultValue: () => false,
@@ -712,7 +712,7 @@ export class ConversationMode extends ServiceMap.Reference<boolean>(
  * @since 1.0.0
  * @category Turn timeout
  */
-export class TurnTimeout extends ServiceMap.Reference<Duration.Duration>(
+export class TurnTimeout extends Context.Reference<Duration.Duration>(
   "clanka/Agent/TurnTimeout",
   {
     defaultValue: () => Duration.minutes(5),
@@ -726,7 +726,7 @@ export class TurnTimeout extends ServiceMap.Reference<Duration.Duration>(
  * @since 1.0.0
  * @category System prompts
  */
-export class AgentModelConfig extends ServiceMap.Reference<{
+export class AgentModelConfig extends Context.Reference<{
   readonly systemPromptTransform?:
     | (<A, E, R>(
         system: string,

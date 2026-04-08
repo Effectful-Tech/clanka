@@ -15,7 +15,7 @@ import {
 import { ToolkitRenderer } from "./ToolkitRenderer.ts"
 import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
 import type * as HttpClient from "effect/unstable/http/HttpClient"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
@@ -45,7 +45,7 @@ import * as References from "effect/References"
  * @since 1.0.0
  * @category Services
  */
-export class AgentExecutor extends ServiceMap.Service<
+export class AgentExecutor extends Context.Service<
   AgentExecutor,
   {
     readonly capabilities: Effect.Effect<Capabilities>
@@ -106,13 +106,13 @@ export const makeLocal = Effect.fnUntraced(function* <
   const tools = yield* AllTools
   const toolsDts = renderer.render(AllTools)
 
-  const services = yield* Effect.services()
+  const services = yield* Effect.context()
 
   const toolEntries = Object.entries(tools.tools).map(([name, tool]) => {
     const handler = services.mapUnsafe.get(tool.id) as Tool.Handler<string>
     return {
       name,
-      services: ServiceMap.merge(services, handler.services),
+      services: Context.merge(services, handler.context),
       handler: handler.handler,
     }
   })
@@ -131,16 +131,16 @@ export const makeLocal = Effect.fnUntraced(function* <
     const handlerScope = Scope.makeUnsafe("parallel")
     const trackFiber = Fiber.runIn(handlerScope)
 
-    const taskServices = ServiceMap.mutate(
-      ServiceMap.empty(),
+    const taskServices = Context.mutate(
+      Context.empty(),
       flow(
-        ServiceMap.add(TaskCompleter, opts.onTaskComplete),
-        ServiceMap.add(CurrentDirectory, options.directory),
-        ServiceMap.add(SubagentExecutor, opts.onSubagent),
-        ServiceMap.add(Console.Console, console),
-        ServiceMap.add(References.CurrentLogAnnotations, {}),
+        Context.add(TaskCompleter, opts.onTaskComplete),
+        Context.add(CurrentDirectory, options.directory),
+        Context.add(SubagentExecutor, opts.onSubagent),
+        Context.add(Console.Console, console),
+        Context.add(References.CurrentLogAnnotations, {}),
         Option.isSome(search)
-          ? ServiceMap.add(SemanticSearch, search.value)
+          ? Context.add(SemanticSearch, search.value)
           : identity,
       ),
     )
@@ -160,7 +160,7 @@ export const makeLocal = Effect.fnUntraced(function* <
       for (let i = 0; i < toolEntries.length; i++) {
         const { name, handler, services } = toolEntries[i]!
         const runFork = Effect.runForkWith(
-          ServiceMap.merge(services, taskServices),
+          Context.merge(services, taskServices),
         )
 
         // oxlint-disable-next-line typescript/no-explicit-any
@@ -223,7 +223,7 @@ export const makeLocal = Effect.fnUntraced(function* <
       return pipe(
         handler.handler(opts.params, {}),
         Effect.flatMap(encodeSuccess),
-        Effect.provideServices(handler.services),
+        Effect.provideContext(handler.context),
         Effect.orDie,
       ) as Effect.Effect<Schema.Json>
     },

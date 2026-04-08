@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as PubSub from "effect/PubSub"
 import * as Semaphore from "effect/Semaphore"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 import * as Stream from "effect/Stream"
 import type { AgentFinished, Output } from "./Agent.ts"
 import chalk from "chalk"
@@ -138,7 +138,7 @@ const infoIcon = "\u{f05a}"
  * @since 1.0.0
  * @category Muxer
  */
-export class Muxer extends ServiceMap.Service<
+export class Muxer extends Context.Service<
   Muxer,
   {
     add<E, R>(

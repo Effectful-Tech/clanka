@@ -10,7 +10,7 @@ import * as Result from "effect/Result"
 import * as Schedule from "effect/Schedule"
 import * as Schema from "effect/Schema"
 import * as Semaphore from "effect/Semaphore"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
@@ -284,7 +284,7 @@ export const toCodexAuthKeyValueStore = (store: KeyValueStore.KeyValueStore) =>
 export const toTokenStore = (store: KeyValueStore.KeyValueStore) =>
   KeyValueStore.toSchemaStore(toCodexAuthKeyValueStore(store), TokenData)
 
-export class CodexAuth extends ServiceMap.Service<
+export class CodexAuth extends Context.Service<
   CodexAuth,
   {
     readonly verifyUrl: string

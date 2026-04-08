@@ -8,7 +8,7 @@ import * as Option from "effect/Option"
 import * as Schedule from "effect/Schedule"
 import * as Schema from "effect/Schema"
 import * as Semaphore from "effect/Semaphore"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
@@ -213,7 +213,7 @@ export const toTokenStore = (store: KeyValueStore.KeyValueStore) =>
     TokenData,
   )
 
-export class GithubCopilotAuth extends ServiceMap.Service<
+export class GithubCopilotAuth extends Context.Service<
   GithubCopilotAuth,
   {
     readonly verifyUrl: string

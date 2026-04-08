@@ -3,13 +3,13 @@
  */
 import * as Effect from "effect/Effect"
 import * as Option from "effect/Option"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 
 /**
  * @since 1.0.0
  * @category Services
  */
-export class SemanticSearch extends ServiceMap.Service<
+export class SemanticSearch extends Context.Service<
   SemanticSearch,
   {
     search(options: {

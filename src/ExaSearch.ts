@@ -5,14 +5,14 @@ import * as Effect from "effect/Effect"
 import { pipe } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 import * as McpClient from "./McpClient.ts"
 
 /**
  * @since 1.0.0
  * @category Services
  */
-export class ExaSearch extends ServiceMap.Service<
+export class ExaSearch extends Context.Service<
   ExaSearch,
   {
     search(

@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
 import * as SchemaTransformation from "effect/SchemaTransformation"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 import * as Model from "effect/unstable/schema/Model"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as SqlError from "effect/unstable/sql/SqlError"
@@ -87,7 +87,7 @@ export class Chunk extends Model.Class<Chunk>("Chunk")({
  * @since 1.0.0
  * @category Services
  */
-export class ChunkRepo extends ServiceMap.Service<
+export class ChunkRepo extends Context.Service<
   ChunkRepo,
   {
     insert(
@@ -139,10 +139,9 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     const dimensions = yield* EmbeddingModel.Dimensions
-    const loaders = yield* SqlModel.makeDataLoaders(Chunk, {
+    const loaders = yield* SqlModel.makeResolvers(Chunk, {
       tableName: "chunks",
       idColumn: "id",
-      window: 10,
       spanPrefix: "ChunkRepo",
     })
 
@@ -185,10 +184,13 @@ export const layer = Layer.effect(
         sql`select id, hash from chunks where ${sql.in("hash", hashes)}`,
     }).pipe(RequestResolver.setDelay(5))
 
+    const insertResolver = loaders.insert.pipe(RequestResolver.setDelay(5))
+    const findByIdResolver = loaders.findById.pipe(RequestResolver.setDelay(5))
+
     return ChunkRepo.of({
       insert: (insert) => {
         needsQuantization = true
-        return loaders.insert(insert).pipe(
+        return SqlResolver.request(insert, insertResolver).pipe(
           Effect.catchTags({
             SqlError: (reason) => Effect.fail(new ChunkRepoError({ reason })),
             SchemaError: Effect.die,
@@ -196,7 +198,7 @@ export const layer = Layer.effect(
         )
       },
       findById: (id) =>
-        loaders.findById(id).pipe(
+        SqlResolver.request(id, findByIdResolver).pipe(
           Effect.catchTags({
             SchemaError: Effect.die,
           }),

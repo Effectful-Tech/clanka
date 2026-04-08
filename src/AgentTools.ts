@@ -6,7 +6,7 @@ import { parsePatch, patchChunks } from "./ApplyPatch.ts"
 import * as ExaSearch from "./ExaSearch.ts"
 import * as WebToMarkdown from "./WebToMarkdown.ts"
 import type * as HttpClient from "effect/unstable/http/HttpClient"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
 import * as Tool from "effect/unstable/ai/Tool"
@@ -26,7 +26,7 @@ import * as SemanticSearch from "./SemanticSearch/Service.ts"
  * @since 1.0.0
  * @category Context
  */
-export class CurrentDirectory extends ServiceMap.Service<
+export class CurrentDirectory extends Context.Service<
   CurrentDirectory,
   string
 >()("clanka/AgentTools/CurrentDirectory") {}
@@ -35,7 +35,7 @@ export class CurrentDirectory extends ServiceMap.Service<
  * @since 1.0.0
  * @category Context
  */
-export class TaskCompleter extends ServiceMap.Service<
+export class TaskCompleter extends Context.Service<
   TaskCompleter,
   (output: string) => Effect.Effect<void>
 >()("clanka/AgentTools/TaskCompleter") {}
@@ -44,7 +44,7 @@ export class TaskCompleter extends ServiceMap.Service<
  * @since 1.0.0
  * @category Context
  */
-export class SubagentExecutor extends ServiceMap.Service<
+export class SubagentExecutor extends Context.Service<
   SubagentExecutor,
   (prompt: string) => Effect.Effect<string>
 >()("clanka/AgentTools/SubagentExecutor") {}
@@ -54,9 +54,9 @@ export class SubagentExecutor extends ServiceMap.Service<
  * @category Context
  */
 export const makeContextNoop = (cwd?: string) =>
-  SubagentExecutor.serviceMap(() => Effect.die("Not implemented")).pipe(
-    ServiceMap.add(CurrentDirectory, cwd ?? "/"),
-    ServiceMap.add(TaskCompleter, () => Effect.void),
+  SubagentExecutor.context(() => Effect.die("Not implemented")).pipe(
+    Context.add(CurrentDirectory, cwd ?? "/"),
+    Context.add(TaskCompleter, () => Effect.void),
   )
 
 class TodoItem extends Schema.Opaque<TodoItem>()(

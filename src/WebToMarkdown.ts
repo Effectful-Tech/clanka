@@ -3,7 +3,7 @@
  */
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import type * as HttpClientError from "effect/unstable/http/HttpClientError"
 import TurndownService from "turndown"
@@ -12,7 +12,7 @@ import TurndownService from "turndown"
  * @since 1.0.0
  * @category Services
  */
-export class WebToMarkdown extends ServiceMap.Service<
+export class WebToMarkdown extends Context.Service<
   WebToMarkdown,
   {
     convertHtml(html: string): Effect.Effect<string>

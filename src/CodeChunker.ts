@@ -7,7 +7,7 @@ import * as FileSystem from "effect/FileSystem"
 import { pipe } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Path from "effect/Path"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 import * as Stream from "effect/Stream"
 import * as ChildProcess from "effect/unstable/process/ChildProcess"
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
@@ -47,7 +47,7 @@ export type ChunkType =
  * @since 1.0.0
  * @category Services
  */
-export class CodeChunker extends ServiceMap.Service<
+export class CodeChunker extends Context.Service<
   CodeChunker,
   {
     listFiles(options: {

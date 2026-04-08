@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.52
+
+### Patch Changes
+
+- [`88489f5`](https://github.com/Effectful-Tech/clanka/commit/88489f5031a685ded7600f10594095d09dc7daf9) Thanks [@tim-smart](https://github.com/tim-smart)! - loosen peer deps
+
 ## 0.2.51
 
 ### Patch Changes

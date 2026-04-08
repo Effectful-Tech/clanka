@@ -1,5 +1,13 @@
 # clanka
 
+## 0.2.51
+
+### Patch Changes
+
+- [`ca3fa82`](https://github.com/Effectful-Tech/clanka/commit/ca3fa828a7cbb98ced8380756c4bb77b5227c4b7) Thanks [@tim-smart](https://github.com/tim-smart)! - update effect
+
+- [`d63278b`](https://github.com/Effectful-Tech/clanka/commit/d63278b6ac8e1354e96536fccc2b91ad4abaa9e9) Thanks [@tim-smart](https://github.com/tim-smart)! - peer deps
+
 ## 0.2.50
 
 ### Patch Changes

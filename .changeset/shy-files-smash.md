@@ -1,5 +1,0 @@
----
-"clanka": patch
----
-
-peer deps

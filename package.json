@@ -66,7 +66,7 @@
     "@effect/ai-openai": "4.0.0-beta.45",
     "@effect/ai-openai-compat": "4.0.0-beta.45",
     "@effect/language-service": "^0.83.1",
-    "@effect/vitest": "4.0.0-beta.43",
+    "@effect/vitest": "4.0.0-beta.45",
     "@types/node": "^25.5.0",
     "@types/turndown": "^5.0.6",
     "@typescript/native-preview": "7.0.0-dev.20260324.1",

@@ -213,17 +213,31 @@ export const makeLocal = Effect.fnUntraced(function* <
     execute,
     executeUnsafe: (opts) => {
       const tool = tools.tools[opts.tool as keyof typeof tools.tools]
-      const handler = services.mapUnsafe.get(opts.tool) as Tool.Handler<string>
+      const handler = services.mapUnsafe.get(tool.id) as Tool.Handler<string>
       if (!handler || !tool) {
         return Effect.die(new Error(`Unknown tool: ${opts.tool}`))
       }
+
+      const taskServices = Context.mutate(
+        handler.context,
+        flow(
+          Context.add(TaskCompleter, () => Effect.void),
+          Context.add(CurrentDirectory, options.directory),
+          Context.add(SubagentExecutor, () => Effect.succeed("")),
+          Context.add(References.CurrentLogAnnotations, {}),
+          Option.isSome(search)
+            ? Context.add(SemanticSearch, search.value)
+            : identity,
+        ),
+      )
+
       const encodeSuccess = Schema.encodeUnknownEffect(
         Schema.toCodecJson(tool.successSchema as Schema.Top),
       )
       return pipe(
         handler.handler(opts.params, {}),
         Effect.flatMap(encodeSuccess),
-        Effect.provideContext(handler.context),
+        Effect.provideContext(taskServices),
         Effect.orDie,
       ) as Effect.Effect<Schema.Json>
     },

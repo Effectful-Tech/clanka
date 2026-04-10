@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.54
+
+### Patch Changes
+
+- [`332d2cc`](https://github.com/Effectful-Tech/clanka/commit/332d2cc2f4d32a0e9d4f86cbdcfbab8a5f0a8781) Thanks [@tim-smart](https://github.com/tim-smart)! - fix executeUnsafe
+
 ## 0.2.53
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.59
+
+### Patch Changes
+
+- [`1335ebb`](https://github.com/Effectful-Tech/clanka/commit/1335ebbcc8a51c5a245160b8898e82a30df62e6d) Thanks [@tim-smart](https://github.com/tim-smart)! - disable console colors
+
 ## 0.2.58
 
 ### Patch Changes

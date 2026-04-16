@@ -11,6 +11,11 @@ export * as AgentExecutor from "./AgentExecutor.ts"
 /**
  * @since 1.0.0
  */
+export * as AgentOutput from "./AgentOutput.ts"
+
+/**
+ * @since 1.0.0
+ */
 export * as AgentTools from "./AgentTools.ts"
 
 /**

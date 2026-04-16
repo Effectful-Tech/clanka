@@ -510,7 +510,10 @@ const makeConsole = Effect.fn(function* (
   queue: Queue.Queue<string, Cause.Done>,
 ) {
   const writable = new QueueWriteStream(queue)
-  const newConsole = new NodeConsole.Console(writable)
+  const newConsole = new NodeConsole.Console({
+    stdout: writable,
+    colorMode: false,
+  })
   yield* Effect.addFinalizer(() => {
     writable.end()
     return Effect.void

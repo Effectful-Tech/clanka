@@ -70,8 +70,9 @@ const layerModel = (
       ...Struct.omit(options ?? {}, ["reasoning"]),
       store: false,
       reasoning: {
-        effort: options?.reasoning?.effort ?? "medium",
-        summary: options?.reasoning?.summary ?? "auto",
+        effort: "medium",
+        summary: "auto",
+        ...(options?.reasoning as any),
       },
     },
   }).pipe(

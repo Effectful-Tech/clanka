@@ -52,11 +52,11 @@
     "@sqliteai/sqlite-vector-win32-x86_64": "0.9.95"
   },
   "peerDependencies": {
-    "@effect/ai-openai": "4.0.0-beta.52",
-    "@effect/ai-openai-compat": "4.0.0-beta.52",
-    "@effect/platform-node": "4.0.0-beta.52",
-    "@effect/sql-sqlite-node": "4.0.0-beta.52",
-    "effect": "4.0.0-beta.52"
+    "@effect/ai-openai": ">=4.0.0-beta.52 <4.0.1",
+    "@effect/ai-openai-compat": ">=4.0.0-beta.52 <4.0.1",
+    "@effect/platform-node": ">=4.0.0-beta.52 <4.0.1",
+    "@effect/sql-sqlite-node": ">=4.0.0-beta.52 <4.0.1",
+    "effect": ">=4.0.0-beta.52 <4.0.1"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.6.0",

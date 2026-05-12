@@ -378,7 +378,7 @@ describe("GithubCopilotAuth", () => {
           jsonResponse({ ok: true }),
         )
 
-        const wrappedClient = yield* HttpClient.HttpClient.asEffect().pipe(
+        const wrappedClient = yield* HttpClient.HttpClient.pipe(
           Effect.provide(GithubCopilotAuth.layerClientNoDeps),
           Effect.provideService(HttpClient.HttpClient, client),
           Effect.provideServiceEffect(

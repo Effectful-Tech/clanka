@@ -132,9 +132,7 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
 > {
   const executor = yield* AgentExecutor.AgentExecutor
 
-  const singleTool = yield* SingleTools.asEffect().pipe(
-    Effect.provide(SingleToolHandlers),
-  )
+  const singleTool = yield* SingleTools.pipe(Effect.provide(SingleToolHandlers))
   const capabilities = yield* executor.capabilities
 
   const pendingMessages = new Set<{

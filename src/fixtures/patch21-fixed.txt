@@ -1,0 +1,1016 @@
+const specPath = '.specs/products-frontend-api-readiness.md';
+const spec = `# Products Frontend API Readiness Specification
+
+## Request
+
+Build out the Effect/TypeScript products API so a frontend application can start being built. The target frontend is similar to Linear for task management, with AI agents as first-class users that can be assigned to tasks.
+
+The requester stated that signup, login, task management, model provider, preset/provider configuration, and related foundations already exist, and asked to investigate what is missing from the API for frontend work.
+
+Clarifications gathered from the user:
+
+- The first frontend-ready iteration should focus on enabling a Linear-like workspace/task board experience.
+- Defer richer collaboration features such as comments, labels, notifications, saved views, and realtime updates.
+- Task querying only needs status filtering for now.
+- Task assignees can continue to use \`Task.assigneeId: UserId\`; \`User.userType\` already distinguishes human users from agent users.
+- Do not add a combined bootstrap endpoint in v1. The frontend should assemble its initial state from separate endpoints.
+- Agent management HTTP endpoints are required in v1.
+- Task sessions should be read-only in v1. A task session starts automatically when a task is assigned to an agent user and the task status is \`Todo\` or \`InProgress\`; the frontend should not need explicit start/cancel routes yet.
+- Expose both task-scoped and id-scoped session reads: \`GET /tasks/:taskId/sessions\` and \`GET /task-sessions/:id\`.
+
+This document is an implementation planning specification only. No product code should be implemented as part of creating this plan.
+
+## Research summary
+
+### Existing products API surface
+
+The Effect/TypeScript products app lives under \`apps/products\`, with schema-first public API definitions in \`packages/domain/src/**\` and handlers in \`apps/products/src/**\`.
+
+Current \`RootApi\` composes these groups:
+
+- \`OrganizationsApi\`
+- \`ProductsApi\`
+- \`GitRepositoriesApi\`
+- \`TasksApi\`
+- \`UsersApi\`
+- \`ModelProviderInstancesApi\`
+
+Existing public endpoints discovered in the codebase include:
+
+- Users:
+  - \`POST /users/register/password\`
+- Organizations:
+  - \`POST /organizations/\`
+  - \`GET /organizations/:organizationId\`
+- Products:
+  - \`POST /products\`
+  - \`GET /organizations/:organizationId/products\`
+- Git repositories:
+  - \`POST /git-repositories\`
+  - \`PUT /git-repositories/:id\`
+  - \`DELETE /git-repositories/:id\`
+- Tasks:
+  - \`POST /tasks\`
+  - \`PUT /tasks/:id\`
+  - \`DELETE /tasks/:id\`
+- Model providers/provider instances:
+  - \`GET /model-providers\`
+  - \`POST /model-provider-instances\`
+  - \`POST /model-provider-instances/:id/device-flow/start\`
+  - \`POST /model-provider-instances/:id/device-flow/poll\`
+  - \`POST /model-provider-instances/:id/device-flow/cancel\`
+
+There are domain/repository/service foundations that are not yet exposed as frontend-friendly read or management APIs:
+
+- \`User.userType\` is already \`human | agent\`.
+- \`Agent\` has a backing \`User\` row and stores \`organizationId\`, \`modelProviderInstanceId\`, \`name\`, \`description\`, \`modelName\`, \`systemPrompt\`, \`modelConfig\`, and \`status\`.
+- \`Agents\` service already supports create/update/remove, and \`AgentsRepo\` supports insert/byId/list-by-organization/update/delete.
+- \`TaskSession\` and \`TaskSessionsRepo\` exist, but there is no public API group for task sessions.
+- \`TasksRepo.forProductId(productId)\` exists, but there is no public task list/detail API and no status-filtered query route.
+- \`GitRepositoriesRepo\` supports active reads/lists internally, but current HTTP API only supports mutations.
+- \`ModelProviderInstancesRepo\` supports reads/lists/update auth state internally, but current HTTP API only exposes provider catalog, create, and device-flow actions.
+- \`OrganizationMembershipsRepo.forUserId(userId)\` exists, but there is no public endpoint for “my organizations”.
+
+### Conventions to follow
+
+- Effect guidance: \`docs/effect.md\` requires using existing patterns, reading \`vendor/effect/LLMS.md\` when writing Effect code, and validating with \`pnpm check\` and \`pnpm test\`.
+- API definitions live in the domain package and use \`effect/unstable/httpapi\`.
+- Handlers use \`HttpApiBuilder.group(RootApi, <groupName>, ...)\` and are provided in \`apps/products/src/Api.ts\`.
+- Authenticated API groups use the domain \`Authentication\` middleware and the app \`AuthenticationMiddleware\` implementation.
+- Authorization should follow existing policy composition patterns:
+  - organization-scoped reads use \`OrganizationsPolicy.canRead(organizationId)\`;
+  - product-scoped reads/mutations use \`ProductsPolicy.canModify(productId)\` or a resource policy that first loads the resource and then composes product authorization;
+  - id-only resource routes load the active row first so authorization is based on stored immutable ownership fields.
+- Repositories filter soft-deleted rows with \`deletedAt IS NULL\`; frontend list/detail endpoints must not expose soft-deleted rows.
+- Domain JSON schemas should avoid parallel payload types unless a route needs a frontend-specific response shape.
+
+## Goals
+
+1. Add the missing read APIs required for a frontend workspace/task board:
+   - current authenticated user;
+   - organizations available to the current user;
+   - product detail;
+   - organization assignable users;
+   - task list/detail with optional status filtering;
+   - git repository list/detail;
+   - model provider instance list/detail;
+   - task session list/detail.
+2. Add public agent management APIs: list, detail, create, update, and soft-delete/remove.
+3. Keep task assignment represented by \`assigneeId: UserId\`; the frontend distinguishes humans vs agents using \`User.userType\` from user/assignee list endpoints.
+4. Keep task sessions read-only from the frontend in v1. Do not add manual session start/cancel routes.
+5. Use separate endpoints rather than a combined bootstrap endpoint.
+6. Preserve existing create/update/delete APIs and route shapes where already implemented.
+7. Keep implementation tasks small, independently shippable, and validation-safe.
+
+## Non-goals
+
+- No frontend UI implementation.
+- No combined \`/bootstrap\` endpoint.
+- No comments, labels, priorities, due dates, project milestones, cycles, estimates, attachments, saved views, notifications, or realtime subscriptions.
+- No task pagination, full-text search, multi-field sort, or filters other than status in v1.
+- No manual frontend API for starting, cancelling, or retrying task sessions.
+- No new task workflow transition rules beyond existing \`TaskStatus\` validation and the automatic session-start condition described below.
+- No change to the \`Task.assigneeId\` data model.
+- No new role/permission model beyond existing organization membership/policy checks.
+- No provider token/API-key entry changes unless implementation discovers the current frontend cannot complete an already-planned provider auth flow.
+- No OpenAPI client generation package is required by this plan, though the existing Scalar docs should reflect new routes automatically through \`RootApi\`.
+
+## Frontend data model assumptions
+
+### Users and assignees
+
+- \`User.userType = "human"\` means a human account.
+- \`User.userType = "agent"\` means an AI agent backing user.
+- \`Task.ownerId\` and \`Task.assigneeId\` remain \`UserId\` fields.
+- The frontend can display assignment options by calling organization-scoped user/assignee endpoints and checking \`userType\`.
+- Agent management routes return \`Agent\` rows; assignable-user routes return \`User\` rows. The frontend can link an agent row to its backing user through \`Agent.userId\`.
+
+### Task sessions
+
+- Task sessions are a record of agent work on a task.
+- A session starts automatically when all of these are true:
+  - the task has an assignee;
+  - the assigned user has \`userType = "agent"\`;
+  - the task status is \`Todo\` or \`InProgress\`.
+- V1 frontend APIs only read sessions. If the automatic session creation/orchestration does not yet exist, implementation should add the minimal service hook needed to create a \`TaskSession\` in \`Starting\` state without exposing a manual route.
+- Session creation must be idempotent for active runs: repeated task updates matching the start condition should not create duplicate active sessions for the same task/agent while an existing \`Starting\` or \`Running\` session exists.
+
+## Required API additions
+
+All new routes below require the existing \`Authentication\` middleware unless explicitly stated otherwise.
+
+### Users API
+
+Add current-user and organization-assignee reads.
+
+#### \`GET /users/me\`
+
+Purpose: allow the frontend to identify the authenticated actor after the login/session boundary has accepted the request.
+
+Response:
+
+- \`User\`
+
+Authorization:
+
+- Authenticated user required.
+- Return the \`CurrentActor\` user when \`_tag = "UserActor"\`.
+- Reject non-user actors with Unauthorized unless the existing auth model requires organization actors to be representable in the frontend.
+
+Errors:
+
+- Unauthorized from auth middleware or actor mismatch.
+
+#### \`GET /organizations/:organizationId/users\`
+
+Purpose: return assignable users for a workspace/organization, including human organization members and agent backing users.
+
+Params:
+
+- \`organizationId: OrganizationId\`
+
+Response:
+
+- \`ReadonlyArray<User>\` sorted deterministically by \`userType\`, display name/username, then id.
+- Include both:
+  - human users with an active membership in the organization;
+  - agent users for active agents in the organization.
+- Do not return soft-deleted users, memberships, or agents.
+
+Authorization:
+
+- \`OrganizationsPolicy.canRead(organizationId)\`.
+
+Implementation notes:
+
+- Add repository support in \`UsersRepo\` or a small query service for \`forOrganizationAssignableUsers(organizationId)\`.
+- The query should not require agent users to have organization memberships if agent ownership is already represented by \`agents.organizationId\`.
+- Deduplicate users by id if future data introduces overlap.
+
+### Organizations API
+
+#### \`GET /organizations\`
+
+Purpose: list organizations available to the current authenticated user.
+
+Response:
+
+- \`ReadonlyArray<Organization>\` sorted deterministically by name then id.
+
+Authorization:
+
+- Authenticated user required.
+- Use \`OrganizationMembershipsRepo.forUserId(CurrentUser.id)\` to discover active memberships, then load active organizations.
+
+Errors:
+
+- Unauthorized for non-user actors.
+- Storage defects remain internal defects, not public route variants.
+
+Implementation notes:
+
+- Add service method \`Organizations.listForCurrentUser()\`.
+- This is intentionally separate from \`GET /users/me\` and product list endpoints; no v1 bootstrap endpoint should be added.
+
+### Products API
+
+Existing:
+
+- \`POST /products\`
+- \`GET /organizations/:organizationId/products\`
+
+Add:
+
+#### \`GET /products/:id\`
+
+Purpose: load product detail for product-scoped pages and refreshes.
+
+Params:
+
+- \`id: ProductId\`
+
+Response:
+
+- \`Product\`
+
+Authorization:
+
+- Load active product by id.
+- Authorize through \`ProductsPolicy.canRead(id)\` if added, or equivalent composition via \`OrganizationsPolicy.canRead(product.organizationId)\`.
+
+Errors:
+
+- Not Found when no active product exists.
+- Unauthorized when the actor cannot read the product organization.
+
+Implementation notes:
+
+- \`ProductsPolicy\` currently exposes \`canModify\`; add \`canRead\` if not already available.
+- Keep \`GET /organizations/:organizationId/products\` as the list endpoint. No update/delete product API is required for v1 frontend readiness.
+
+### Tasks API
+
+Existing:
+
+- \`POST /tasks\`
+- \`PUT /tasks/:id\`
+- \`DELETE /tasks/:id\`
+
+Add:
+
+#### \`GET /products/:productId/tasks\`
+
+Purpose: list tasks for the board/backlog/task table.
+
+Params:
+
+- \`productId: ProductId\`
+
+Query:
+
+- \`status?: TaskStatus\`
+
+Response:
+
+- \`ReadonlyArray<Task>\` sorted deterministically by \`createdAt ASC, id ASC\` unless a repository-local existing order is already documented.
+
+Authorization:
+
+- \`ProductsPolicy.canRead(productId)\` or existing product access policy equivalent.
+
+Behavior:
+
+- Return only active tasks where \`deletedAt IS NULL\`.
+- If \`status\` is present, return only tasks with that status.
+- If \`status\` is absent, return all active tasks for the product.
+
+Errors:
+
+- Not Found if the product does not exist.
+- Unauthorized if the actor cannot read the product.
+
+Implementation notes:
+
+- Extend \`TasksRepo.forProductId\` to accept an optional status filter, or add \`forProductIdFiltered\`.
+- Do not add pagination in v1.
+- Do not add additional board filters in v1.
+
+#### \`GET /tasks/:id\`
+
+Purpose: load task detail pages and refresh a single task after mutations.
+
+Params:
+
+- \`id: TaskId\`
+
+Response:
+
+- \`Task\`
+
+Authorization:
+
+- Load active task by id.
+- Authorize through \`TasksPolicy.canRead(id)\` if added, or equivalent product-read composition.
+
+Errors:
+
+- Not Found when no active task exists.
+- Unauthorized when the actor cannot read the task's product.
+
+Implementation notes:
+
+- Add a read policy separate from modify if needed. Read should not grant modify permission.
+- Keep create/update/delete behavior unchanged except for the automatic task-session hook below.
+
+### Task session API
+
+Add a new domain API group, preferably \`TaskSessionsApi\`, and add it to \`RootApi\` only in the same implementation task that wires app handlers.
+
+#### \`GET /tasks/:taskId/sessions\`
+
+Purpose: show agent-run history or current run state on a task detail view.
+
+Params:
+
+- \`taskId: TaskId\`
+
+Response:
+
+- \`ReadonlyArray<TaskSession>\` sorted by \`createdAt DESC, id DESC\`.
+
+Authorization:
+
+- Load active task and authorize product read access.
+
+Behavior:
+
+- Return only active task sessions where \`deletedAt IS NULL\`.
+- Include sessions for the task regardless of status (\`Starting\`, \`Running\`, \`Completed\`, \`Cancelled\`).
+
+Errors:
+
+- Not Found when no active task exists.
+- Unauthorized when the actor cannot read the task's product.
+
+#### \`GET /task-sessions/:id\`
+
+Purpose: load a single session detail view or poll a current run.
+
+Params:
+
+- \`id: TaskSessionId\`
+
+Response:
+
+- \`TaskSession\`
+
+Authorization:
+
+- Load active task session by id.
+- Load its active task.
+- Authorize product read access for that task.
+
+Errors:
+
+- Not Found when no active session or parent task exists.
+- Unauthorized when the actor cannot read the task's product.
+
+Implementation notes:
+
+- Add \`TaskSessionsRepo.forTaskId(taskId)\`.
+- Consider adding \`TaskSessionsPolicy.canRead(id)\` and \`TasksPolicy.canRead(taskId)\` to avoid duplicating policy composition.
+- Existing \`TaskSessionsPolicy.canModify\` should remain for future mutation routes; v1 public routes should use read policy.
+
+### Automatic task-session creation hook
+
+This is not a frontend route, but it is part of the v1 frontend contract because sessions are read-only and must appear after valid agent assignment.
+
+Behavior:
+
+- After task create/update persists a task, inspect the persisted task.
+- If \`assigneeId\` is present, load the user.
+- If the user has \`userType = "agent"\` and \`status\` is \`Todo\` or \`InProgress\`, ensure a task session exists for that task and agent.
+- Resolve the \`Agent\` by backing \`userId\`; if no active agent exists, treat it as a recoverable business inconsistency and do not start a session, or return a typed Bad Request if assignment validation is implemented in the same task. The preferred v1 behavior is to prevent assigning inactive/nonexistent agent users through validation.
+- Do not create a duplicate active session for the same \`taskId\` and \`agentId\` while an existing session is \`Starting\` or \`Running\`.
+- Create new sessions with \`status = "Starting"\` and \`completedAt = none/null\`.
+- Do not add start/cancel/retry HTTP endpoints in this spec.
+
+Validation expectation:
+
+- Add tests for human assignee no-op, agent assignee with eligible status creates one session, ineligible status no-op, and repeated matching updates remain idempotent.
+
+If this hook is intentionally implemented by another worker/service outside \`apps/products\`, document that boundary in code comments/tests and leave the public task-session API read-only.
+
+### Git repositories API
+
+Existing:
+
+- \`POST /git-repositories\`
+- \`PUT /git-repositories/:id\`
+- \`DELETE /git-repositories/:id\`
+
+Add:
+
+#### \`GET /products/:productId/git-repositories\`
+
+Purpose: populate repository selectors and product settings screens.
+
+Params:
+
+- \`productId: ProductId\`
+
+Response:
+
+- \`ReadonlyArray<GitRepository>\` sorted by name then id.
+
+Authorization:
+
+- Product read access.
+
+Behavior:
+
+- Return only active repositories.
+
+#### \`GET /git-repositories/:id\`
+
+Purpose: load repository detail/edit screens.
+
+Params:
+
+- \`id: GitRepositoryId\`
+
+Response:
+
+- \`GitRepository\`
+
+Authorization:
+
+- Load active repository by id, then authorize product read access.
+
+Errors:
+
+- Not Found when no active repository exists.
+
+### Model provider instances API
+
+Existing:
+
+- \`GET /model-providers\`
+- \`POST /model-provider-instances\`
+- device-flow start/poll/cancel routes
+
+Add:
+
+#### \`GET /organizations/:organizationId/model-provider-instances\`
+
+Purpose: show configured provider instances for organization settings and agent setup.
+
+Params:
+
+- \`organizationId: OrganizationId\`
+
+Response:
+
+- \`ReadonlyArray<ModelProviderInstance>\` sorted by name then id.
+
+Authorization:
+
+- Organization read access.
+
+Behavior:
+
+- Return only active/non-soft-deleted rows.
+- Do not return token/API key material.
+
+#### \`GET /model-provider-instances/:id\`
+
+Purpose: load detail/status for a provider instance.
+
+Params:
+
+- \`id: ModelProviderInstanceId\`
+
+Response:
+
+- \`ModelProviderInstance\`
+
+Authorization:
+
+- Load active instance by id, then authorize organization read access.
+
+Errors:
+
+- Not Found when no active instance exists.
+
+#### Optional management routes for v1
+
+If the frontend provider settings screen requires renaming/disabling instances immediately, add these in the same provider-management task:
+
+- \`PUT /model-provider-instances/:id\` with a narrow payload for editable metadata (\`name\`, optionally \`status\` limited to \`active | disabled\`).
+- \`DELETE /model-provider-instances/:id\` as soft-delete.
+
+If not required by the first frontend milestone, keep provider-instance mutation limited to existing create/device-flow routes and defer these optional routes.
+
+### Agents API
+
+Add a new domain API group, preferably \`AgentsApi\`, and add it to \`RootApi\` only in the same implementation task that wires app handlers.
+
+#### \`GET /organizations/:organizationId/agents\`
+
+Purpose: list agents for organization settings and assignment-related views.
+
+Params:
+
+- \`organizationId: OrganizationId\`
+
+Response:
+
+- \`ReadonlyArray<Agent>\` sorted by name then id.
+
+Authorization:
+
+- Organization read access.
+
+Behavior:
+
+- Return only active/non-soft-deleted agents.
+
+#### \`GET /agents/:id\`
+
+Purpose: load agent detail/edit screens and allow frontend to resolve an assignee's agent configuration.
+
+Params:
+
+- \`id: AgentId\`
+
+Response:
+
+- \`Agent\`
+
+Authorization:
+
+- Load active agent by id, then authorize organization read access.
+
+Errors:
+
+- Not Found when no active agent exists.
+
+#### \`POST /agents\`
+
+Purpose: create an organization-scoped AI agent and its backing \`User\` row.
+
+Payload:
+
+- Use \`Agent.jsonCreate\` if it already represents the public create contract.
+- Public create should include:
+  - \`organizationId\`
+  - \`modelProviderInstanceId\`
+  - \`name\`
+  - optional \`description\`
+  - \`modelName\`
+  - optional \`systemPrompt\`
+  - \`modelConfig\`
+  - \`status\`
+- Public create must not include \`userId\`, lifecycle timestamps, or \`deletedAt\`.
+
+Response:
+
+- \`Agent\`
+
+Authorization:
+
+- Organization read/manage access. In the absence of a separate manage permission, use the same organization-read policy convention used by provider-instance creation, plus \`policyRequire("Agent", "create")\`.
+- Validate or authorize that the referenced \`modelProviderInstanceId\` belongs to the same organization.
+
+Behavior:
+
+- Reuse existing \`Agents.create\` service behavior that creates a backing \`User\` with \`userType = "agent"\`.
+- Return Conflict for duplicate active agent name in the organization.
+- Return Bad Request or Conflict for cross-organization provider instance references; prefer Bad Request for invalid input and Unauthorized only for access denial.
+
+#### \`PUT /agents/:id\`
+
+Purpose: edit an agent's frontend-manageable metadata/config.
+
+Params:
+
+- \`id: AgentId\`
+
+Payload:
+
+- Use \`Agent.jsonUpdate\` if it is the correct public full-update contract.
+- Editable fields should include \`name\`, \`description\`, \`modelName\`, \`systemPrompt\`, \`modelConfig\`, and \`status\`.
+- Do not allow changing \`organizationId\`, \`modelProviderInstanceId\`, \`userId\`, lifecycle timestamps, or \`deletedAt\` in v1.
+
+Response:
+
+- \`Agent\`
+
+Authorization:
+
+- Load active agent by id, then authorize organization read/manage access using an \`AgentsPolicy.canModify(id)\` policy.
+
+Behavior:
+
+- Keep the backing user's display name in sync with the updated agent name, as existing \`Agents.update\` already does.
+- Return Conflict for duplicate active agent name.
+
+#### \`DELETE /agents/:id\`
+
+Purpose: remove/deactivate an agent from frontend settings.
+
+Params:
+
+- \`id: AgentId\`
+
+Response:
+
+- No content.
+
+Authorization:
+
+- Load active agent by id, then authorize organization read/manage access using \`AgentsPolicy.canModify(id)\`.
+
+Behavior:
+
+- Soft-delete/remove the agent using existing repository semantics.
+- The backing user must no longer be returned by \`GET /organizations/:organizationId/users\` after agent deletion.
+- Do not hard-delete historical task/session rows.
+
+## Response-shape guidance
+
+V1 should prefer returning existing domain models to keep route implementation small and generated docs predictable:
+
+- \`User\`
+- \`Organization\`
+- \`Product\`
+- \`Task\`
+- \`TaskSession\`
+- \`GitRepository\`
+- \`ModelProviderInstance\`
+- \`Agent\`
+
+Do not introduce expanded GraphQL-like view models in v1 unless implementation discovers a hard client blocker. The frontend can compose expanded views by calling separate endpoints, per the clarification to avoid a bootstrap endpoint.
+
+If a route does need a response wrapper for query metadata, keep it minimal and document it before implementing. No pagination metadata is required in v1.
+
+## Authorization matrix
+
+| Route | Required access |
+| --- | --- |
+| \`GET /users/me\` | authenticated user actor |
+| \`GET /organizations\` | authenticated user actor; memberships determine results |
+| \`GET /organizations/:organizationId/users\` | organization read |
+| \`GET /products/:id\` | product read via organization read |
+| \`GET /products/:productId/tasks\` | product read |
+| \`GET /tasks/:id\` | task read via product read |
+| \`GET /tasks/:taskId/sessions\` | task read via product read |
+| \`GET /task-sessions/:id\` | task-session read via parent task/product read |
+| \`GET /products/:productId/git-repositories\` | product read |
+| \`GET /git-repositories/:id\` | repository read via product read |
+| \`GET /organizations/:organizationId/model-provider-instances\` | organization read |
+| \`GET /model-provider-instances/:id\` | provider-instance read via organization read |
+| \`GET /organizations/:organizationId/agents\` | organization read |
+| \`GET /agents/:id\` | agent read via organization read |
+| \`POST /agents\` | organization read/manage + agent create capability |
+| \`PUT /agents/:id\` | agent modify via organization read/manage |
+| \`DELETE /agents/:id\` | agent modify via organization read/manage |
+
+Implementation can name read policies differently, but must keep read and modify permissions conceptually separate so read routes do not accidentally require edit access.
+
+## Error contract guidance
+
+- Missing active rows: return \`HttpApiError.NotFoundNoContent\`.
+- Duplicate active names: return \`HttpApiError.ConflictNoContent\` or existing Conflict variant used by adjacent routes.
+- Malformed payload/query/params: schema decode Bad Request from HttpApi.
+- Cross-organization references on create/update: prefer Bad Request or Conflict when the actor can access both resources but the relationship is invalid; Unauthorized when access to a referenced resource is denied.
+- Repository/SQL errors: map to existing domain repository errors internally and defect/die at service boundaries unless there is a user-actionable public error.
+- Never expose provider tokens, API keys, raw provider auth responses, or redacted secret internals in public errors.
+
+## Database and repository requirements
+
+Expected repository additions or extensions:
+
+- \`UsersRepo\`
+  - \`current\` is not required; use \`CurrentActor\`/auth context for \`/users/me\`.
+  - Add organization assignable users query, either directly or through a dedicated service.
+- \`OrganizationMembershipsRepo\`
+  - Existing \`forUserId\` can drive \`GET /organizations\`.
+- \`OrganizationsRepo\`
+  - Existing \`byId\` plus either batched lookup by ids or a join query for current user's organizations.
+- \`ProductsRepo\`
+  - Existing \`byId\` can drive \`GET /products/:id\`.
+- \`TasksRepo\`
+  - Extend product list with optional \`status\` filter.
+  - Existing \`byId\` can drive detail if it excludes soft-deleted rows.
+- \`TaskSessionsRepo\`
+  - Add \`forTaskId(taskId)\`.
+  - Ensure \`byId\` excludes soft-deleted rows. If generic \`repo.findById\` behavior is not proven, replace with explicit active-row SQL.
+  - Add an idempotent active-session lookup for automatic session creation if the hook is implemented in products.
+- \`GitRepositoriesRepo\`
+  - Use existing list/detail methods if present; otherwise add active \`forProductId(productId)\` and active \`byId(id)\`.
+- \`ModelProviderInstancesRepo\`
+  - Use existing list/detail methods if present; otherwise add active \`forOrganization(organizationId)\` and active \`byId(id)\`.
+- \`AgentsRepo\`
+  - Use existing \`forOrganization\`, \`byId\`, \`insert\`, \`update\`, and \`delete\` methods.
+  - Add \`byUserId(userId)\` or \`activeByUserId(userId)\` for automatic session creation and assignment validation.
+
+Add SQL migrations only if required for new uniqueness/idempotency guarantees. Recommended if not already present:
+
+- A partial unique index preventing more than one active \`Starting\`/\`Running\` task session for the same \`taskId\` and \`agentId\`:
+  - \`UNIQUE ("taskId", "agentId") WHERE "deletedAt" IS NULL AND "status" IN ('Starting', 'Running')\`
+
+This index should be added in the same task as the automatic session-start hook if the hook is implemented in products.
+
+## Testing requirements
+
+Use existing Effect/TypeScript test conventions under \`apps/products\` and \`packages/domain\`.
+
+Minimum focused coverage:
+
+- Domain API schema tests for new route query/payload shapes where non-trivial, especially task status query and agent create/update schemas.
+- Repository tests for:
+  - current user's organizations query or service;
+  - organization assignable users including human members and agent backing users;
+  - status-filtered task list;
+  - task sessions by task;
+  - active-session idempotency lookup if implemented;
+  - provider instance and git repository list/detail if missing.
+- Handler tests for each new API group/route cluster:
+  - success path;
+  - Not Found for missing/soft-deleted resources;
+  - Unauthorized for inaccessible organization/product resources;
+  - status filter behavior for task list;
+  - agent create/update/delete conflict and authorization behavior;
+  - read-only task session routes do not expose mutation endpoints.
+- Automatic task-session hook tests if implemented in products:
+  - human assignee does not create a session;
+  - agent assignee with \`Todo\` creates one \`Starting\` session;
+  - agent assignee with \`InProgress\` creates one \`Starting\` session;
+  - agent assignee with \`Backlog\`, \`InReview\`, or \`Done\` does not create a new session;
+  - repeated qualifying updates do not create duplicate active sessions.
+
+Validation commands for implementation PRs:
+
+- \`pnpm check\`
+- Focused \`pnpm test\` commands for changed package/app tests.
+- Full \`pnpm test\` before merging if multiple API groups or shared domain schemas are touched.
+
+## Detailed implementation plan
+
+Each task below should leave the repository typechecking and tests passing. When a domain API group is added to \`RootApi\`, the corresponding app handlers must be added in the same task to avoid incomplete handler-layer validation failures.
+
+### Task 1 — Add read-policy foundations without public route expansion
+
+Scope:
+
+- Add read policies where currently only modify policies exist:
+  - \`ProductsPolicy.canRead(productId)\` if missing.
+  - \`TasksPolicy.canRead(taskId)\`.
+  - \`GitRepositoriesPolicy.canRead(id)\` if needed.
+  - \`ModelProviderInstancesPolicy.canRead(id)\` if needed.
+  - \`AgentsPolicy.canRead/canModify(id)\` if missing.
+  - \`TaskSessionsPolicy.canRead(id)\` for session detail routes.
+- Keep existing modify policies and behavior unchanged.
+- Add focused policy tests/mocks mirroring existing policy test patterns.
+
+Validation:
+
+- \`pnpm check\`
+- Focused policy tests.
+
+Why this is independent:
+
+- It introduces no new public routes and should not affect frontend behavior yet.
+- Later API tasks can rely on read policies without combining unrelated route work.
+
+### Task 2 — Add current user and organization list endpoints
+
+Scope:
+
+- Extend \`UsersApi\`/handlers with \`GET /users/me\`.
+- Extend \`OrganizationsApi\`/service/handlers with \`GET /organizations\` for current user's active memberships.
+- Add repository/service helper to load organizations for current user if needed.
+- Add handler tests for authenticated success and non-user/unauthorized behavior.
+
+Validation:
+
+- \`pnpm check\`
+- Focused users/organizations API handler tests.
+
+Why this is independent:
+
+- These routes support app shell initialization and do not depend on task/agent APIs.
+
+### Task 3 — Add organization assignable users endpoint
+
+Scope:
+
+- Add \`GET /organizations/:organizationId/users\` to \`UsersApi\` or a new organization users group, following existing route naming conventions.
+- Implement query/service returning human organization members plus active agent backing users.
+- Ensure deterministic sorting and deduplication.
+- Add repository/service and handler tests covering humans, agents, soft-deleted rows, and authorization.
+
+Validation:
+
+- \`pnpm check\`
+- Focused users/organization assignees tests.
+
+Why this is independent:
+
+- It exposes the already-existing \`User.userType\` distinction needed for assignment UI without changing task mutation behavior.
+
+### Task 4 — Add product detail endpoint
+
+Scope:
+
+- Extend \`ProductsApi\`/service/handlers with \`GET /products/:id\`.
+- Use product read policy.
+- Add success, Not Found, and Unauthorized tests.
+
+Validation:
+
+- \`pnpm check\`
+- Focused products API handler tests.
+
+Why this is independent:
+
+- Product detail is a simple read surface and does not require task/agent changes.
+
+### Task 5 — Add task list/detail endpoints with status filtering
+
+Scope:
+
+- Extend \`TasksApi\` with:
+  - \`GET /products/:productId/tasks?status=<TaskStatus>\`
+  - \`GET /tasks/:id\`
+- Extend \`TasksRepo\` list method with optional status filtering, or add a new filtered list method.
+- Add \`Tasks\` service read/list methods.
+- Use product/task read policies.
+- Add tests for all-status list, single-status filter, invalid status decode, detail success, Not Found, soft-delete exclusion, and Unauthorized.
+
+Validation:
+
+- \`pnpm check\`
+- Focused tasks repository and API handler tests.
+
+Why this is independent:
+
+- It exposes board data while leaving existing task mutations untouched.
+
+### Task 6 — Add read-only task session endpoints
+
+Scope:
+
+- Create \`packages/domain/src/Tasks/TaskSessionsApi.ts\` and app handler module.
+- Add to \`RootApi\` and \`apps/products/src/Api.ts\` in the same task.
+- Add routes:
+  - \`GET /tasks/:taskId/sessions\`
+  - \`GET /task-sessions/:id\`
+- Add \`TaskSessionsRepo.forTaskId(taskId)\` and harden active-row \`byId\` if needed.
+- Add \`TaskSessions\` service if a service layer does not exist yet.
+- Add list/detail policy use and tests.
+
+Validation:
+
+- \`pnpm check\`
+- Focused task-session repository and API handler tests.
+
+Why this is independent:
+
+- It is read-only and does not require automatic session creation to exist yet, as tests can seed sessions directly.
+
+### Task 7 — Add automatic task-session creation on qualifying agent assignment
+
+Scope:
+
+- Add agent-by-user lookup support in \`AgentsRepo\` if missing.
+- Add active-session lookup and idempotent insert helper in \`TaskSessionsRepo\`.
+- Add the partial unique active-session index migration if not already present.
+- Update \`Tasks.create\` and \`Tasks.update\` to call a small \`TaskSessionAutomation\` service after persisting a task.
+- Start a \`Starting\` session only for agent assignees and \`Todo\`/\`InProgress\` statuses.
+- Keep no-op behavior for human assignees, no assignee, inactive agents, and ineligible statuses unless stricter assignment validation is implemented in the same task.
+- Add idempotency and eligibility tests.
+
+Validation:
+
+- \`pnpm check\`
+- Focused tasks/task-session automation tests.
+- Migration/repository tests for the active-session uniqueness constraint.
+
+Why this is independent:
+
+- Read-only session APIs from Task 6 remain valid before and after this hook. This task adds the backend behavior required for sessions to appear automatically.
+
+### Task 8 — Add git repository read/list endpoints
+
+Scope:
+
+- Extend \`GitRepositoriesApi\` with:
+  - \`GET /products/:productId/git-repositories\`
+  - \`GET /git-repositories/:id\`
+- Add service methods and repository methods if missing.
+- Use product/repository read policies.
+- Add handler tests for success, soft-delete exclusion, Not Found, and Unauthorized.
+
+Validation:
+
+- \`pnpm check\`
+- Focused git repository API tests.
+
+Why this is independent:
+
+- Repository selectors/settings can ship separately from task board reads.
+
+### Task 9 — Add model provider instance read/list endpoints
+
+Scope:
+
+- Extend \`ModelProviderInstancesApi\` with:
+  - \`GET /organizations/:organizationId/model-provider-instances\`
+  - \`GET /model-provider-instances/:id\`
+- Add service methods and repository methods if missing.
+- Use organization/provider-instance read policies.
+- Add tests proving token/API-key material is not returned.
+- Decide during implementation whether optional update/delete provider-instance routes are needed for the first frontend milestone. If yes, include them in this task with focused tests; if no, document deferral in code/spec follow-up notes.
+
+Validation:
+
+- \`pnpm check\`
+- Focused model provider instance API tests.
+
+Why this is independent:
+
+- Agent creation UI can use provider instance lists once this lands; it does not require agent management routes to be complete first.
+
+### Task 10 — Add agent management API group
+
+Scope:
+
+- Create \`packages/domain/src/Ai/AgentsApi.ts\` and app handler module.
+- Add to \`RootApi\` and \`apps/products/src/Api.ts\` in the same task.
+- Add routes:
+  - \`GET /organizations/:organizationId/agents\`
+  - \`GET /agents/:id\`
+  - \`POST /agents\`
+  - \`PUT /agents/:id\`
+  - \`DELETE /agents/:id\`
+- Reuse existing \`Agents\` service create/update/remove behavior where possible.
+- Add list/detail service methods if missing.
+- Ensure create validates referenced provider instance belongs to the same organization.
+- Ensure update does not allow changing \`organizationId\`, \`modelProviderInstanceId\`, or \`userId\` unless a future spec adds move semantics.
+- Add \`AgentsPolicy\` if not already present.
+- Add handler tests for list/detail/create/update/delete, duplicate names, cross-organization provider instance references, soft-delete exclusion, and authorization.
+
+Validation:
+
+- \`pnpm check\`
+- Focused agent repository/service/API handler tests.
+
+Why this is independent:
+
+- The domain/repository/service mostly exists already; this task exposes it publicly with authorization and tests.
+
+### Task 11 — Final frontend-readiness integration pass
+
+Scope:
+
+- Verify \`RootApi\` Scalar docs include all new routes.
+- Add or update a small API inventory document in \`apps/products/src\` or \`.specs\` if useful for frontend consumers.
+- Run full validation for TypeScript packages.
+- Fix route naming inconsistencies discovered across API groups.
+- Confirm no generated docs expose secret-bearing schemas.
+
+Validation:
+
+- \`pnpm check\`
+- Full \`pnpm test\` or all focused suites touched by Tasks 1–10.
+
+Why this is independent:
+
+- This task is documentation/validation hardening after the route clusters are already shippable.
+
+## Open decisions for implementation
+
+1. Whether provider-instance update/delete routes are necessary for the first frontend milestone or can be deferred.
+2. Whether automatic task-session creation belongs in \`apps/products\` task service or an external worker. The public API contract assumes sessions eventually appear automatically, but v1 read APIs can ship before the hook.
+3. Whether \`GET /organizations/:organizationId/users\` should live in \`UsersApi\` with an organization path or a dedicated future \`OrganizationUsersApi\`. Prefer the smallest consistent change during implementation.
+4. Whether agent create/update should use existing \`Agent.jsonCreate/jsonUpdate\` directly or define narrow route-specific schemas if the generated variants expose server-managed fields.
+`;
+await writeFile({path: specPath, content: spec});
+let readme = await readFile({path:'.specs/README.md'});
+const line = '- [Products Frontend API Readiness](./products-frontend-api-readiness.md) — Plan to add the missing read and management APIs needed to start a Linear-like frontend, including current-user/organization reads, status-filtered task lists, agent management, assignable users, provider/repository reads, read-only task sessions, and automatic agent-session creation semantics.\n';
+if (readme === null) {
+  readme = '# Specifications\n\n' + line;
+} else if (!readme.includes('./products-frontend-api-readiness.md')) {
+  const parts = readme.split('\n');
+  const idx = parts.findIndex(l => l.trim().startsWith('- ['));
+  if (idx === -1) {
+    readme = readme.trimEnd() + '\n\n' + line;
+  } else {
+    parts.splice(idx, 0, line.trimEnd());
+    readme = parts.join('\n');
+  }
+}
+await writeFile({path:'.specs/README.md', content:readme});
+console.log(`wrote ${specPath} and updated .specs/README.md`);

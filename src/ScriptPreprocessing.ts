@@ -123,6 +123,31 @@ const findTemplateEnd = (
   return end
 }
 
+const findStandaloneTemplateEnd = (
+  text: string,
+  start: number,
+  isTerminator: (char: string | undefined) => boolean,
+): number => {
+  for (let index = start + 1; index < text.length; index++) {
+    if (text[index] !== "`" || isEscaped(text, index)) {
+      continue
+    }
+
+    const next = skipWhitespace(text, index + 1)
+    if (!isTerminator(text[next])) {
+      continue
+    }
+
+    const lineStart = text.lastIndexOf("\n", index - 1) + 1
+    const prefix = text.slice(lineStart, index)
+    if (/^[ \t]*$/.test(prefix)) {
+      return index
+    }
+  }
+
+  return -1
+}
+
 const findTemplateEndFirst = (
   text: string,
   start: number,
@@ -492,6 +517,17 @@ const findLiteralInterpolationEnd = (text: string, start: number): number => {
   const expressionEnd = skipWhitespace(text, literalEnd + 1)
   return text[expressionEnd] === "}" ? expressionEnd : -1
 }
+
+const isAssignedTemplateTerminator = (char: string | undefined): boolean =>
+  char === undefined ||
+  char === "\n" ||
+  char === "\r" ||
+  char === ";" ||
+  char === "," ||
+  char === ")" ||
+  char === "}" ||
+  char === "]"
+
 const escapeTemplateLiteralContent = (text: string): string => {
   const patchNormalized = normalizePatchEscapedQuotes(text)
   const isPatchContent = patchNormalized.includes("*** Begin Patch")
@@ -1022,19 +1058,15 @@ const rewriteAssignedTemplate = (
           continue
         }
 
-        const templateEnd = findTemplateEnd(
+        const standaloneTemplateEnd = findStandaloneTemplateEnd(
           text,
           templateStart,
-          (char) =>
-            char === undefined ||
-            char === "\n" ||
-            char === "\r" ||
-            char === ";" ||
-            char === "," ||
-            char === ")" ||
-            char === "}" ||
-            char === "]",
+          isAssignedTemplateTerminator,
         )
+        const templateEnd =
+          standaloneTemplateEnd === -1
+            ? findTemplateEnd(text, templateStart, isAssignedTemplateTerminator)
+            : standaloneTemplateEnd
         if (templateEnd === -1) {
           cursor = templateStart + 1
           continue

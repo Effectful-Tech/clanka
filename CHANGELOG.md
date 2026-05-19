@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.64
+
+### Patch Changes
+
+- [`47549d0`](https://github.com/Effectful-Tech/clanka/commit/47549d0a654e165482ae6f5e5181e63bbae51be4) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing for multiline assigned templates with standalone closing backticks.
+
 ## 0.2.63
 
 ### Patch Changes

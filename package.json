@@ -1,7 +1,7 @@
 {
   "name": "clanka",
   "type": "module",
-  "version": "0.2.63",
+  "version": "0.2.64",
   "publishConfig": {
     "access": "public"
   },

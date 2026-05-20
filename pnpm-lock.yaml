@@ -40,23 +40,23 @@ importers:
         specifier: ^2.31.0
         version: 2.31.0(@types/node@25.7.0)
       '@effect/ai-openai':
-        specifier: 4.0.0-beta.66
-        version: 4.0.0-beta.66(effect@4.0.0-beta.66)
+        specifier: 4.0.0-beta.68
+        version: 4.0.0-beta.68(effect@4.0.0-beta.68)
       '@effect/ai-openai-compat':
-        specifier: 4.0.0-beta.66
-        version: 4.0.0-beta.66(effect@4.0.0-beta.66)
+        specifier: 4.0.0-beta.68
+        version: 4.0.0-beta.68(effect@4.0.0-beta.68)
       '@effect/language-service':
         specifier: ^0.85.1
         version: 0.85.1
       '@effect/platform-node':
-        specifier: 4.0.0-beta.66
-        version: 4.0.0-beta.66(effect@4.0.0-beta.66)(ioredis@5.10.1)
+        specifier: 4.0.0-beta.68
+        version: 4.0.0-beta.68(effect@4.0.0-beta.68)(ioredis@5.10.1)
       '@effect/sql-sqlite-node':
-        specifier: 4.0.0-beta.66
-        version: 4.0.0-beta.66(effect@4.0.0-beta.66)
+        specifier: 4.0.0-beta.68
+        version: 4.0.0-beta.68(effect@4.0.0-beta.68)
       '@effect/vitest':
-        specifier: 4.0.0-beta.66
-        version: 4.0.0-beta.66(effect@4.0.0-beta.66)(vitest@4.1.6(@types/node@25.7.0)(vite@8.0.10(@types/node@25.7.0)(yaml@2.9.0)))
+        specifier: 4.0.0-beta.68
+        version: 4.0.0-beta.68(effect@4.0.0-beta.68)(vitest@4.1.6(@types/node@25.7.0)(vite@8.0.10(@types/node@25.7.0)(yaml@2.9.0)))
       '@types/node':
         specifier: ^25.7.0
         version: 25.7.0
@@ -67,8 +67,8 @@ importers:
         specifier: 7.0.0-dev.20260512.1
         version: 7.0.0-dev.20260512.1
       effect:
-        specifier: 4.0.0-beta.66
-        version: 4.0.0-beta.66
+        specifier: 4.0.0-beta.68
+        version: 4.0.0-beta.68
       husky:
         specifier: ^9.1.7
         version: 9.1.7
@@ -177,42 +177,42 @@ packages:
   '@changesets/write@0.4.0':
     resolution: {integrity: sha512-CdTLvIOPiCNuH71pyDu3rA+Q0n65cmAbXnwWH84rKGiFumFzkmHNT8KHTMEchcxN+Kl8I54xGUhJ7l3E7X396Q==}
 
-  '@effect/ai-openai-compat@4.0.0-beta.66':
-    resolution: {integrity: sha512-1F7wFM3KjEgB6YdfSZJO/cVPgNLObkxvBHxA7Y+3pNQJ28YuC/5s1VlGGVuYAY1dClQBP04kGfDRB8lwjoNO8Q==}
+  '@effect/ai-openai-compat@4.0.0-beta.68':
+    resolution: {integrity: sha512-6cnHZKeMaWPDIkrz0x+sEgs2aXMw/b8ehUYNR/tK4b79v+LvadfX14E8gDgA5D8cZHqmZWXqcPMD+FVmajTsjg==}
     peerDependencies:
-      effect: ^4.0.0-beta.66
+      effect: ^4.0.0-beta.68
 
-  '@effect/ai-openai@4.0.0-beta.66':
-    resolution: {integrity: sha512-jhLwvQhyRELKXkSpKFrwGztzCp8ZbQZsdXxVyU5AyxMV2WfkclQRmmHG0RsI//oyYq4Pn6gEw+9rN8YaK/G42Q==}
+  '@effect/ai-openai@4.0.0-beta.68':
+    resolution: {integrity: sha512-cAw/YJTesyRLxPbeNV+uJ9+Wz5waGP5wgMj27Tu4XEqwl/oqYM2BjG+3lXffl0xMwpc35ase5NKPyZADKiWtlw==}
     peerDependencies:
-      effect: ^4.0.0-beta.66
+      effect: ^4.0.0-beta.68
 
   '@effect/language-service@0.85.1':
     resolution: {integrity: sha512-EXnJjIy6zQ3nUO/MZ+ynWUb8B895KZPotd1++oTs9JjDkplwM7cb6zo8Zq2zU6piwq+KflO7amXbEfj1UMpHkw==}
     hasBin: true
 
-  '@effect/platform-node-shared@4.0.0-beta.66':
-    resolution: {integrity: sha512-+ymrhBnESv/hmn5SKTe2//IY9Ox/hGPeoogEWhW47ZGyhFI5eMYFxdEUBa+3IAV05rrBzrxON9lynu68n0DM7w==}
+  '@effect/platform-node-shared@4.0.0-beta.68':
+    resolution: {integrity: sha512-a6q/Rid2CQQBSoTIhBnT2oCozeaEvx5DXreSdT4jbvxPSC0j2l0EqcYdHgvEGDqvhocIAezgmSQbcHNcnyDg8w==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
-      effect: ^4.0.0-beta.66
+      effect: ^4.0.0-beta.68
 
-  '@effect/platform-node@4.0.0-beta.66':
-    resolution: {integrity: sha512-s/0RgaQFuszzdorRnX1PwEQNnSOi+JgMJo3zEe9O2NR3sosMhTr0Uk+1AF6bUOI9uJ2CPT3KpTIIU7q5/TpOkg==}
+  '@effect/platform-node@4.0.0-beta.68':
+    resolution: {integrity: sha512-q2WakGBfZ5wIg9WdL4flbIwxC5TNFq1/qroT4HRT9yOl19dLg0khd2LE9ewOybOPrTQHV3PUyV3Sx6Y3eMYTWQ==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
-      effect: ^4.0.0-beta.66
+      effect: ^4.0.0-beta.68
       ioredis: ^5.7.0
 
-  '@effect/sql-sqlite-node@4.0.0-beta.66':
-    resolution: {integrity: sha512-ooH7V60ktLAwun4k0YNgO7QfPBoBiSn88Bd0PHc+9Doc+WMG4O/EZ4DXFUPKqB/HMTPNhi8I7T0onAP61kaz9Q==}
+  '@effect/sql-sqlite-node@4.0.0-beta.68':
+    resolution: {integrity: sha512-mVV5uYtx7Cx4UU7o9U9jJ2SwlDKo1xMU6/Fx45e8vGUDXDoIWHnv4Y3k+7gfof16riFjurHAjWbPYf2UMzbA0g==}
     peerDependencies:
-      effect: ^4.0.0-beta.66
+      effect: ^4.0.0-beta.68
 
-  '@effect/vitest@4.0.0-beta.66':
-    resolution: {integrity: sha512-UHPNtU0xXkKtNgyRQEh2c8jh4nIIm8Mzp3xc4j2ZdFU4nq5ZSySnpovjPMdoWbVClg1ki8UbpNGEZUfxEJo+6Q==}
+  '@effect/vitest@4.0.0-beta.68':
+    resolution: {integrity: sha512-7B3OZ7e6dnWTbvuQvF/YpIf5YPN6F4KCF5ITevy3Ge5UulaEpjNGoON9sW1eYn0KtOyyji2XQWDAxGT5vAVOXw==}
     peerDependencies:
-      effect: ^4.0.0-beta.66
+      effect: ^4.0.0-beta.68
       vitest: ^3.0.0 || ^4.0.0
 
   '@emnapi/core@1.10.0':
@@ -930,8 +930,8 @@ packages:
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
 
-  effect@4.0.0-beta.66:
-    resolution: {integrity: sha512-4arEr62cziFa8BBVDUwJCJJmaVepXf/kRg7KtC0h8+bufngscrHbwWFhr9c+HonwOF+31U3iD3xUJmw9KzX7Dw==}
+  effect@4.0.0-beta.68:
+    resolution: {integrity: sha512-JVmKXJvpyKBzr4xEr9nRlA6wQoInsI2WCfu2F69On49hvyDAmAOMb5ACa51HJksvRdqbSg7Zf0d++NQebY9cFQ==}
 
   emoji-regex@10.6.0:
     resolution: {integrity: sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A==}
@@ -1013,8 +1013,8 @@ packages:
   extendable-error@0.1.7:
     resolution: {integrity: sha512-UOiS2in6/Q0FK0R0q6UY9vYpQ21mr/Qn1KOnte7vsACuNJf514WvCCUHSRCPcgjPT2bAhNIJdlE6bVap1GKmeg==}
 
-  fast-check@4.7.0:
-    resolution: {integrity: sha512-NsZRtqvSSoCP0HbNjUD+r1JH8zqZalyp6gLY9e7OYs7NK9b6AHOs2baBFeBG7bVNsuoukh89x2Yg3rPsul8ziQ==}
+  fast-check@4.8.0:
+    resolution: {integrity: sha512-GOJ158CUMnN6cSahsv4+ExARvIDuzzinFjkp0E9WtiBa5zcVeLozVkWaE4IzFcc+Y48Wp1EDlUZsXRyAztQcSg==}
     engines: {node: '>=12.17.0'}
 
   fast-deep-equal@3.1.3:
@@ -1160,9 +1160,9 @@ packages:
   ini@1.3.8:
     resolution: {integrity: sha512-JV/yugV2uzW5iMRSiZAyDtQd+nxtUnjeLt0acNdw98kKLrvuRVyB80tsREOE7yvGVgalhZ6RNXCmEHkUKBKxew==}
 
-  ini@6.0.0:
-    resolution: {integrity: sha512-IBTdIkzZNOpqm7q3dRqJvMaldXjDHWkEDfrwGEQTs5eaQMWV+djAhR+wahyNNMAa+qpbDUhBMVt4ZKNwpPm7xQ==}
-    engines: {node: ^20.17.0 || >=22.9.0}
+  ini@7.0.0:
+    resolution: {integrity: sha512-ifK0CgjALofS5bkrcTy4RaQ9Vx2Knf/eLeIO+NaswQEpH1UblrtTSCIvN71qQDMq0PeQ/SSPojvEJp9vvvfr+w==}
+    engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
 
   ioredis@5.10.1:
     resolution: {integrity: sha512-HuEDBTI70aYdx1v6U97SbNx9F1+svQKBDo30o0b9fw055LMepzpOOd0Ccg9Q6tbqmBSJaMuY0fB7yw9/vjBYCA==}
@@ -1398,8 +1398,8 @@ packages:
     resolution: {integrity: sha512-P0efT1C9jIdVRefqjzOQ9Xml57zpOXnIuS+csaB4MdZbTdmGDLo8XhzBG1N7aO11gKDDkJvBLULeFTo46wwreA==}
     hasBin: true
 
-  msgpackr@1.11.12:
-    resolution: {integrity: sha512-RBdJ1Un7yGlXWajrkxcSa93nvQ0w4zBf60c0yYv7YtBelP8H2FA7XsfBbMHtXKXUMUxH7zV3Zuozh+kUQWhHvg==}
+  msgpackr@2.0.1:
+    resolution: {integrity: sha512-9J+tqTEsbHqY8YohazYgty7LgerFIWxvMLpUjqETSmjHojtJm2WnX2kK/2a1fLI7CO7ERP1YSEUXMucz4j+yBA==}
 
   multipasta@0.2.7:
     resolution: {integrity: sha512-KPA58d68KgGil15oDqXjkUBEBYc00XvbPj5/X+dyzeo/lWm9Nc25pQRlf1D+gv4OpK7NM0J1odrbu9JNNGvynA==}
@@ -1865,8 +1865,8 @@ packages:
   util-deprecate@1.0.2:
     resolution: {integrity: sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==}
 
-  uuid@13.0.1:
-    resolution: {integrity: sha512-9ezox2roIft6ExBVTVqibSd5dc5/47Sw/uY6b4SjQUT2TzQ0tltNquWA46y4xPQmdZYqvnio22SgWd41M86+jw==}
+  uuid@14.0.0:
+    resolution: {integrity: sha512-Qo+uWgilfSmAhXCMav1uYFynlQO7fMFiMVZsQqZRMIXp0O7rR7qjkj+cPvBHLgBqi960QCoo/PH2/6ZtVqKvrg==}
     hasBin: true
 
   vary@1.1.2:
@@ -1995,11 +1995,6 @@ packages:
         optional: true
       utf-8-validate:
         optional: true
-
-  yaml@2.8.4:
-    resolution: {integrity: sha512-ml/JPOj9fOQK8RNnWojA67GbZ0ApXAUlN2UQclwv2eVgTgn7O9gg9o7paZWKMp4g0H3nTLtS9LVzhkpOFIKzog==}
-    engines: {node: '>= 14.6'}
-    hasBin: true
 
   yaml@2.9.0:
     resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
@@ -2176,29 +2171,29 @@ snapshots:
       human-id: 4.1.3
       prettier: 2.8.8
 
-  '@effect/ai-openai-compat@4.0.0-beta.66(effect@4.0.0-beta.66)':
+  '@effect/ai-openai-compat@4.0.0-beta.68(effect@4.0.0-beta.68)':
     dependencies:
-      effect: 4.0.0-beta.66
+      effect: 4.0.0-beta.68
 
-  '@effect/ai-openai@4.0.0-beta.66(effect@4.0.0-beta.66)':
+  '@effect/ai-openai@4.0.0-beta.68(effect@4.0.0-beta.68)':
     dependencies:
-      effect: 4.0.0-beta.66
+      effect: 4.0.0-beta.68
 
   '@effect/language-service@0.85.1': {}
 
-  '@effect/platform-node-shared@4.0.0-beta.66(effect@4.0.0-beta.66)':
+  '@effect/platform-node-shared@4.0.0-beta.68(effect@4.0.0-beta.68)':
     dependencies:
       '@types/ws': 8.18.1
-      effect: 4.0.0-beta.66
+      effect: 4.0.0-beta.68
       ws: 8.20.0
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@effect/platform-node@4.0.0-beta.66(effect@4.0.0-beta.66)(ioredis@5.10.1)':
+  '@effect/platform-node@4.0.0-beta.68(effect@4.0.0-beta.68)(ioredis@5.10.1)':
     dependencies:
-      '@effect/platform-node-shared': 4.0.0-beta.66(effect@4.0.0-beta.66)
-      effect: 4.0.0-beta.66
+      '@effect/platform-node-shared': 4.0.0-beta.68(effect@4.0.0-beta.68)
+      effect: 4.0.0-beta.68
       ioredis: 5.10.1
       mime: 4.1.0
       undici: 8.2.0
@@ -2206,14 +2201,14 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@effect/sql-sqlite-node@4.0.0-beta.66(effect@4.0.0-beta.66)':
+  '@effect/sql-sqlite-node@4.0.0-beta.68(effect@4.0.0-beta.68)':
     dependencies:
       better-sqlite3: 12.9.0
-      effect: 4.0.0-beta.66
+      effect: 4.0.0-beta.68
 
-  '@effect/vitest@4.0.0-beta.66(effect@4.0.0-beta.66)(vitest@4.1.6(@types/node@25.7.0)(vite@8.0.10(@types/node@25.7.0)(yaml@2.9.0)))':
+  '@effect/vitest@4.0.0-beta.68(effect@4.0.0-beta.68)(vitest@4.1.6(@types/node@25.7.0)(vite@8.0.10(@types/node@25.7.0)(yaml@2.9.0)))':
     dependencies:
-      effect: 4.0.0-beta.66
+      effect: 4.0.0-beta.68
       vitest: 4.1.6(@types/node@25.7.0)(vite@8.0.10(@types/node@25.7.0)(yaml@2.9.0))
 
   '@emnapi/core@1.10.0':
@@ -2780,18 +2775,18 @@ snapshots:
 
   ee-first@1.1.1: {}
 
-  effect@4.0.0-beta.66:
+  effect@4.0.0-beta.68:
     dependencies:
       '@standard-schema/spec': 1.1.0
-      fast-check: 4.7.0
+      fast-check: 4.8.0
       find-my-way-ts: 0.1.6
-      ini: 6.0.0
+      ini: 7.0.0
       kubernetes-types: 1.30.0
-      msgpackr: 1.11.12
+      msgpackr: 2.0.1
       multipasta: 0.2.7
       toml: 4.1.1
-      uuid: 13.0.1
-      yaml: 2.8.4
+      uuid: 14.0.0
+      yaml: 2.9.0
 
   emoji-regex@10.6.0: {}
 
@@ -2880,7 +2875,7 @@ snapshots:
 
   extendable-error@0.1.7: {}
 
-  fast-check@4.7.0:
+  fast-check@4.8.0:
     dependencies:
       pure-rand: 8.4.0
 
@@ -3028,7 +3023,7 @@ snapshots:
 
   ini@1.3.8: {}
 
-  ini@6.0.0: {}
+  ini@7.0.0: {}
 
   ioredis@5.10.1:
     dependencies:
@@ -3232,7 +3227,7 @@ snapshots:
       '@msgpackr-extract/msgpackr-extract-win32-x64': 3.0.3
     optional: true
 
-  msgpackr@1.11.12:
+  msgpackr@2.0.1:
     optionalDependencies:
       msgpackr-extract: 3.0.3
 
@@ -3702,7 +3697,7 @@ snapshots:
 
   util-deprecate@1.0.2: {}
 
-  uuid@13.0.1: {}
+  uuid@14.0.0: {}
 
   vary@1.1.2: {}
 
@@ -3777,10 +3772,7 @@ snapshots:
 
   ws@8.20.0: {}
 
-  yaml@2.8.4: {}
-
-  yaml@2.9.0:
-    optional: true
+  yaml@2.9.0: {}
 
   zod-to-json-schema@3.25.2(zod@4.4.2):
     dependencies:

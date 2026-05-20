@@ -75,7 +75,7 @@ export const Float32ArrayField = Model.Field({
  * @category Models
  */
 export class Chunk extends Model.Class<Chunk>("Chunk")({
-  id: Model.Generated(ChunkId),
+  id: ChunkId.pipe(Model.FieldExcept(["insert", "jsonCreate"])),
   path: Schema.String,
   content: Schema.String,
   hash: Schema.String,

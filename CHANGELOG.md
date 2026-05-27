@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.67
+
+### Patch Changes
+
+- [`f3996b3`](https://github.com/Effectful-Tech/clanka/commit/f3996b31c12222a5f0686123bee8b2e78923b7e2) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix script preprocessing for nested template literal interpolations inside patch content.
+
 ## 0.2.66
 
 ### Patch Changes

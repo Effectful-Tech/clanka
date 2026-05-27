@@ -9,7 +9,7 @@ Run `pnpm check` and `pnpm test` after changing any code.
 
 # This project uses "effect"
 
-Before writing any code, YOU MUS5 read `.repos/effect/LLMS.md` fully.
+Before writing any code, YOU MUST read `.repos/effect/LLMS.md` fully.
 
 # Changesets
 

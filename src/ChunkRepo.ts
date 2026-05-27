@@ -191,16 +191,20 @@ export const layer = Layer.effect(
       insert: (insert) => {
         needsQuantization = true
         return SqlResolver.request(insert, insertResolver).pipe(
-          Effect.catchTags({
-            SqlError: (reason) => Effect.fail(new ChunkRepoError({ reason })),
-            SchemaError: Effect.die,
-          }),
+          Effect.catchTags(
+            {
+              SchemaError: Effect.die,
+              ResultLengthMismatch: Effect.die,
+            },
+            (reason) => Effect.fail(new ChunkRepoError({ reason })),
+          ),
         )
       },
       findById: (id) =>
         SqlResolver.request(id, findByIdResolver).pipe(
           Effect.catchTags({
             SchemaError: Effect.die,
+            SqlError: (reason) => Effect.fail(new ChunkRepoError({ reason })),
           }),
         ),
       exists: (hash) =>

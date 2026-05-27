@@ -12,6 +12,7 @@ import chalk from "chalk"
 import type * as Prompt from "effect/unstable/ai/Prompt"
 import * as Cause from "effect/Cause"
 import { identity } from "effect/Function"
+import { Predicate } from "effect"
 
 /**
  * @since 1.0.0
@@ -99,10 +100,13 @@ ${output.summary}\n\n`
           }
         }
       }),
-      Stream.catchTag("AgentFinished", (finished) =>
-        Stream.succeed(
-          `\n${chalk.bold.green(`${doneIcon} Task complete:`)}\n\n${(finished as AgentFinished).summary}`,
-        ),
+      Stream.catchIf(
+        (e): e is AgentFinished => Predicate.isTagged(e, "AgentFinished"),
+        (finished) =>
+          Stream.succeed(
+            `\n${chalk.bold.green(`${doneIcon} Task complete:`)}\n\n${(finished as AgentFinished).summary}`,
+          ),
+        (e) => Stream.die(e),
       ),
     )
 }

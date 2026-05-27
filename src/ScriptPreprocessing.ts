@@ -499,6 +499,24 @@ const findTemplateLiteralEnd = (text: string, start: number): number => {
   return -1
 }
 
+const templateLiteralContainsInterpolation = (
+  text: string,
+  start: number,
+  end: number,
+): boolean => {
+  for (let index = start + 1; index < end; index++) {
+    if (
+      text[index] === "$" &&
+      text[index + 1] === "{" &&
+      !isEscaped(text, index)
+    ) {
+      return true
+    }
+  }
+
+  return false
+}
+
 const findLiteralInterpolationEnd = (text: string, start: number): number => {
   const expressionStart = skipWhitespace(text, start + 2)
   const delimiter = text[expressionStart]
@@ -511,6 +529,13 @@ const findLiteralInterpolationEnd = (text: string, start: number): number => {
       ? findTemplateLiteralEnd(text, expressionStart)
       : findStringLiteralEnd(text, expressionStart, delimiter)
   if (literalEnd === -1) {
+    return -1
+  }
+
+  if (
+    delimiter === "`" &&
+    templateLiteralContainsInterpolation(text, expressionStart, literalEnd)
+  ) {
     return -1
   }
 

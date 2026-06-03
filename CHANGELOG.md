@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.68
+
+### Patch Changes
+
+- [#162](https://github.com/Effectful-Tech/clanka/pull/162) [`b138eac`](https://github.com/Effectful-Tech/clanka/commit/b138eac7ed59f4e963cce610e4337bf6ea596810) Thanks [@IMax153](https://github.com/IMax153)! - Upgrade to latest Effect 4.0 beta version
+
 ## 0.2.67
 
 ### Patch Changes

@@ -48,7 +48,7 @@ export class GithubCopilotAuthError extends Schema.TaggedErrorClass<GithubCopilo
   {
     reason: Schema.Literal("DeviceFlowFailed"),
     message: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 

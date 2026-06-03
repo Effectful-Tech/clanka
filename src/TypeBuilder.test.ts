@@ -129,14 +129,14 @@ describe("TypeBuilder", () => {
   it("renders structs with rest records", () => {
     expect(
       TypeBuilder.render(
-        Schema.StructWithRest(Schema.Struct({ name: Schema.String }), [
+        Schema.StructWithRest(Schema.Struct({ foo: Schema.Boolean }), [
           Schema.Record(Schema.String, Schema.Boolean),
         ]),
       ),
     ).toBe(
       lines(
         "{",
-        "    readonly name: string;",
+        "    readonly foo: boolean;",
         "    [x: string]: boolean;",
         "}",
       ),

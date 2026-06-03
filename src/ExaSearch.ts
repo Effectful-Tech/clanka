@@ -42,7 +42,7 @@ class ExaSearchResult extends Schema.Class<ExaSearchResult>("ExaSearchResult")({
  * @category Errors
  */
 export class ExaError extends Schema.TaggedErrorClass<ExaError>()("ExaError", {
-  cause: Schema.Defect,
+  cause: Schema.Defect(),
 }) {}
 
 /**

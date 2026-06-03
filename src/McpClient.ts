@@ -33,7 +33,7 @@ export class McpClient extends Context.Service<
 export class McpClientError extends Schema.TaggedErrorClass<McpClientError>()(
   "McpClientError",
   {
-    cause: Schema.Defect,
+    cause: Schema.Defect(),
   },
 ) {}
 

@@ -55,7 +55,7 @@ export class CodexAuthError extends Schema.TaggedErrorClass<CodexAuthError>()(
       "RefreshFailed",
     ]),
     message: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 

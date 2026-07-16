@@ -139,22 +139,39 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     const dimensions = yield* EmbeddingModel.Dimensions
+
+    yield* Effect.gen(function* () {
+      yield* sql`CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(
+        vector float[${sql.literal(String(dimensions))}]
+      )`
+      yield* sql`CREATE TRIGGER IF NOT EXISTS chunks_vector_insert
+        AFTER INSERT ON chunks
+        BEGIN
+          INSERT INTO chunk_vectors(rowid, vector) VALUES (new.id, new.vector);
+        END`
+      yield* sql`CREATE TRIGGER IF NOT EXISTS chunks_vector_update
+        AFTER UPDATE OF vector ON chunks
+        BEGIN
+          DELETE FROM chunk_vectors WHERE rowid = old.id;
+          INSERT INTO chunk_vectors(rowid, vector) VALUES (new.id, new.vector);
+        END`
+      yield* sql`CREATE TRIGGER IF NOT EXISTS chunks_vector_delete
+        AFTER DELETE ON chunks
+        BEGIN
+          DELETE FROM chunk_vectors WHERE rowid = old.id;
+        END`
+      yield* sql`DELETE FROM chunk_vectors
+        WHERE rowid NOT IN (SELECT id FROM chunks)`
+      yield* sql`INSERT INTO chunk_vectors(rowid, vector)
+        SELECT id, vector FROM chunks
+        WHERE id NOT IN (SELECT rowid FROM chunk_vectors)`
+    }).pipe(sql.withTransaction)
+
     const loaders = yield* SqlModel.makeResolvers(Chunk, {
       tableName: "chunks",
       idColumn: "id",
       spanPrefix: "ChunkRepo",
     })
-
-    let needsQuantization = true
-
-    const maybeQuantize = Effect.gen(function* () {
-      if (!needsQuantization) return
-      needsQuantization = false
-      yield* sql`select vector_init('chunks', 'vector', 'type=FLOAT32,dimension=${sql.literal(String(dimensions))}')`
-      yield* sql`select vector_quantize('chunks', 'vector')`
-    }).pipe(Effect.mapError((reason) => new ChunkRepoError({ reason })))
-
-    yield* Effect.forkScoped(maybeQuantize)
 
     const search = SqlSchema.findAll({
       Request: Schema.Struct({
@@ -165,9 +182,11 @@ export const layer = Layer.effect(
       execute: ({ vector, limit }) =>
         sql`
           select chunks.id, chunks.path, chunks.content, chunks.hash, chunks.syncId
-          from chunks
-          JOIN vector_quantize_scan('chunks', 'vector', ${vector}, CAST(${limit} AS INTEGER)) AS v
-          ON chunks.id = v.rowid
+          from chunk_vectors
+          JOIN chunks ON chunks.id = chunk_vectors.rowid
+          WHERE chunk_vectors.vector MATCH ${vector}
+          AND k = CAST(${limit} AS INTEGER)
+          ORDER BY chunk_vectors.distance
         `,
     })
 
@@ -188,9 +207,8 @@ export const layer = Layer.effect(
     const findByIdResolver = loaders.findById.pipe(RequestResolver.setDelay(5))
 
     return ChunkRepo.of({
-      insert: (insert) => {
-        needsQuantization = true
-        return SqlResolver.request(insert, insertResolver).pipe(
+      insert: (insert) =>
+        SqlResolver.request(insert, insertResolver).pipe(
           Effect.catchTags(
             {
               SchemaError: Effect.die,
@@ -198,8 +216,7 @@ export const layer = Layer.effect(
             },
             (reason) => Effect.fail(new ChunkRepoError({ reason })),
           ),
-        )
-      },
+        ),
       findById: (id) =>
         SqlResolver.request(id, findByIdResolver).pipe(
           Effect.catchTags({
@@ -217,7 +234,6 @@ export const layer = Layer.effect(
           }),
         ),
       search: Effect.fn("ChunkRepo.search")(function* (options) {
-        yield* maybeQuantize
         return yield* search(options as any).pipe(
           Effect.catchTags({
             SqlError: (reason) => Effect.fail(new ChunkRepoError({ reason })),
@@ -225,7 +241,7 @@ export const layer = Layer.effect(
           }),
         )
       }),
-      quantize: maybeQuantize,
+      quantize: Effect.void,
       setSyncId: (chunkId, syncId) =>
         sql`update chunks set syncId = ${syncId} where id = ${chunkId}`.pipe(
           Effect.mapError((reason) => new ChunkRepoError({ reason })),

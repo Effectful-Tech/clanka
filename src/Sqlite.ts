@@ -8,7 +8,7 @@ import * as Layer from "effect/Layer"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as FileSystem from "effect/FileSystem"
 import * as Path from "effect/Path"
-import { getExtensionPath } from "./internal/sqlite-vector.ts"
+import { getLoadablePath } from "sqlite-vec"
 
 /**
  * @since 1.0.0
@@ -37,7 +37,7 @@ export const SqliteLayer = (database: string) =>
       Layer.effectDiscard(
         Effect.gen(function* () {
           const client = yield* SqliteClient.SqliteClient
-          yield* client.loadExtension(getExtensionPath())
+          yield* client.loadExtension(getLoadablePath())
         }),
       ),
     ),

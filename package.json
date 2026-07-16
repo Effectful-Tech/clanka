@@ -37,19 +37,11 @@
     "@vscode/ripgrep": "^1.18.0",
     "chalk": "^5.6.2",
     "glob": "^13.0.6",
+    "sqlite-vec": "0.1.9",
     "tree-sitter": "^0.21.1",
     "tree-sitter-javascript": "^0.23.1",
     "tree-sitter-typescript": "^0.23.2",
     "turndown": "^7.2.4"
-  },
-  "optionalDependencies": {
-    "@sqliteai/sqlite-vector-darwin-arm64": "0.9.95",
-    "@sqliteai/sqlite-vector-darwin-x86_64": "0.9.95",
-    "@sqliteai/sqlite-vector-linux-arm64": "0.9.95",
-    "@sqliteai/sqlite-vector-linux-arm64-musl": "0.9.95",
-    "@sqliteai/sqlite-vector-linux-x86_64": "0.9.95",
-    "@sqliteai/sqlite-vector-linux-x86_64-musl": "0.9.95",
-    "@sqliteai/sqlite-vector-win32-x86_64": "0.9.95"
   },
   "peerDependencies": {
     "@effect/ai-openai": ">=4.0.0-beta.94 <4.0.1",

@@ -1,3 +1,4 @@
+/** @effect-diagnostics schemaNumber:off */
 import * as Schema from "effect/Schema"
 import { describe, expect, it } from "vitest"
 import * as TypeBuilder from "./TypeBuilder.ts"

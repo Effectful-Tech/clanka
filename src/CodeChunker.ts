@@ -414,7 +414,7 @@ const splitRange = (
   }
   const out = [] as Array<LineRange>
 
-  for (let startLine = range.startLine; startLine <= range.endLine; ) {
+  for (let startLine = range.startLine; startLine <= range.endLine;) {
     const maxEndLine = Math.min(
       range.endLine,
       startLine + settings.chunkSize - 1,
@@ -778,7 +778,7 @@ const chunkWithLineWindows = (
   const out = [] as Array<CodeChunk>
   const prefixSums = lineLengthPrefixSums(lines)
 
-  for (let index = 0; index < lines.length; ) {
+  for (let index = 0; index < lines.length;) {
     if (!isMeaningfulLine(lines[index]!)) {
       index++
       continue
@@ -935,7 +935,7 @@ export const layer: Layer.Layer<
       return yield* pipe(
         fs.readFileString(absolutePath),
         Effect.map((content) => chunkFileContent(path, content, options)),
-        Effect.catch(() => Effect.succeed([])),
+        Effect.orElseSucceed(() => []),
       )
     })
 

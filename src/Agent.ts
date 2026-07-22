@@ -546,10 +546,10 @@ ${content}
   })
 })
 
-const retryPolicy = Schedule.exponential(100, 1.5).pipe(
-  Schedule.either(Schedule.spaced(5000)),
-  Schedule.jittered,
-)
+const retryPolicy = Schedule.min([
+  Schedule.exponential(100, 1.5),
+  Schedule.spaced(5000),
+]).pipe(Schedule.jittered)
 
 const defaultSystem = (options: {
   readonly toolInstructions: string

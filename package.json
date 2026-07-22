@@ -14,7 +14,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "prepare": "husky && effect-language-service patch",
+    "prepare": "husky && effect-tsgo patch",
     "check": "oxlint -c .oxlintrc.json --fix && pnpm tsc -b tsconfig.json",
     "test": "vitest run",
     "build": "tsc -b tsconfig.json",
@@ -44,31 +44,30 @@
     "turndown": "^7.2.4"
   },
   "peerDependencies": {
-    "@effect/ai-openai": ">=4.0.0-beta.94 <4.0.1",
-    "@effect/ai-openai-compat": ">=4.0.0-beta.94 <4.0.1",
-    "@effect/platform-node": ">=4.0.0-beta.94 <4.0.1",
-    "@effect/sql-sqlite-node": ">=4.0.0-beta.94 <4.0.1",
-    "effect": ">=4.0.0-beta.94 <4.0.1"
+    "@effect/ai-openai": ">=4.0.0-beta.100 <4.0.1",
+    "@effect/ai-openai-compat": ">=4.0.0-beta.100 <4.0.1",
+    "@effect/platform-node": ">=4.0.0-beta.100 <4.0.1",
+    "@effect/sql-sqlite-node": ">=4.0.0-beta.100 <4.0.1",
+    "effect": ">=4.0.0-beta.100 <4.0.1"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.7.0",
-    "@changesets/cli": "^2.31.0",
-    "@effect/ai-openai": "4.0.0-beta.94",
-    "@effect/ai-openai-compat": "4.0.0-beta.94",
-    "@effect/language-service": "^0.85.1",
-    "@effect/platform-node": "4.0.0-beta.94",
-    "@effect/sql-sqlite-node": "4.0.0-beta.94",
-    "@effect/vitest": "4.0.0-beta.94",
-    "@types/node": "^25.7.0",
+    "@changesets/cli": "^2.31.1",
+    "@effect/ai-openai": "4.0.0-beta.100",
+    "@effect/ai-openai-compat": "4.0.0-beta.100",
+    "@effect/platform-node": "4.0.0-beta.100",
+    "@effect/sql-sqlite-node": "4.0.0-beta.100",
+    "@effect/tsgo": "0.24.2",
+    "@effect/vitest": "4.0.0-beta.100",
+    "@types/node": "^26.1.1",
     "@types/turndown": "^5.0.6",
-    "@typescript/native-preview": "7.0.0-dev.20260512.1",
-    "effect": "4.0.0-beta.94",
+    "effect": "4.0.0-beta.100",
     "husky": "^9.1.7",
-    "lint-staged": "^17.0.4",
-    "oxlint": "^1.64.0",
-    "prettier": "^3.8.3",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "lint-staged": "^17.1.1",
+    "oxlint": "^1.75.0",
+    "prettier": "^3.9.6",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   },
   "lint-staged": {
     "*.{ts,tsx}": [

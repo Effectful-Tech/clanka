@@ -27,6 +27,7 @@ export class ExaSearch extends Context.Service<
  */
 export const ExaSearchOptions = Schema.Struct({
   query: Schema.String,
+  // @effect-diagnostics-next-line schemaNumber:off
   numResults: Schema.optional(Schema.Number).annotate({
     documentation: "The number of search results to return. Defaults to 3.",
   }),

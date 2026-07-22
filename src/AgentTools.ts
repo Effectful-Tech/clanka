@@ -1,6 +1,7 @@
 /**
  * @since 1.0.0
  */
+/** @effect-diagnostics schemaNumber:off */
 import * as Glob from "glob"
 import { parsePatch, patchChunks } from "./ApplyPatch.ts"
 import * as ExaSearch from "./ExaSearch.ts"

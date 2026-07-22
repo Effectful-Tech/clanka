@@ -1,6 +1,7 @@
 /**
  * @since 1.0.0
  */
+/** @effect-diagnostics schemaNumber:off */
 import * as Effect from "effect/Effect"
 import * as Encoding from "effect/Encoding"
 import * as Function from "effect/Function"
@@ -303,9 +304,10 @@ export class CodexAuth extends Context.Service<
       HttpClient.filterStatusOk,
       HttpClient.retryTransient({
         times: 5,
-        schedule: Schedule.exponential(150).pipe(
-          Schedule.either(Schedule.spaced(5000)),
-        ),
+        schedule: Schedule.min([
+          Schedule.exponential(150),
+          Schedule.spaced(5000),
+        ]),
       }),
     )
     const semaphore = Semaphore.makeUnsafe(1)

@@ -44,5 +44,6 @@
       }
     ]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "$schema": "./node_modules/@effect/tsgo/schema.json"
 }

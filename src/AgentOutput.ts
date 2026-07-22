@@ -1,6 +1,7 @@
 /**
  * @since 1.0.0
  */
+/** @effect-diagnostics schemaNumber:off */
 import * as Prompt from "effect/unstable/ai/Prompt"
 import * as AiError from "effect/unstable/ai/AiError"
 import * as Schema from "effect/Schema"
@@ -177,11 +178,7 @@ export class SubagentPart extends Schema.TaggedClass<SubagentPart>()(
  * @category Output
  */
 export type Output =
-  | AgentStart
-  | ContentPart
-  | SubagentStart
-  | SubagentComplete
-  | SubagentPart
+  AgentStart | ContentPart | SubagentStart | SubagentComplete | SubagentPart
 
 /**
  * @since 1.0.0

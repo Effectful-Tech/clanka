@@ -1,6 +1,7 @@
 /**
  * @since 1.0.0
  */
+/** @effect-diagnostics schemaNumber:off */
 import * as Effect from "effect/Effect"
 import * as Function from "effect/Function"
 import * as Layer from "effect/Layer"
@@ -235,9 +236,10 @@ export class GithubCopilotAuth extends Context.Service<
       HttpClient.filterStatusOk,
       HttpClient.retryTransient({
         times: 5,
-        schedule: Schedule.exponential(150).pipe(
-          Schedule.either(Schedule.spaced(5000)),
-        ),
+        schedule: Schedule.min([
+          Schedule.exponential(150),
+          Schedule.spaced(5000),
+        ]),
       }),
     )
     const semaphore = Semaphore.makeUnsafe(1)

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.2.70
+
+### Patch Changes
+
+- [`fd31c08`](https://github.com/Effectful-Tech/clanka/commit/fd31c081e5764dbe8441facb7f9287071c4d063c) Thanks [@tim-smart](https://github.com/tim-smart)! - Replace sqlite vector extension
+
 ## 0.2.69
 
 ### Patch Changes

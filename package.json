@@ -33,9 +33,9 @@
   },
   "packageManager": "pnpm@10.28.0+sha512.05df71d1421f21399e053fde567cea34d446fa02c76571441bfc1c7956e98e363088982d940465fd34480d4d90a0668bc12362f8aa88000a64e83d0b0e47be48",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@vscode/ripgrep": "^1.18.0",
-    "chalk": "^5.6.2",
+    "chalk": "^6.0.0",
     "glob": "^13.0.6",
     "sqlite-vec": "0.1.9",
     "tree-sitter": "^0.21.1",
@@ -44,30 +44,30 @@
     "turndown": "^7.2.4"
   },
   "peerDependencies": {
-    "@effect/ai-openai": ">=4.0.0-beta.100 <4.0.1",
-    "@effect/ai-openai-compat": ">=4.0.0-beta.100 <4.0.1",
-    "@effect/platform-node": ">=4.0.0-beta.100 <4.0.1",
-    "@effect/sql-sqlite-node": ">=4.0.0-beta.100 <4.0.1",
-    "effect": ">=4.0.0-beta.100 <4.0.1"
+    "@effect/ai-openai": ">=4.0.0-rc.115 <4.0.1",
+    "@effect/ai-openai-compat": ">=4.0.0-rc.115 <4.0.1",
+    "@effect/platform-node": ">=4.0.0-rc.115 <4.0.1",
+    "@effect/sql-sqlite-node": ">=4.0.0-rc.115 <4.0.1",
+    "effect": ">=4.0.0-rc.115 <4.0.1"
   },
   "devDependencies": {
-    "@changesets/changelog-github": "^0.7.0",
-    "@changesets/cli": "^2.31.1",
-    "@effect/ai-openai": "4.0.0-beta.100",
-    "@effect/ai-openai-compat": "4.0.0-beta.100",
-    "@effect/platform-node": "4.0.0-beta.100",
-    "@effect/sql-sqlite-node": "4.0.0-beta.100",
-    "@effect/tsgo": "0.24.2",
-    "@effect/vitest": "4.0.0-beta.100",
+    "@changesets/changelog-github": "^1.0.1",
+    "@changesets/cli": "^3.0.3",
+    "@effect/ai-openai": "4.0.0-rc.115",
+    "@effect/ai-openai-compat": "4.0.0-rc.115",
+    "@effect/platform-node": "4.0.0-rc.115",
+    "@effect/sql-sqlite-node": "4.0.0-rc.115",
+    "@effect/tsgo": "0.45.0",
+    "@effect/vitest": "4.0.0-rc.115",
     "@types/node": "^26.1.1",
     "@types/turndown": "^5.0.6",
-    "effect": "4.0.0-beta.100",
+    "effect": "4.0.0-rc.115",
     "husky": "^9.1.7",
-    "lint-staged": "^17.1.1",
-    "oxlint": "^1.75.0",
-    "prettier": "^3.9.6",
+    "lint-staged": "^17.5.1",
+    "oxlint": "^1.83.0",
+    "prettier": "^3.9.7",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.1"
   },
   "lint-staged": {
     "*.{ts,tsx}": [

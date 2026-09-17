@@ -18,7 +18,7 @@ const Search = SemanticSearch.layer({
   ),
   Layer.provide(
     OpenAiClient.layerConfig({
-      apiKey: Config.redacted("OPENAI_API_KEY"),
+      apiKey: Config.Redacted("OPENAI_API_KEY"),
     }),
   ),
   Layer.provide(NodeHttpClient.layerUndici),

@@ -44,7 +44,7 @@ export class TokenData extends Schema.Class<TokenData>(
   }
 }
 
-export class GithubCopilotAuthError extends Schema.TaggedErrorClass<GithubCopilotAuthError>()(
+export class GithubCopilotAuthError extends Schema.TaggedError<GithubCopilotAuthError>()(
   "GithubCopilotAuthError",
   {
     reason: Schema.Literal("DeviceFlowFailed"),

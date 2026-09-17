@@ -196,7 +196,7 @@ export const Output = Schema.Union([
  * @since 1.0.0
  * @category Output
  */
-export class AgentFinished extends Schema.TaggedErrorClass<AgentFinished>()(
+export class AgentFinished extends Schema.TaggedError<AgentFinished>()(
   "AgentFinished",
   {
     summary: Schema.String,

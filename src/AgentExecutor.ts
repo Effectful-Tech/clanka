@@ -29,7 +29,7 @@ import * as Scope from "effect/Scope"
 import * as Fiber from "effect/Fiber"
 import * as Console from "effect/Console"
 import * as Exit from "effect/Exit"
-import { pipe, flow, identity } from "effect/Function"
+import { pipe, identity } from "effect/Function"
 import * as RpcClient from "effect/unstable/rpc/RpcClient"
 import * as Layer from "effect/Layer"
 import * as RpcServer from "effect/unstable/rpc/RpcServer"
@@ -131,18 +131,15 @@ export const makeLocal = Effect.fnUntraced(function* <
     const handlerScope = Scope.makeUnsafe("parallel")
     const trackFiber = Fiber.runIn(handlerScope)
 
-    const taskServices = Context.mutate(
-      Context.empty(),
-      flow(
-        Context.add(TaskCompleter, opts.onTaskComplete),
-        Context.add(CurrentDirectory, options.directory),
-        Context.add(SubagentExecutor, opts.onSubagent),
-        Context.add(Console.Console, console),
-        Context.add(References.CurrentLogAnnotations, {}),
-        Option.isSome(search)
-          ? Context.add(SemanticSearch, search.value)
-          : identity,
-      ),
+    const taskServices = Context.empty().pipe(
+      Context.add(TaskCompleter, opts.onTaskComplete),
+      Context.add(CurrentDirectory, options.directory),
+      Context.add(SubagentExecutor, opts.onSubagent),
+      Context.add(Console.Console, console),
+      Context.add(References.CurrentLogAnnotations, {}),
+      Option.isSome(search)
+        ? Context.add(SemanticSearch, search.value)
+        : identity,
     )
 
     yield* Effect.gen(function* () {
@@ -218,17 +215,14 @@ export const makeLocal = Effect.fnUntraced(function* <
         return Effect.die(new Error(`Unknown tool: ${opts.tool}`))
       }
 
-      const taskServices = Context.mutate(
-        handler.context,
-        flow(
-          Context.add(TaskCompleter, () => Effect.void),
-          Context.add(CurrentDirectory, options.directory),
-          Context.add(SubagentExecutor, () => Effect.succeed("")),
-          Context.add(References.CurrentLogAnnotations, {}),
-          Option.isSome(search)
-            ? Context.add(SemanticSearch, search.value)
-            : identity,
-        ),
+      const taskServices = handler.context.pipe(
+        Context.add(TaskCompleter, () => Effect.void),
+        Context.add(CurrentDirectory, options.directory),
+        Context.add(SubagentExecutor, () => Effect.succeed("")),
+        Context.add(References.CurrentLogAnnotations, {}),
+        Option.isSome(search)
+          ? Context.add(SemanticSearch, search.value)
+          : identity,
       )
 
       const encodeSuccess = Schema.encodeUnknownEffect(

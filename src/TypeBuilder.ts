@@ -440,7 +440,7 @@ const stripOptionalTupleUndefined = (ast: AST.AST): AST.AST => {
     ? definedType
     : new AST.Union(
         definedTypes,
-        ast.mode,
+        ast.options,
         ast.annotations,
         ast.checks,
         ast.encoding,

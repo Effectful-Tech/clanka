@@ -121,7 +121,7 @@ export class ChunkRepo extends Context.Service<
  * @since 1.0.0
  * @category Errors
  */
-export class ChunkRepoError extends Schema.TaggedErrorClass<ChunkRepoError>()(
+export class ChunkRepoError extends Schema.TaggedError<ChunkRepoError>()(
   "ChunkRepoError",
   {
     reason: Schema.Union([SqlError.SqlError]),

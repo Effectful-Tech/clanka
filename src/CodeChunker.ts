@@ -910,7 +910,7 @@ export const layer: Layer.Layer<
           entries
             .map((entry) => normalizePath(entry.trim()))
             .filter((entry) => entry.length > 0 && isMeaningfulFile(entry))
-            .sort((left, right) => left.localeCompare(right)),
+            .toSorted((left, right) => left.localeCompare(right)),
         ),
         Effect.orDie,
       )

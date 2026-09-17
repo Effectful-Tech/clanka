@@ -47,7 +47,7 @@ export class TokenData extends Schema.Class<TokenData>(
   }
 }
 
-export class CodexAuthError extends Schema.TaggedErrorClass<CodexAuthError>()(
+export class CodexAuthError extends Schema.TaggedError<CodexAuthError>()(
   "CodexAuthError",
   {
     reason: Schema.Literals([

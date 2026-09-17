@@ -41,12 +41,12 @@ const resolveChunkConfig = (options: {
 })
 
 export const makeEmbeddingResolver = (
-  resolver: EmbeddingModel.Service["resolver"],
+  resolver: EmbeddingModel.EmbeddingModel["resolver"],
   options: {
     readonly embeddingBatchSize?: number | undefined
     readonly embeddingRequestDelay?: Duration.Input | undefined
   },
-): EmbeddingModel.Service["resolver"] =>
+): EmbeddingModel.EmbeddingModel["resolver"] =>
   resolver.pipe(
     RequestResolver.setDelay(
       options.embeddingRequestDelay ?? Duration.millis(50),

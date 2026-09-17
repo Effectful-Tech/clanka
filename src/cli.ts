@@ -22,10 +22,10 @@ import * as Option from "effect/Option"
 import { OpenAiClient, OpenAiEmbeddingModel } from "@effect/ai-openai"
 import { DeviceCodeHandler } from "./index.ts"
 
-const provider = Flag.choice("provider", ["openai", "copilot"]).pipe(
+const provider = Flag.Literals("provider", ["openai", "copilot"]).pipe(
   Flag.withAlias("p"),
   Flag.withFallbackPrompt(
-    Prompt.select({
+    Prompt.Select({
       message: "Select a provider",
       choices: [
         {
@@ -42,12 +42,12 @@ const provider = Flag.choice("provider", ["openai", "copilot"]).pipe(
   ),
 )
 
-const model = Flag.string("model").pipe(
+const model = Flag.String("model").pipe(
   Flag.withAlias("m"),
   Flag.withFallbackPrompt(
-    Prompt.text({
+    Prompt.String({
       message: "Enter a model",
-      default: "gpt-5.4/medium",
+      default: "gpt-6-astra/medium",
       validate(value) {
         const parts = value.split("/")
         if (parts.length !== 2) {
@@ -59,7 +59,7 @@ const model = Flag.string("model").pipe(
   ),
 )
 
-const semantic = Flag.directory("search").pipe(
+const semantic = Flag.Directory("search").pipe(
   Flag.withDescription(
     "Directory for semantic search data (uses OPENAI_API_KEY env var)",
   ),
@@ -67,7 +67,7 @@ const semantic = Flag.directory("search").pipe(
   Flag.optional,
 )
 
-const prompt = Flag.string("prompt").pipe(
+const prompt = Flag.String("prompt").pipe(
   Flag.withDescription("Pass a prompt in non-interactive mode"),
   Flag.optional,
 )
@@ -76,9 +76,9 @@ const Kvs = Layer.unwrap(
   Effect.gen(function* () {
     const path = yield* Path.Path
 
-    const configHome = yield* Config.nonEmptyString("XDG_CONFIG_HOME").pipe(
+    const configHome = yield* Config.NonEmptyString("XDG_CONFIG_HOME").pipe(
       Config.orElse(() =>
-        Config.nonEmptyString("HOME").pipe(
+        Config.NonEmptyString("HOME").pipe(
           Config.map((home) => path.join(home, ".config")),
         ),
       ),
@@ -90,7 +90,7 @@ const Kvs = Layer.unwrap(
 const Search = (directory: string) =>
   Layer.unwrap(
     Effect.gen(function* () {
-      const apiKey = yield* Config.redacted("OPENAI_API_KEY").pipe(
+      const apiKey = yield* Config.Redacted("OPENAI_API_KEY").pipe(
         Config.option,
       )
 
@@ -142,9 +142,9 @@ Command.make("clanka", { provider, model, semantic, prompt }).pipe(
             }).pipe(
               Layer.merge(
                 Agent.layerSubagentModel(
-                  Codex.modelWebSocket("gpt-5.4-mini", {
+                  Codex.modelWebSocket(model, {
                     reasoning: {
-                      effort: "high",
+                      effort: reasoning as any,
                     },
                   }),
                 ),
@@ -160,7 +160,7 @@ Command.make("clanka", { provider, model, semantic, prompt }).pipe(
                 Agent.layerSubagentModel(
                   Copilot.model(model, {
                     reasoning: {
-                      effort: "medium",
+                      effort: reasoning,
                     },
                   }),
                 ),
@@ -181,7 +181,7 @@ Command.make("clanka", { provider, model, semantic, prompt }).pipe(
         }
 
         while (true) {
-          const prompt = yield* Prompt.text({
+          const prompt = yield* Prompt.String({
             message: ">",
           })
 

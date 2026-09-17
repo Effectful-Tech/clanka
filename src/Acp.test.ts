@@ -37,6 +37,7 @@ const executor = AgentExecutor.AgentExecutor.of({
 
 const makeServer = (
   streamText: Parameters<typeof LanguageModel.make>[0]["streamText"],
+  agentExecutor = executor,
 ) =>
   Effect.gen(function* () {
     const sent: Array<Message> = []
@@ -58,7 +59,7 @@ const makeServer = (
         }),
       makeAgent: () =>
         Agent.make.pipe(
-          Effect.provideService(AgentExecutor.AgentExecutor, executor),
+          Effect.provideService(AgentExecutor.AgentExecutor, agentExecutor),
         ),
       makeModel: (modelId) =>
         modelId === "test/model"
@@ -149,20 +150,81 @@ describe("Acp", () => {
     ),
   )
 
-  it.effect("reports script execution as tool calls", () =>
+  for (const script of [
+    "console.log(1)",
+    'console.log("' + "x".repeat(200) + '")',
+    'console.log("first")\nconsole.log("second")',
+  ]) {
+    it.effect(
+      `reports script input as a terminal command: ${JSON.stringify(script)}`,
+      () =>
+        withStore(
+          Effect.scoped(
+            Effect.gen(function* () {
+              let calls = 0
+              const server = yield* makeServer(() =>
+                calls++ === 0
+                  ? parts({
+                      type: "tool-call",
+                      id: "call-1",
+                      name: "execute",
+                      params: { script },
+                    })
+                  : assistantSays("done"),
+              )
+              const created = yield* server.request(1, "session/new", {
+                cwd: "/tmp",
+              })
+              const sessionId: string = created.result.sessionId
+              yield* server.request(2, "session/prompt", {
+                sessionId,
+                prompt: [{ type: "text", text: "run it" }],
+              })
+              const tools = server
+                .updates(sessionId)
+                .filter((u) => u.sessionUpdate.startsWith("tool_call"))
+              assert.strictEqual(tools.length, 2)
+              assert.strictEqual(tools[0].sessionUpdate, "tool_call")
+              assert.strictEqual(tools[0].kind, "execute")
+              assert.strictEqual(tools[0].status, "in_progress")
+              assert.deepStrictEqual(tools[0].content, [
+                { type: "content", content: { type: "text", text: script } },
+              ])
+              assert.match(tools[0].title, /^terminal: console\.log\(/)
+              assert.notMatch(tools[0].title, /[\r\n]/)
+              assert.deepStrictEqual(tools[0].rawInput, { command: script })
+              const preview = script.replace(/\s+/g, " ").trim()
+              assert.strictEqual(
+                tools[0].title,
+                "terminal: " + preview.slice(0, 120),
+              )
+              assert.isAtMost(tools[0].title.length, "terminal: ".length + 120)
+            }),
+          ),
+        ),
+    )
+  }
+
+  it.effect("reports script stdout as a string without JSON wrapping", () =>
     withStore(
       Effect.scoped(
         Effect.gen(function* () {
+          const output = 'first line\n{"value":"✓"}\n'
           let calls = 0
-          const server = yield* makeServer(() =>
-            calls++ === 0
-              ? parts({
-                  type: "tool-call",
-                  id: "call-1",
-                  name: "execute",
-                  params: { script: "console.log(1)" },
-                })
-              : assistantSays("done"),
+          const server = yield* makeServer(
+            () =>
+              calls++ === 0
+                ? parts({
+                    type: "tool-call",
+                    id: "call-1",
+                    name: "execute",
+                    params: { script: "console.log(1)" },
+                  })
+                : assistantSays("done"),
+            {
+              ...executor,
+              execute: () => Stream.make("first line\n", '{"value":"✓"}\n'),
+            },
           )
           const created = yield* server.request(1, "session/new", {
             cwd: "/tmp",
@@ -176,15 +238,76 @@ describe("Acp", () => {
             .updates(sessionId)
             .filter((u) => u.sessionUpdate.startsWith("tool_call"))
           assert.strictEqual(tools.length, 2)
-          assert.deepStrictEqual(tools[0].rawInput, {
-            script: "console.log(1)",
-          })
-          assert.strictEqual(tools[0].status, "in_progress")
+          assert.strictEqual(tools[1].sessionUpdate, "tool_call_update")
           assert.strictEqual(tools[1].toolCallId, tools[0].toolCallId)
           assert.strictEqual(tools[1].status, "completed")
-          assert.deepStrictEqual(tools[1].rawOutput, {
-            output: "script output",
+          assert.deepStrictEqual(tools[1].content, [
+            { type: "content", content: { type: "text", text: output } },
+          ])
+          assert.strictEqual(tools[1].rawOutput, output)
+        }),
+      ),
+    ),
+  )
+
+  it.effect("reports subagents with a delegate prompt preview", () =>
+    withStore(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const prompt =
+            "Inspect the repository\nSummarize the findings " + "x".repeat(200)
+          const summary = "First finding\nSecond finding\n"
+          let calls = 0
+          const server = yield* makeServer(
+            () =>
+              calls++ === 0
+                ? parts({
+                    type: "tool-call",
+                    id: "call-1",
+                    name: "execute",
+                    params: { script: "await delegate()" },
+                  })
+                : assistantSays(summary),
+            {
+              ...executor,
+              execute: ({ onSubagent }) =>
+                Stream.fromEffect(onSubagent(prompt)),
+            },
+          )
+          const created = yield* server.request(1, "session/new", {
+            cwd: "/tmp",
           })
+          const sessionId: string = created.result.sessionId
+          yield* server.request(2, "session/prompt", {
+            sessionId,
+            prompt: [{ type: "text", text: "delegate it" }],
+          })
+          const tools = server
+            .updates(sessionId)
+            .filter(
+              (u) =>
+                u.sessionUpdate.startsWith("tool_call") &&
+                u.toolCallId.startsWith("subagent-"),
+            )
+          assert.strictEqual(tools.length, 2)
+          assert.strictEqual(tools[0].sessionUpdate, "tool_call")
+          assert.strictEqual(tools[0].status, "in_progress")
+          assert.deepStrictEqual(tools[0].rawInput, { prompt })
+          assert.strictEqual(tools[0].kind, "think")
+          assert.strictEqual(tools[1].sessionUpdate, "tool_call_update")
+          assert.strictEqual(tools[1].toolCallId, tools[0].toolCallId)
+          assert.strictEqual(tools[1].status, "completed")
+          assert.match(tools[0].title, /^delegate: Inspect the repository/)
+          assert.notMatch(tools[0].title, /[\r\n]/)
+          assert.strictEqual(
+            tools[0].title,
+            "delegate: " + prompt.replace(/\s+/g, " ").slice(0, 120),
+          )
+          assert.strictEqual(tools[0].title.length, "delegate: ".length + 120)
+          assert.deepStrictEqual(tools[1].content, [
+            { type: "content", content: { type: "text", text: summary } },
+          ])
+          assert.strictEqual(tools[1].rawOutput, summary)
         }),
       ),
     ),

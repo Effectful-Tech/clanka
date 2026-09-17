@@ -56,7 +56,7 @@ export interface CompactionConfigService {
  */
 export const defaultConfig: CompactionConfigService = {
   enabled: true,
-  contextWindow: 128_000,
+  contextWindow: 236_000,
   reserveTokens: 16_000,
   keepRecentTokens: 20_000,
 }

@@ -49,7 +49,7 @@ once a cut point exists and before the summarizer call (not for no-ops), and
 | field              | default | meaning                                             |
 | ------------------ | ------- | --------------------------------------------------- |
 | `enabled`          | `true`  | kill switch for both compact paths, **not** the cap |
-| `contextWindow`    | 128 000 | assumed window in tokens                            |
+| `contextWindow`    | 236 000 | assumed window in tokens                            |
 | `reserveTokens`    | 16 000  | headroom below the window                           |
 | `keepRecentTokens` | 20 000  | tail kept verbatim after a compaction               |
 
@@ -85,7 +85,9 @@ switch is the kill switch: `clanka --no-compaction` / `clanka acp
   prompt's messages must land within 8 tokens of `estimateTokens`.
 - `shouldCompact({ prompt, contextTokens, config })` — `false` when disabled;
   otherwise `(contextTokens ?? estimateTokens(prompt)) > contextWindow -
-reserveTokens`. Strictly greater: 900 does not fire at a 900 threshold.
+reserveTokens`. The default effective threshold is 220,000 tokens (236,000
+  minus the 16,000 reserve). Strictly greater: 220,000 does not fire;
+  220,001 does. This applies to both reported usage and the prompt estimate.
 
 ### Overflow detection
 

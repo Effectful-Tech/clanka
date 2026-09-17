@@ -226,6 +226,43 @@ export const oversizedHeaders = [
   },
 ] as const
 
+/** Small container canvases hiding 8000x8000 frames, with no pixel payload. */
+export const oversizedFrameHeaders = [
+  {
+    mediaType: "image/webp",
+    width: 8000,
+    height: 8000,
+    data: new Uint8Array([
+      ...ascii("RIFF"),
+      ...u32le(36),
+      ...webpHeader(1, 1).subarray(8),
+      ...ascii("VP8L"),
+      ...u32le(5),
+      0x2f,
+      // VP8L packs width-1 and height-1 into 14 bits each.
+      ...u32le(7999 | (7999 << 14)),
+      0, // RIFF chunk padding, not pixel data.
+    ]),
+  },
+  {
+    mediaType: "image/gif",
+    width: 8000,
+    height: 8000,
+    data: new Uint8Array([
+      ...gifHeader(1, 1),
+      0x2c, // Image descriptor.
+      ...u16le(0),
+      ...u16le(0),
+      ...u16le(8000),
+      ...u16le(8000),
+      0, // No local colour table.
+      2,
+      0, // LZW minimum code size and empty data sub-block.
+      0x3b, // Trailer.
+    ]),
+  },
+] as const
+
 export const dimensions = (bytes: Uint8Array) => {
   const image = Photon.PhotonImage.new_from_byteslice(bytes)
   try {

@@ -9,17 +9,24 @@ import {
   dimensions,
   encodePng,
   noisePixel,
+  oversizedFrameHeaders,
   oversizedHeaders,
   supportedImages,
   tinyPng,
 } from "./fixtures/TestImages.ts"
 
-/** Counts decoder calls without changing what the decoder does. */
+/** Optionally block decoding so crafted headers can never reach Photon. */
 const withDecoderSpy = <A, E, R>(
   f: (calls: () => number) => Effect.Effect<A, E, R>,
+  blockDecoding = false,
 ) =>
   Effect.suspend(() => {
     const spy = vi.spyOn(Photon.PhotonImage, "new_from_byteslice")
+    if (blockDecoding) {
+      spy.mockImplementation(() => {
+        throw new Error("Header-only fixture must not reach the decoder")
+      })
+    }
     return f(() => spy.mock.calls.length).pipe(
       Effect.ensuring(Effect.sync(() => spy.mockRestore())),
     )
@@ -149,18 +156,35 @@ describe("Image input budget", () => {
   )
 
   it.effect("rejects an oversized canvas in every format before decoding", () =>
-    withDecoderSpy((decoderCalls) =>
-      Effect.gen(function* () {
-        for (const header of oversizedHeaders) {
-          assert.isAbove(header.width * header.height, Image.maxInputPixels)
-          const error = yield* Effect.flip(
-            Image.prepare({ data: header.data, mediaType: header.mediaType }),
+    withDecoderSpy(
+      (decoderCalls) =>
+        Effect.gen(function* () {
+          const headers = [...oversizedHeaders, ...oversizedFrameHeaders]
+          const results = []
+          for (const header of headers) {
+            assert.isAbove(header.width * header.height, Image.maxInputPixels)
+            const baseline = decoderCalls()
+            const error = yield* Effect.flip(
+              Image.prepare({ data: header.data, mediaType: header.mediaType }),
+            )
+            results.push({
+              mediaType: header.mediaType,
+              tag: error._tag,
+              reason: error.reason,
+              decoderCalls: decoderCalls() - baseline,
+            })
+          }
+          assert.deepStrictEqual(
+            results,
+            headers.map((header) => ({
+              mediaType: header.mediaType,
+              tag: "ImageError",
+              reason: "TooLarge",
+              decoderCalls: 0,
+            })),
           )
-          assert.strictEqual(error._tag, "ImageError", header.mediaType)
-          assert.strictEqual(error.reason, "TooLarge", header.mediaType)
-        }
-        assert.strictEqual(decoderCalls(), 0, "the decoder must not run")
-      }),
+        }),
+      true,
     ),
   )
 

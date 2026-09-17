@@ -37,9 +37,11 @@ export class Skill extends Schema.Class<Skill>("Skill")({
 }) {}
 
 /**
- * Scan project and user `.agents/skills/<dir>/SKILL.md` files.
+ * Scan project and user `.agents/skills/<dir>/SKILL.md` files, plus
+ * `<hermesHome>/skills/<dir>/SKILL.md` when explicitly configured.
  *
- * Project names override user names; the first name wins within each scope.
+ * Project names override Hermes names, which override user names.
+ * The first name wins within each scope; an empty Hermes home is ignored.
  * Skip unreadable files, invalid frontmatter and missing or empty descriptions.
  *
  * @since 1.0.0
@@ -48,6 +50,7 @@ export class Skill extends Schema.Class<Skill>("Skill")({
 export const discover: (options: {
   readonly directory: string
   readonly homeDirectory: Option.Option<string>
+  readonly hermesHome?: Option.Option<string>
 }) => Effect.Effect<
   ReadonlyArray<Skill>,
   never,
@@ -57,14 +60,31 @@ export const discover: (options: {
   const path = yield* Path.Path
 
   const roots: Array<{ readonly root: string; readonly source: SkillSource }> =
-    [{ root: options.directory, source: "project" }]
+    [
+      {
+        root: path.resolve(options.directory, ".agents", "skills"),
+        source: "project",
+      },
+    ]
+  if (
+    options.hermesHome &&
+    Option.isSome(options.hermesHome) &&
+    options.hermesHome.value !== ""
+  ) {
+    roots.push({
+      root: path.resolve(options.hermesHome.value, "skills"),
+      source: "user",
+    })
+  }
   if (Option.isSome(options.homeDirectory)) {
-    roots.push({ root: options.homeDirectory.value, source: "user" })
+    roots.push({
+      root: path.resolve(options.homeDirectory.value, ".agents", "skills"),
+      source: "user",
+    })
   }
 
   const byName = new Map<string, Skill>()
-  for (const { root, source } of roots) {
-    const skillsDir = path.resolve(root, ".agents", "skills")
+  for (const { root: skillsDir, source } of roots) {
     const entries = yield* fs
       .readDirectory(skillsDir)
       .pipe(Effect.orElseSucceed(() => []))

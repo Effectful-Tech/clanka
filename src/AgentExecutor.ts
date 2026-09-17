@@ -225,6 +225,7 @@ export const makeLocal = Effect.fnUntraced(function* <
       const skills = yield* AgentSkills.discover({
         directory: options.directory,
         homeDirectory: homeDirectory(),
+        hermesHome: Option.fromNullishOr(process.env.HERMES_HOME),
       }).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provideService(Path.Path, pathService),

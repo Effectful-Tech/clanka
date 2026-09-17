@@ -72,7 +72,7 @@ export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
   agentsMd: Schema.Option(Schema.String),
   supportsSearch: Schema.Boolean,
   /**
-   * Agent Skills discovered on the executor filesystem. See `AgentSkills`.
+   * Skills available on the executor filesystem.
    */
   skills: Schema.Array(AgentSkills.Skill).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed([])),

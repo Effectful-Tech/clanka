@@ -2,6 +2,4 @@
 "clanka": minor
 ---
 
-Add Agent Skills client support. Skills in `<cwd>/.agents/skills/<dir>/SKILL.md` and `$HOME/.agents/skills/<dir>/SKILL.md` are discovered on the executor filesystem, exposed on `AgentExecutor.Capabilities.skills`, and listed in the system prompt so the model can `readFile` a matching skill on demand.
-
-Frontmatter is parsed with effect's YAML parser, descriptions are normalized to one line for the catalog, and `skills` defaults to an empty list when decoding or constructing capabilities.
+Add Agent Skills support. Discover skills in project and user `.agents/skills` directories on the executor, expose them through `AgentExecutor.Capabilities.skills`, and list them in the system prompt for on-demand reading.

@@ -79,8 +79,7 @@ describe("AgentSkills", () => {
           )
           const info = yield* fs.stat(nonRegular)
           const reads: Array<string> = []
-          // Model a special file without creating a FIFO or blocking a worker.
-          // An unsafe read returns immediately and is caught by the read log.
+          // Stub special-file reads so a missing guard fails without blocking.
           const controlledFs = FileSystem.FileSystem.of({
             ...fs,
             stat: (path) =>
@@ -409,7 +408,6 @@ body`,
       Effect.fnUntraced(function* (roots) {
         const fs = yield* FileSystem.FileSystem
         const path = yield* Path.Path
-        // .claude/skills is ignored
         const claudeDir = path.join(
           roots.project,
           ".claude",
@@ -421,7 +419,6 @@ body`,
           path.join(claudeDir, "SKILL.md"),
           skillFile("claude", "Ignored"),
         )
-        // nested skill dirs are ignored
         const nested = path.join(
           roots.project,
           ".agents",
@@ -434,7 +431,6 @@ body`,
           path.join(nested, "SKILL.md"),
           skillFile("inner", "Ignored"),
         )
-        // wrong file name and loose files are ignored
         yield* fs.writeFileString(
           path.join(roots.project, ".agents", "skills", "outer", "skill.md"),
           skillFile("lowercase", "Ignored"),
@@ -443,7 +439,6 @@ body`,
           path.join(roots.project, ".agents", "skills", "README.md"),
           skillFile("readme", "Ignored"),
         )
-        // a SKILL.md directly under .agents is ignored
         yield* fs.writeFileString(
           path.join(roots.project, ".agents", "SKILL.md"),
           skillFile("toplevel", "Ignored"),

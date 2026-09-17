@@ -1,6 +1,5 @@
 /**
- * Discovery of Agent Skills (https://agentskills.io/specification) on the
- * executor filesystem.
+ * Discover Agent Skills (https://agentskills.io/specification) on the executor.
  *
  * @since 1.0.0
  */
@@ -25,10 +24,7 @@ export const SkillSource = Schema.Literals(["project", "user"])
 export type SkillSource = typeof SkillSource.Type
 
 /**
- * A skill discovered on the executor filesystem.
- *
- * `location` is the absolute path to the `SKILL.md` file, and must be
- * openable from the executor (where `readFile` runs).
+ * Skill metadata with an absolute executor-side `SKILL.md` path.
  *
  * @since 1.0.0
  * @category Models
@@ -41,13 +37,10 @@ export class Skill extends Schema.Class<Skill>("Skill")({
 }) {}
 
 /**
- * Discover skills from `<directory>/.agents/skills/<dir>/SKILL.md` (project)
- * and `<homeDirectory>/.agents/skills/<dir>/SKILL.md` (user).
+ * Scan project and user `.agents/skills/<dir>/SKILL.md` files.
  *
- * Skills are keyed by their frontmatter `name`. A project skill hides a user
- * skill with the same name; within a scope the first one found wins. Skills
- * with unparseable frontmatter or a missing `description` are skipped, and no
- * filesystem problem ever fails discovery.
+ * Project names override user names; the first name wins within each scope.
+ * Skip unreadable files, invalid frontmatter and missing or empty descriptions.
  *
  * @since 1.0.0
  * @category Discovery
@@ -96,8 +89,7 @@ export const discover: (options: {
 })
 
 /**
- * Render the catalog as a system prompt section, or `None` when there are no
- * skills to disclose.
+ * Render the skills prompt section, or `None` for an empty catalog.
  *
  * @since 1.0.0
  * @category Rendering
@@ -126,10 +118,6 @@ paths when accessing them.
 ${entries}`)
 }
 
-// ------------------------------------------
-// Internal
-// -------------------------------------------
-
 const Frontmatter = Schema.Struct({
   name: Schema.optional(Schema.Unknown),
   description: Schema.String,
@@ -139,11 +127,7 @@ const decodeFrontmatter = Schema.decodeUnknownOption(Frontmatter)
 
 const frontmatterPattern = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/
 
-/**
- * Read the YAML frontmatter block of a `SKILL.md`. The whole block has to
- * parse, so a skill with malformed frontmatter is skipped even when its
- * `description` looks fine.
- */
+// Validate all frontmatter, including fields omitted from the catalog.
 const parseFrontmatter = (
   content: string,
 ): Option.Option<typeof Frontmatter.Type> => {
@@ -156,5 +140,4 @@ const parseFrontmatter = (
   }
 }
 
-// Catalog entries are single lines, so a value can never break out of its entry.
 const singleLine = (value: string): string => value.replace(/\s+/g, " ").trim()

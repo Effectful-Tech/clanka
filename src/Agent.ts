@@ -348,13 +348,13 @@ ${content}
         }),
       })
     }
-    const compactionHooks: Compaction.CompactionHooks = {
+    const compactionHooks = {
       onStart: (reason) =>
         Effect.sync(() => {
           maybeSend({ agentId, part: new CompactionStarted({ reason }) })
         }),
       withSummarizer: modelConfig.summarizerTransform,
-    }
+    } satisfies Compaction.CompactionHooks
 
     // Script execution
     const executeScript = Effect.fnUntraced(function* (script: string) {
@@ -419,13 +419,40 @@ ${content}
         }
 
         // Threshold compaction before the next model call
+        let thresholdStarted = false
         const compacted = yield* Compaction.compactIfNeeded({
           prompt: prompt.current,
           contextTokens: lastContextTokens,
           ...compactionHooks,
-        })
+          onStart: (reason) =>
+            compactionHooks.onStart(reason).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  thresholdStarted = true
+                }),
+              ),
+            ),
+        }).pipe(
+          Effect.timeout(turnTimeout),
+          Effect.catchTag("TimeoutError", (error) =>
+            Effect.logWarning(
+              "Compaction timed out, continuing with the uncompacted prompt",
+              error,
+            ).pipe(Effect.as(Option.none<Compaction.CompactionResult>())),
+          ),
+        )
         if (Option.isSome(compacted)) {
           applyCompaction(compacted.value)
+        } else if (thresholdStarted) {
+          const tokens = Compaction.estimateTokens(prompt.current)
+          maybeSend({
+            agentId,
+            part: new CompactionEnded({
+              reason: "threshold",
+              tokensBefore: tokens,
+              tokensAfter: tokens,
+            }),
+          })
         }
 
         // oxlint-disable-next-line typescript/no-explicit-any
@@ -523,7 +550,6 @@ ${content}
               !overflowCompacted && Compaction.isContextLengthError(err),
             (err) =>
               Effect.gen(function* () {
-                overflowCompacted = true
                 response = []
                 const result = yield* Compaction.compactAfterOverflow({
                   prompt: prompt.current,
@@ -541,6 +567,7 @@ ${content}
                   return yield* err
                 }
                 applyCompaction(result.value)
+                overflowCompacted = true
                 return yield* runModel
               }),
           ),

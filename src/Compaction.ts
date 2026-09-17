@@ -10,16 +10,14 @@
  *    call, `compactAfterOverflow` after a context-length error). Both rewrite
  *    the Prompt to `system + <compaction-summary> user message + kept tail`.
  *
- * See `.specs/compaction.md` for the full design and implementation notes.
- *
  * @since 1.0.0
  */
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
+import * as Predicate from "effect/Predicate"
 import * as Schema from "effect/Schema"
-import * as Stream from "effect/Stream"
 import * as AiError from "effect/unstable/ai/AiError"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as Prompt from "effect/unstable/ai/Prompt"
@@ -253,11 +251,16 @@ const openAiErrorCode = (reason: {
   readonly metadata?: unknown
 }): string | undefined => {
   const metadata = reason.metadata
-  if (typeof metadata !== "object" || metadata === null) return undefined
-  const openai = (metadata as { readonly openai?: unknown }).openai
-  if (typeof openai !== "object" || openai === null) return undefined
-  const code = (openai as { readonly errorCode?: unknown }).errorCode
-  return typeof code === "string" ? code : undefined
+  if (
+    Predicate.hasProperty(metadata, "errorCode") &&
+    Predicate.isString(metadata.errorCode)
+  ) {
+    return metadata.errorCode
+  }
+  if (!Predicate.hasProperty(metadata, "openai")) return undefined
+  const openai = metadata.openai
+  if (!Predicate.hasProperty(openai, "errorCode")) return undefined
+  return Predicate.isString(openai.errorCode) ? openai.errorCode : undefined
 }
 
 /**
@@ -275,12 +278,15 @@ export const isContextLengthError = (error: AiError.AiError): boolean => {
   switch (reason._tag) {
     case "InvalidRequestError":
     case "UnknownError": {
+      if (reason.http?.response?.status === 413) return true
       if (openAiErrorCode(reason) === "context_length_exceeded") return true
       return (
         reason.description !== undefined &&
         contextLengthPattern.test(reason.description)
       )
     }
+    case "InternalProviderError":
+      return openAiErrorCode(reason) === "context_length_exceeded"
     default:
       return false
   }
@@ -684,7 +690,7 @@ export interface CompactionHooks {
  * Run one compaction of `prompt` regardless of thresholds.
  *
  * Steps: `split` (None → returns None, prompt untouched), `summarizerPrompt`,
- * a direct `LanguageModel.streamText` call with no tools and
+ * a direct `LanguageModel.generateText` call with no tools and
  * `summarizerMaxOutputTokens`, then `rewrite` with `trimKept(kept)`.
  *
  * Fails with the summarizer's `AiError`. Callers decide whether that is fatal.
@@ -713,15 +719,10 @@ export const compact: (
 
   const ai = yield* LanguageModel.LanguageModel
   const summarize = ai
-    .streamText({
+    .generateText({
       prompt: summarizerPrompt({ previousSummary, messages: toSummarize }),
     })
-    .pipe(
-      Stream.runFold(
-        () => "",
-        (text, part) => (part.type === "text-delta" ? text + part.delta : text),
-      ),
-    )
+    .pipe(Effect.map((response) => response.text))
   const summary = (yield* options.withSummarizer
     ? options.withSummarizer(summarize)
     : summarize).trim()

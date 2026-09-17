@@ -468,6 +468,10 @@ ${content}
 
         // oxlint-disable-next-line typescript/no-explicit-any
         let response = Array.empty<Response.StreamPart<any>>()
+        const discardAttempt = () => {
+          response = []
+          pendingImages.length = 0
+        }
         let reasoningStarted = false
         let hadReasoningDelta = false
         let hadToolCall = false
@@ -574,8 +578,7 @@ ${content}
                     }),
                   }),
                 })
-                response = []
-                pendingImages.length = 0
+                discardAttempt()
                 return true
               }
               // Never retry a context-length error as is: the overflow
@@ -595,8 +598,7 @@ ${content}
                   }
                 }
               }
-              response = []
-              pendingImages.length = 0
+              discardAttempt()
               return err.isRetryable
             },
             schedule: retryPolicy,
@@ -613,8 +615,7 @@ ${content}
               Image.isUnsupportedImageError(err),
             (err) => {
               sendImages = false
-              response = []
-              pendingImages.length = 0
+              discardAttempt()
               maybeSend({ agentId, part: new ErrorRetry({ error: err }) })
               return attempt
             },
@@ -627,8 +628,7 @@ ${content}
               Compaction.isContextLengthError(err),
             (err) =>
               Effect.gen(function* () {
-                response = []
-                pendingImages.length = 0
+                discardAttempt()
                 const compacted = yield* compactWithEvents(
                   "overflow",
                   Compaction.compact({

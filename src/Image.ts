@@ -105,7 +105,7 @@ export const maxInputPixels = 50_000_000
  * @since 1.0.0
  * @category Input
  */
-export const readFile = Effect.fnUntraced(function* (
+export const readBoundedFile = Effect.fnUntraced(function* (
   fs: FileSystem.FileSystem,
   path: string,
 ) {
@@ -116,21 +116,33 @@ export const readFile = Effect.fnUntraced(function* (
     })
   const stat = yield* fs.stat(path)
   if (stat.size > maxInputBytes) return yield* tooLarge()
-  const chunks: Array<Uint8Array> = []
-  let size = 0
   // The extra byte detects growth past the ceiling without reading the rest.
-  yield* Stream.runForEach(
+  return yield* collectInput(
     fs.stream(path, {
       chunkSize: 64 * 1024,
       bytesToRead: maxInputBytes + 1,
     }),
-    (chunk) => {
-      if (chunk.length > maxInputBytes - size) return Effect.fail(tooLarge())
-      size += chunk.length
-      chunks.push(chunk)
-      return Effect.void
-    },
+    tooLarge,
   )
+})
+
+/**
+ * Collect image input, rejecting overflow before retaining the next chunk.
+ * @since 1.0.0
+ * @category Input
+ */
+export const collectInput = Effect.fnUntraced(function* <E, R, E2>(
+  stream: Stream.Stream<Uint8Array, E, R>,
+  tooLarge: () => E2,
+) {
+  const chunks: Array<Uint8Array> = []
+  let size = 0
+  yield* Stream.runForEach(stream, (chunk) => {
+    if (chunk.length > maxInputBytes - size) return Effect.fail(tooLarge())
+    size += chunk.length
+    chunks.push(chunk)
+    return Effect.void
+  })
   const bytes = new Uint8Array(size)
   let offset = 0
   for (const chunk of chunks) {
@@ -427,9 +439,7 @@ export const dimensions = (
  * @since 1.0.0
  * @category Detection
  */
-export const isImageMediaType = (
-  mediaType: string,
-): mediaType is ImageMediaType => Schema.is(ImageMediaType)(mediaType)
+export const isImageMediaType = Schema.is(ImageMediaType)
 
 // =============================================================================
 // Resize
@@ -492,80 +502,76 @@ const encodeWithin = (
  * @since 1.0.0
  * @category Resize
  */
-export const prepare = (options: {
+export const prepare = Effect.fnUntraced(function* (options: {
   readonly data: Uint8Array
   readonly mediaType: ImageMediaType
   readonly limits?: Limits | undefined
-}): Effect.Effect<ImageData, ImageError> =>
-  Effect.gen(function* () {
-    const limits = options.limits ?? defaultLimits
-    if (options.data.length > maxInputBytes) {
-      return yield* new ImageError({
-        reason: "TooLarge",
-        message: `Image exceeds the ${maxInputBytes} byte input limit`,
-      })
+}): Effect.fn.Return<ImageData, ImageError> {
+  const limits = options.limits ?? defaultLimits
+  if (options.data.length > maxInputBytes) {
+    return yield* new ImageError({
+      reason: "TooLarge",
+      message: `Image exceeds the ${maxInputBytes} byte input limit`,
+    })
+  }
+  const size = dimensions(options.data)
+  if (Option.isNone(size)) {
+    return yield* new ImageError({
+      reason: "Decode",
+      message: "Invalid or truncated image header",
+    })
+  }
+  if (size.value.width * size.value.height > maxInputPixels) {
+    return yield* new ImageError({
+      reason: "TooLarge",
+      message: `Image exceeds the ${maxInputPixels} pixel input limit`,
+    })
+  }
+  const image = yield* decode(options.data)
+  let current = image
+  try {
+    const width = image.get_width()
+    const height = image.get_height()
+    const withinDimensions =
+      width <= limits.maxDimension && height <= limits.maxDimension
+    if (withinDimensions && fits(options.data, limits)) {
+      return { data: options.data, mediaType: options.mediaType }
     }
-    const size = dimensions(options.data)
-    if (Option.isNone(size)) {
-      return yield* new ImageError({
-        reason: "Decode",
-        message: "Invalid or truncated image header",
-      })
-    }
-    if (size.value.width * size.value.height > maxInputPixels) {
-      return yield* new ImageError({
-        reason: "TooLarge",
-        message: `Image exceeds the ${maxInputPixels} pixel input limit`,
-      })
-    }
-    const image = yield* decode(options.data)
-    try {
-      let width = image.get_width()
-      let height = image.get_height()
-      const withinDimensions =
-        width <= limits.maxDimension && height <= limits.maxDimension
-      if (withinDimensions && fits(options.data, limits)) {
-        return { data: options.data, mediaType: options.mediaType }
-      }
 
-      let scale = Math.min(
-        1,
-        limits.maxDimension / width,
-        limits.maxDimension / height,
-      )
-      let current = image
-      for (let round = 0; round <= maxShrinkRounds; round++) {
-        const targetWidth = Math.max(1, Math.round(width * scale))
-        const targetHeight = Math.max(1, Math.round(height * scale))
-        if (
-          targetWidth !== current.get_width() ||
-          targetHeight !== current.get_height()
-        ) {
-          const resized = Photon.resize(
-            image,
-            targetWidth,
-            targetHeight,
-            Photon.SamplingFilter.Lanczos3,
-          )
-          if (current !== image) current.free()
-          current = resized
-        }
-        const encoded = encodeWithin(current, limits)
-        if (Option.isSome(encoded)) {
-          if (current !== image) current.free()
-          return encoded.value
-        }
-        scale *= shrinkFactor
+    let scale = Math.min(
+      1,
+      limits.maxDimension / width,
+      limits.maxDimension / height,
+    )
+    for (let round = 0; round <= maxShrinkRounds; round++) {
+      const targetWidth = Math.max(1, Math.round(width * scale))
+      const targetHeight = Math.max(1, Math.round(height * scale))
+      if (
+        targetWidth !== current.get_width() ||
+        targetHeight !== current.get_height()
+      ) {
+        const resized = Photon.resize(
+          image,
+          targetWidth,
+          targetHeight,
+          Photon.SamplingFilter.Lanczos3,
+        )
+        if (current !== image) current.free()
+        current = resized
       }
-      if (current !== image) current.free()
-      return yield* new ImageError({
-        reason: "TooLarge",
-        message: `Image is still over ${limits.maxBytes} bytes of base64 after resizing`,
-      })
-    } finally {
-      image.free()
+      const encoded = encodeWithin(current, limits)
+      if (Option.isSome(encoded)) return encoded.value
+      scale *= shrinkFactor
     }
-  })
+    return yield* new ImageError({
+      reason: "TooLarge",
+      message: `Image is still over ${limits.maxBytes} bytes of base64 after resizing`,
+    })
+  } finally {
+    if (current !== image) current.free()
+    image.free()
+  }
+})
 
 // =============================================================================
 // Prompt helpers

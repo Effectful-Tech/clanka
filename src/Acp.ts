@@ -199,8 +199,7 @@ const toRpcError = (cause: Cause.Cause<unknown>) => {
 
 const renderLink = (uri: string, name?: string) => `[${name ?? uri}](${uri})`
 
-// Bound remote input before decoding/resizing; the prepared image has its own cap.
-const maxRemoteImageBytes = Image.maxInputBytes
+// Covers the request and entire body read.
 const remoteImageTimeout = "30 seconds"
 
 const invalidParams = (message: string) =>
@@ -363,63 +362,39 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
    * Fetch an `http(s):` image. Any transport or non-2xx failure rejects the
    * prompt; nothing is retried here.
    */
-  const fetchImage = (uri: string): Effect.Effect<Uint8Array, RpcError> =>
-    Option.match(http, {
-      onNone: () =>
-        Effect.fail(
-          invalidParams(`Cannot fetch image ${uri}: no HttpClient available`),
+  const fetchImage = Effect.fnUntraced(
+    function* (uri: string) {
+      if (Option.isNone(http)) {
+        return yield* invalidParams(
+          `Cannot fetch image ${uri}: no HttpClient available`,
+        )
+      }
+      const response = yield* HttpClient.withScope(http.value).get(uri)
+      if (response.status < 200 || response.status >= 300) {
+        return yield* invalidParams(
+          `Failed to fetch image ${uri}: HTTP ${response.status}`,
+        )
+      }
+      const tooLarge = () =>
+        invalidParams(
+          `Image ${uri} exceeds the ${Image.maxInputBytes} byte download limit`,
+        )
+      if (Number(response.headers["content-length"]) > Image.maxInputBytes) {
+        return yield* tooLarge()
+      }
+      return yield* Image.collectInput(response.stream, tooLarge)
+    },
+    Effect.scoped,
+    Effect.timeout(remoteImageTimeout),
+    (effect, uri) =>
+      effect.pipe(
+        Effect.mapError((error) =>
+          error instanceof RpcError
+            ? error
+            : invalidParams(`Failed to fetch image ${uri}: ${error.message}`),
         ),
-      onSome: (client) =>
-        HttpClient.withScope(client)
-          .get(uri)
-          .pipe(
-            Effect.flatMap(
-              Effect.fnUntraced(function* (response) {
-                if (response.status < 200 || response.status >= 300) {
-                  return yield* invalidParams(
-                    `Failed to fetch image ${uri}: HTTP ${response.status}`,
-                  )
-                }
-                const tooLarge = () =>
-                  invalidParams(
-                    `Image ${uri} exceeds the ${maxRemoteImageBytes} byte download limit`,
-                  )
-                if (
-                  Number(response.headers["content-length"]) >
-                  maxRemoteImageBytes
-                ) {
-                  return yield* tooLarge()
-                }
-                const chunks: Array<Uint8Array> = []
-                let size = 0
-                yield* Stream.runForEach(response.stream, (chunk) => {
-                  if (chunk.byteLength > maxRemoteImageBytes - size) {
-                    return Effect.fail(tooLarge())
-                  }
-                  size += chunk.byteLength
-                  chunks.push(chunk)
-                  return Effect.void
-                })
-                const bytes = new Uint8Array(size)
-                let offset = 0
-                for (const chunk of chunks) {
-                  bytes.set(chunk, offset)
-                  offset += chunk.byteLength
-                }
-                return bytes
-              }),
-            ),
-            Effect.scoped,
-            Effect.timeout(remoteImageTimeout),
-            Effect.mapError((error) =>
-              error instanceof RpcError
-                ? error
-                : invalidParams(
-                    `Failed to fetch image ${uri}: ${error.message}`,
-                  ),
-            ),
-          ),
-    })
+      ),
+  )
 
   /**
    * Read a `file:` image, but only when its real path (symlinks resolved)
@@ -459,7 +434,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
               `Image file is outside the session directory: ${uri}`,
             )
           }
-          return yield* Image.readFile(fs, real).pipe(
+          return yield* Image.readBoundedFile(fs, real).pipe(
             Effect.mapError((error) =>
               invalidParams(`Failed to read image ${uri}: ${error.message}`),
             ),

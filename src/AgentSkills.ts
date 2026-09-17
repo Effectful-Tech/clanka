@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect"
 import * as FileSystem from "effect/FileSystem"
 import * as Option from "effect/Option"
 import * as Path from "effect/Path"
+import * as Predicate from "effect/Predicate"
 import * as Schema from "effect/Schema"
 import * as Yaml from "effect/unstable/encoding/Yaml"
 
@@ -77,21 +78,14 @@ export const discover: (options: {
     entries.sort()
     for (const entry of entries) {
       const location = path.join(skillsDir, entry, "SKILL.md")
-      const content = yield* Effect.option(
-        fs.stat(location).pipe(
-          Effect.filterOrFail((info) => info.type === "File"),
-          Effect.andThen(fs.readFileString(location)),
-        ),
-      )
+      const content = yield* Effect.option(fs.readFileString(location))
       if (Option.isNone(content)) continue
       const frontmatter = parseFrontmatter(content.value)
       if (Option.isNone(frontmatter)) continue
-      const description = frontmatter.value.description
-        .replace(/\s+/g, " ")
-        .trim()
-      if (!description) continue
-      const name = Schema.is(Schema.String)(frontmatter.value.name)
-        ? frontmatter.value.name.trim() || entry
+      const description = singleLine(frontmatter.value.description)
+      if (description === "") continue
+      const name = Predicate.isString(frontmatter.value.name)
+        ? singleLine(frontmatter.value.name) || entry
         : entry
       if (byName.has(name)) continue
       byName.set(name, new Skill({ name, description, location, source }))
@@ -114,9 +108,7 @@ export const renderCatalog = (
   if (skills.length === 0) return Option.none()
   const entries = skills
     .map(
-      (
-        skill,
-      ) => `- ${skill.name.replace(/\s+/g, " ")}: ${skill.description.replace(/\s+/g, " ")}
+      (skill) => `- ${skill.name}: ${skill.description}
   location: ${skill.location}`,
     )
     .join("\n")
@@ -138,112 +130,31 @@ ${entries}`)
 // Internal
 // -------------------------------------------
 
-const decodeFrontmatter = Schema.decodeUnknownOption(
-  Schema.Struct({
-    name: Schema.optional(Schema.Unknown),
-    description: Schema.String,
-  }),
-)
+const Frontmatter = Schema.Struct({
+  name: Schema.optional(Schema.Unknown),
+  description: Schema.String,
+})
 
-const parseYaml = Option.liftThrowable((source: string): unknown =>
-  Yaml.parse(source),
-)
+const decodeFrontmatter = Schema.decodeUnknownOption(Frontmatter)
+
+const frontmatterPattern = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/
 
 /**
- * Parse the whole frontmatter block with effect's YAML parser, so a skill with
- * malformed frontmatter is skipped even when its `description` looks fine.
- * Plain scalars may contain unquoted colons.
+ * Read the YAML frontmatter block of a `SKILL.md`. The whole block has to
+ * parse, so a skill with malformed frontmatter is skipped even when its
+ * `description` looks fine.
  */
 const parseFrontmatter = (
   content: string,
-): Option.Option<{ readonly name?: unknown; readonly description: string }> => {
-  const lines = content.split(/\r?\n/)
-  if (lines[0]?.trim() !== "---") return Option.none()
-  const end = lines.findIndex(
-    (line, index) => index > 0 && line.trim() === "---",
-  )
-  if (end === -1) return Option.none()
-
-  const frontmatter = lines.slice(1, end)
-  return parseYaml(frontmatter.join("\n")).pipe(
-    Option.orElse(() => parseYaml(normalizeFrontmatter(frontmatter))),
-    Option.flatMap(decodeFrontmatter),
-  )
-}
-
-/**
- * Adapt two YAML shapes unsupported by Effect's configuration parser. Keep
- * every field for the subsequent full-document parse; never skip bad lines.
- */
-const normalizeFrontmatter = (lines: ReadonlyArray<string>): string => {
-  const normalized = [...lines]
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!
-    const emptyValue = /^[^\s#][^:]*:[ \t]*(?:#.*)?$/.test(line)
-    const description = /^description:(?:[ \t]+(.*))?$/.exec(line)
-    if (!emptyValue && !description) continue
-
-    let start = i + 1
-    while (start < lines.length && /^\s*(?:#.*)?$/.test(lines[start]!)) start++
-    if (start === lines.length) continue
-
-    // An indentless sequence is a value of the preceding empty mapping key.
-    // Move its items and their nested content together, preserving indentation.
-    if (emptyValue && /^-(?: |$)/.test(lines[start]!)) {
-      let end = start
-      while (
-        end < lines.length &&
-        (/^-(?: |$)/.test(lines[end]!) ||
-          /^\s/.test(lines[end]!) ||
-          /^#|^$/.test(lines[end]!))
-      ) {
-        normalized[end] = `  ${lines[end]!}`
-        end++
-      }
-      i = end - 1
-      continue
-    }
-
-    if (!description) continue
-    const initial = description[1]?.trim() ?? ""
-    const initialText = initial.replace(/(?:^|[ \t]+)#.*$/, "").trim()
-    const first = initialText || lines[start]!.trimStart()
-    // A mapping, collection, quoted value or block scalar is not a plain
-    // description. Leave those to the parser rather than turning them into text.
-    if (/^["'[\]{}|>&*!#%@`]/.test(first) || /^[-?:](?:\s|$)/.test(first))
-      continue
-
-    let end = i + 1
-    const parts: Array<string> = initialText ? [initialText] : []
-    let plain = true
-    let terminated = initialText !== "" && initialText !== initial
-    while (
-      end < lines.length &&
-      (/^\s/.test(lines[end]!) || /^#|^$/.test(lines[end]!))
-    ) {
-      const current = lines[end]!
-      if (/^ *\t/.test(current)) plain = false
-      if (/^\s*#/.test(current)) {
-        // A comment may precede a scalar or end it, but cannot interrupt it.
-        if (parts.length > 0) terminated = true
-      } else if (current.trim() !== "") {
-        const text = current.replace(/[ \t]+#.*$/, "").trim()
-        // Plain continuations may vary in indentation, but must stay indented
-        // under the key. Do not turn mappings or terminated scalars into text.
-        if (terminated || !/^ +/.test(current) || /:\s|:$/.test(text))
-          plain = false
-        parts.push(text)
-        if (/[ \t]+#/.test(current)) terminated = true
-      }
-      end++
-    }
-    if (plain && parts.length > 1) {
-      // Catalog descriptions are single-line strings. Quoting the joined text
-      // preserves literal characters without making comments part of the value.
-      normalized[i] = `description: ${JSON.stringify(parts.join(" "))}`
-      for (let j = i + 1; j < end; j++) normalized[j] = ""
-    }
-    i = end - 1
+): Option.Option<typeof Frontmatter.Type> => {
+  const match = frontmatterPattern.exec(content)
+  if (match === null) return Option.none()
+  try {
+    return decodeFrontmatter(Yaml.parse(match[1]!))
+  } catch {
+    return Option.none()
   }
-  return normalized.join("\n")
 }
+
+// Catalog entries are single lines, so a value can never break out of its entry.
+const singleLine = (value: string): string => value.replace(/\s+/g, " ").trim()

@@ -64,11 +64,6 @@ const discover = (roots: { readonly project: string; readonly home: string }) =>
 describe("AgentSkills", () => {
   for (const [label, frontmatter, description] of [
     [
-      "an unindented allowed-tools sequence",
-      "description: Deploy the service\nallowed-tools:\n- Read\n- Bash",
-      "Deploy the service",
-    ],
-    [
       "an allowed-tools sequence",
       "description: Deploy the service\nallowed-tools:\n  - Read\n  - Bash",
       "Deploy the service",
@@ -87,46 +82,6 @@ describe("AgentSkills", () => {
       "a folded description spanning lines",
       "description: >-\n  Use when the user asks about deployment, rollbacks, or\n  anything touching the production cluster.\nmetadata:\n  author: someone",
       "Use when the user asks about deployment, rollbacks, or anything touching the production cluster.",
-    ],
-    [
-      "a multiline plain scalar description",
-      "description:\n  Use when the user asks about deployment, rollbacks, or\n  anything touching the production cluster.\nmetadata:\n  author: someone",
-      "Use when the user asks about deployment, rollbacks, or anything touching the production cluster.",
-    ],
-    [
-      "a more-indented plain description continuation",
-      "description:\n  Deploy the\n    production service",
-      "Deploy the production service",
-    ],
-    [
-      "a less-indented plain description continuation",
-      "description:\n    Deploy the\n  production service",
-      "Deploy the production service",
-    ],
-    [
-      "a plain description starting on the key line",
-      "description: Deploy the\n  production service",
-      "Deploy the production service",
-    ],
-    [
-      "an unindented comment before a plain description",
-      "description:\n# Explain when to deploy\n  Deploy the\n  production service",
-      "Deploy the production service",
-    ],
-    [
-      "an indented comment before a plain description",
-      "description:\n  # Explain when to deploy\n  Deploy the\n  production service",
-      "Deploy the production service",
-    ],
-    [
-      "a comment after the final plain description continuation",
-      "description:\n  Deploy the\n  production service # Explanation only\nmetadata:\n  author: someone",
-      "Deploy the production service",
-    ],
-    [
-      "both compatibility shapes and comments between sequence items",
-      "allowed-tools:\n# Available tools\n- Read\n# Another tool\n- Bash\ndescription:\n  Deploy the\n  production service\nmetadata:\n  author: someone",
-      "Deploy the production service",
     ],
   ] as const) {
     it.effect(`keeps a skill with ${label}`, () =>
@@ -147,80 +102,6 @@ describe("AgentSkills", () => {
             ]),
             [["deploy", description, location, "project"]],
           )
-        }),
-      ).pipe(Effect.provide(NodeServices.layer)),
-    )
-  }
-
-  for (const [shape, compatible] of [
-    [
-      "an indentless sequence",
-      "description: Deploy the service\nallowed-tools:\n- Read\n- Bash",
-    ],
-    [
-      "a multiline description",
-      "description:\n  Deploy the\n  production service",
-    ],
-  ] as const) {
-    for (const [problem, malformed] of [
-      ["an unmatched line", "this is not a mapping entry"],
-      ["an unterminated collection", "metadata: [broken"],
-    ] as const) {
-      for (const position of ["before", "after"] as const) {
-        it.effect(`rejects ${problem} ${position} ${shape}`, () =>
-          withRoots(
-            Effect.fnUntraced(function* (roots) {
-              const frontmatter =
-                position === "before"
-                  ? `${malformed}\n${compatible}`
-                  : `${compatible}\n${malformed}`
-              yield* writeSkill(
-                roots.project,
-                "broken",
-                `---\nname: broken\n${frontmatter}\n---\nbody`,
-              )
-              yield* writeSkill(
-                roots.project,
-                "valid",
-                skillFile("valid", "Valid skill"),
-              )
-              const skills = yield* discover(roots)
-              assert.deepStrictEqual(
-                skills.map((skill) => [skill.name, skill.description]),
-                [["valid", "Valid skill"]],
-              )
-            }),
-          ).pipe(Effect.provide(NodeServices.layer)),
-        )
-      }
-    }
-  }
-
-  for (const [label, description] of [
-    [
-      "a full-line comment interrupting a plain scalar",
-      "  Deploy the\n  # This terminates the scalar\n  production service",
-    ],
-    [
-      "an inline comment before a plain scalar continuation",
-      "  Deploy the # This terminates the scalar\n  production service",
-    ],
-    ["tab-indented continuation text", "  Deploy the\n\tproduction service"],
-    [
-      "a mapping entry after plain scalar text",
-      "  Deploy the\n  nested: value",
-    ],
-  ] as const) {
-    it.effect(`rejects ${label}`, () =>
-      withRoots(
-        Effect.fnUntraced(function* (roots) {
-          yield* writeSkill(
-            roots.project,
-            "broken",
-            `---\nname: broken\ndescription:\n${description}\n---\nbody`,
-          )
-          const skills = yield* discover(roots)
-          assert.deepStrictEqual(skills, [])
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
     )
@@ -273,13 +154,11 @@ describe("AgentSkills", () => {
   }
 
   it("defaults skills when constructing capabilities without the new field", () => {
-    const capabilities = Reflect.construct(AgentExecutor.Capabilities, [
-      {
-        toolsDts: "",
-        agentsMd: Option.none(),
-        supportsSearch: false,
-      },
-    ])
+    const capabilities = new AgentExecutor.Capabilities({
+      toolsDts: "",
+      agentsMd: Option.none(),
+      supportsSearch: false,
+    })
     assert.deepStrictEqual(capabilities.skills, [])
   })
 

@@ -179,7 +179,9 @@ const normalizeFrontmatter = (lines: ReadonlyArray<string>): string => {
   const normalized = [...lines]
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!
-    if (!/^[^\s#][^:]*:[ \t]*(?:#.*)?$/.test(line)) continue
+    const emptyValue = /^[^\s#][^:]*:[ \t]*(?:#.*)?$/.test(line)
+    const description = /^description:(?:[ \t]+(.*))?$/.exec(line)
+    if (!emptyValue && !description) continue
 
     let start = i + 1
     while (start < lines.length && /^\s*(?:#.*)?$/.test(lines[start]!)) start++
@@ -187,7 +189,7 @@ const normalizeFrontmatter = (lines: ReadonlyArray<string>): string => {
 
     // An indentless sequence is a value of the preceding empty mapping key.
     // Move its items and their nested content together, preserving indentation.
-    if (/^-(?: |$)/.test(lines[start]!)) {
+    if (emptyValue && /^-(?: |$)/.test(lines[start]!)) {
       let end = start
       while (
         end < lines.length &&
@@ -202,44 +204,44 @@ const normalizeFrontmatter = (lines: ReadonlyArray<string>): string => {
       continue
     }
 
-    if (!line.startsWith("description:")) continue
-    const first = lines[start]!
-    const indent = /^ +/.exec(first)?.[0]
-    if (!indent) continue
+    if (!description) continue
+    const initial = description[1]?.trim() ?? ""
+    const initialText = initial.replace(/(?:^|[ \t]+)#.*$/, "").trim()
+    const first = initialText || lines[start]!.trimStart()
     // A mapping, collection, quoted value or block scalar is not a plain
     // description. Leave those to the parser rather than turning them into text.
-    if (
-      /^["'[\]{}|>&*!#%@`]/.test(first.trimStart()) ||
-      /^[-?:](?:\s|$)/.test(first.trimStart())
-    )
+    if (/^["'[\]{}|>&*!#%@`]/.test(first) || /^[-?:](?:\s|$)/.test(first))
       continue
 
-    let end = start
-    const parts: Array<string> = []
+    let end = i + 1
+    const parts: Array<string> = initialText ? [initialText] : []
     let plain = true
+    let terminated = initialText !== "" && initialText !== initial
     while (
       end < lines.length &&
       (/^\s/.test(lines[end]!) || /^#|^$/.test(lines[end]!))
     ) {
       const current = lines[end]!
-      if (/^\s*(?:#.*)?$/.test(current)) {
-        parts.push("")
-      } else {
-        const text = current.replace(/[ \t]+#.*$/, "")
-        // Do not hide nested mappings or invalid indentation in a block scalar.
-        if (
-          /^ +/.exec(current)?.[0] !== indent ||
-          /:\s|:$/.test(text) ||
-          /^ *\t/.test(current)
-        )
+      if (/^ *\t/.test(current)) plain = false
+      if (/^\s*#/.test(current)) {
+        // A comment may precede a scalar or end it, but cannot interrupt it.
+        if (parts.length > 0) terminated = true
+      } else if (current.trim() !== "") {
+        const text = current.replace(/[ \t]+#.*$/, "").trim()
+        // Plain continuations may vary in indentation, but must stay indented
+        // under the key. Do not turn mappings or terminated scalars into text.
+        if (terminated || !/^ +/.test(current) || /:\s|:$/.test(text))
           plain = false
         parts.push(text)
+        if (/[ \t]+#/.test(current)) terminated = true
       }
       end++
     }
     if (plain && parts.length > 1) {
-      normalized[i] = "description: >-"
-      for (let j = start; j < end; j++) normalized[j] = parts[j - start]!
+      // Catalog descriptions are single-line strings. Quoting the joined text
+      // preserves literal characters without making comments part of the value.
+      normalized[i] = `description: ${JSON.stringify(parts.join(" "))}`
+      for (let j = i + 1; j < end; j++) normalized[j] = ""
     }
     i = end - 1
   }

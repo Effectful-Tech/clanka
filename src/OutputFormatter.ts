@@ -98,6 +98,15 @@ ${output.summary}\n\n`
           case "Usage": {
             return `${prefix}${chalkInfoHeading(`${infoIcon} Usage:`)} ${numberFormat.format(output.contextTokens)} context / ${numberFormat.format(output.inputTokens)} input / ${numberFormat.format(output.outputTokens)} output\n\n`
           }
+          case "ExecuteOutputCapped": {
+            return `${prefix}${chalkInfoHeading(`${infoIcon} Output capped:`)} ${numberFormat.format(output.charsBefore)} chars reduced to ${numberFormat.format(output.charsAfter)}\n\n`
+          }
+          case "CompactionStarted": {
+            return `${prefix}${chalkInfoHeading(`${infoIcon} Compacting context (${output.reason})...`)}\n\n`
+          }
+          case "CompactionEnded": {
+            return `${prefix}${chalkInfoHeading(`${infoIcon} Context compacted (${output.reason}):`)} ~${numberFormat.format(output.tokensBefore)} tokens to ~${numberFormat.format(output.tokensAfter)}\n\n`
+          }
         }
       }),
       Stream.catchIf(

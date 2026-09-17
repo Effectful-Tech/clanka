@@ -36,6 +36,11 @@ export * as CodeChunker from "./CodeChunker.ts"
 /**
  * @since 1.0.0
  */
+export * as Compaction from "./Compaction.ts"
+
+/**
+ * @since 1.0.0
+ */
 export * as Copilot from "./Copilot.ts"
 
 /**

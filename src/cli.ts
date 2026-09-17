@@ -28,8 +28,9 @@ import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
 import * as Option from "effect/Option"
 import { OpenAiClient, OpenAiEmbeddingModel } from "@effect/ai-openai"
 import { DeviceCodeHandler } from "./index.ts"
+import packageJson from "../package.json" with { type: "json" }
 
-const version = "1.0.0"
+const version = packageJson.version
 
 type Provider = "openai" | "copilot"
 

@@ -36,7 +36,7 @@ import * as Duration from "effect/Duration"
 import * as Cause from "effect/Cause"
 import * as Latch from "effect/Latch"
 import * as Clock from "effect/Clock"
-import * as ResponseIdTracker from "effect/unstable/ai/ResponseIdTracker"
+import * as Exit from "effect/Exit"
 import * as Compaction from "./Compaction.ts"
 import {
   ScriptEnd,
@@ -191,9 +191,6 @@ ${content}
     const modelConfig = yield* AgentModelConfig
     const conversationMode = yield* ConversationMode
     const turnTimeout = yield* TurnTimeout
-    const responseIdTracker = yield* Effect.serviceOption(
-      ResponseIdTracker.ResponseIdTracker,
-    )
     let finalSummary = Option.none<string>()
     // `inputTokens.total` from the most recent finish part; undefined until
     // the first response and after every compaction.
@@ -330,31 +327,49 @@ ${content}
       }
     })
 
-    // Compaction
-    const applyCompaction = (result: Compaction.CompactionResult) => {
-      MutableRef.set(prompt, result.prompt)
-      lastContextTokens = undefined
-      // Incremental (Codex websocket) sessions must send the rewritten
-      // prompt in full rather than continue from a stale previousResponseId.
-      if (Option.isSome(responseIdTracker)) {
-        responseIdTracker.value.clearUnsafe()
-      }
-      maybeSend({
-        agentId,
-        part: new CompactionEnded({
-          reason: result.reason,
-          tokensBefore: result.tokensBefore,
-          tokensAfter: result.tokensAfter,
-        }),
+    // Compaction. `compactWithEvents` applies a successful rewrite and closes
+    // the progress event on every exit: success, failure, timeout, interrupt.
+    let compactionStarted = false
+    const onCompactionStart = (reason: Compaction.CompactionReason) =>
+      Effect.sync(() => {
+        compactionStarted = true
+        maybeSend({ agentId, part: new CompactionStarted({ reason }) })
       })
-    }
-    const compactionHooks = {
-      onStart: (reason) =>
-        Effect.sync(() => {
-          maybeSend({ agentId, part: new CompactionStarted({ reason }) })
-        }),
-      withSummarizer: modelConfig.summarizerTransform,
-    } satisfies Compaction.CompactionHooks
+    const compactWithEvents = <E, R>(
+      reason: Compaction.CompactionReason,
+      compaction: Effect.Effect<
+        Option.Option<Compaction.CompactionResult>,
+        E,
+        R
+      >,
+    ) =>
+      Effect.suspend(() => {
+        compactionStarted = false
+        return compaction
+      }).pipe(
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            if (!compactionStarted) return
+            const result = Exit.isSuccess(exit) ? exit.value : Option.none()
+            let tokensBefore: number
+            let tokensAfter: number
+            if (Option.isSome(result)) {
+              MutableRef.set(prompt, result.value.prompt)
+              lastContextTokens = undefined
+              tokensBefore = result.value.tokensBefore
+              tokensAfter = result.value.tokensAfter
+            } else {
+              tokensBefore = tokensAfter = Compaction.estimateTokens(
+                prompt.current,
+              )
+            }
+            maybeSend({
+              agentId,
+              part: new CompactionEnded({ reason, tokensBefore, tokensAfter }),
+            })
+          }),
+        ),
+      )
 
     // Script execution
     const executeScript = Effect.fnUntraced(function* (script: string) {
@@ -419,49 +434,27 @@ ${content}
         }
 
         // Threshold compaction before the next model call
-        let thresholdStarted = false
-        const compacted = yield* Compaction.compactIfNeeded({
-          prompt: prompt.current,
-          contextTokens: lastContextTokens,
-          ...compactionHooks,
-          onStart: (reason) =>
-            compactionHooks.onStart(reason).pipe(
-              Effect.andThen(
-                Effect.sync(() => {
-                  thresholdStarted = true
-                }),
-              ),
-            ),
-        }).pipe(
-          Effect.timeout(turnTimeout),
+        yield* compactWithEvents(
+          "threshold",
+          Compaction.compactIfNeeded({
+            prompt: prompt.current,
+            contextTokens: lastContextTokens,
+            onStart: onCompactionStart,
+          }).pipe(Effect.timeout(turnTimeout)),
+        ).pipe(
           Effect.catchTag("TimeoutError", (error) =>
             Effect.logWarning(
               "Compaction timed out, continuing with the uncompacted prompt",
               error,
-            ).pipe(Effect.as(Option.none<Compaction.CompactionResult>())),
+            ),
           ),
         )
-        if (Option.isSome(compacted)) {
-          applyCompaction(compacted.value)
-        } else if (thresholdStarted) {
-          const tokens = Compaction.estimateTokens(prompt.current)
-          maybeSend({
-            agentId,
-            part: new CompactionEnded({
-              reason: "threshold",
-              tokensBefore: tokens,
-              tokensAfter: tokens,
-            }),
-          })
-        }
 
         // oxlint-disable-next-line typescript/no-explicit-any
         let response = Array.empty<Response.StreamPart<any>>()
         let reasoningStarted = false
         let hadReasoningDelta = false
         let hadToolCall = false
-        let overflowCompacted = false
-        let compactionFailed = false
         const runModel = pipe(
           Stream.suspend(() =>
             ai.streamText({ prompt: prompt.current, toolkit: singleTool }),
@@ -542,39 +535,11 @@ ${content}
             ? (effect) => modelConfig.systemPromptTransform!(system, effect)
             : identity,
         )
-        yield* pipe(
+        const attempt = pipe(
           runModel,
-          // Overflow compaction: compact once, retry once, then fail.
-          Effect.catchIf(
-            (err): err is AiError.AiError =>
-              !overflowCompacted && Compaction.isContextLengthError(err),
-            (err) =>
-              Effect.gen(function* () {
-                response = []
-                const result = yield* Compaction.compactAfterOverflow({
-                  prompt: prompt.current,
-                  ...compactionHooks,
-                }).pipe(
-                  Effect.tapError(() =>
-                    Effect.sync(() => {
-                      // A failed overflow compaction fails the turn; the
-                      // retry policy must not re-run the same fat prompt.
-                      compactionFailed = true
-                    }),
-                  ),
-                )
-                if (Option.isNone(result)) {
-                  return yield* err
-                }
-                applyCompaction(result.value)
-                overflowCompacted = true
-                return yield* runModel
-              }),
-          ),
           Effect.raceFirst(turnTimeoutEffect),
           Effect.retry({
             while: (err) => {
-              if (compactionFailed) return false
               if (err._tag === "TimeoutError") {
                 maybeSend({
                   agentId,
@@ -591,6 +556,9 @@ ${content}
                 response = []
                 return true
               }
+              // Never retry a context-length error as is: the overflow
+              // handler below compacts first.
+              if (Compaction.isContextLengthError(err)) return false
               if (err.isRetryable) {
                 maybeSend({ agentId, part: new ErrorRetry({ error: err }) })
                 switch (err.reason._tag) {
@@ -611,6 +579,33 @@ ${content}
             schedule: retryPolicy,
           }),
           Effect.catchTag("TimeoutError", Effect.die),
+        )
+        // Overflow: compact once, retry the attempt once, then fail.
+        yield* attempt.pipe(
+          Effect.catchIf(
+            (err): err is AiError.AiError =>
+              Compaction.isContextLengthError(err),
+            (err) =>
+              Effect.gen(function* () {
+                response = []
+                const compacted = yield* compactWithEvents(
+                  "overflow",
+                  Compaction.compact({
+                    prompt: prompt.current,
+                    reason: "overflow",
+                    onStart: onCompactionStart,
+                  }).pipe(
+                    Effect.timeout(turnTimeout),
+                    Effect.retry({
+                      while: (error) => error._tag === "TimeoutError",
+                      times: 1,
+                    }),
+                    Effect.catchTag("TimeoutError", Effect.die),
+                  ),
+                )
+                return Option.isSome(compacted) ? yield* attempt : yield* err
+              }),
+          ),
         )
         MutableRef.update(
           prompt,
@@ -867,14 +862,6 @@ export class AgentModelConfig extends Context.Reference<{
         system: string,
         effect: Effect.Effect<A, E, R>,
       ) => Effect.Effect<A, E, R>)
-    | undefined
-  /**
-   * Wraps the compaction summarizer model call, so providers can apply
-   * request overrides such as `max_output_tokens` or out-of-band
-   * instructions.
-   */
-  readonly summarizerTransform?:
-    | (<A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>)
     | undefined
 }>("clanka/Agent/SystemPromptTransform", {
   defaultValue: () => ({}),

@@ -35,22 +35,19 @@ export const model = (
   Model.make(
     "openai",
     model,
-    Layer.merge(
+    Layer.mergeAll(
       OpenAiLanguageModel.layer({
         model,
-        config: Struct.omit(options ?? {}, [
-          "systemPromptTransform",
-          "summarizerTransform",
-        ]),
+        config: Struct.omit(options ?? {}, ["systemPromptTransform"]),
       }),
       AgentModelConfig.layer({
         systemPromptTransform: options?.systemPromptTransform,
-        summarizerTransform:
-          options?.summarizerTransform ??
-          ((effect) =>
-            OpenAiLanguageModel.withConfigOverride(effect, {
-              max_output_tokens: Compaction.summarizerMaxOutputTokens,
-            })),
       }),
+      // Cap compaction summaries; Copilot honours max_output_tokens.
+      Layer.succeed(Compaction.SummarizerTransform, (effect) =>
+        OpenAiLanguageModel.withConfigOverride(effect, {
+          max_output_tokens: Compaction.summarizerMaxOutputTokens,
+        }),
+      ),
     ),
   )

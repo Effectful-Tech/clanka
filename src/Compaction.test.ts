@@ -3,7 +3,6 @@ import * as Effect from "effect/Effect"
 import * as Option from "effect/Option"
 import * as AiError from "effect/unstable/ai/AiError"
 import * as Prompt from "effect/unstable/ai/Prompt"
-import * as Schema from "effect/Schema"
 import * as ResponseIdTracker from "effect/unstable/ai/ResponseIdTracker"
 import * as Compaction from "./Compaction.ts"
 
@@ -90,10 +89,8 @@ const toolResultText = (message: Prompt.Message): string => {
   return part.result as string
 }
 
-const encodePrompt = Schema.encodeSync(Prompt.Prompt)
-
 const promptText = (prompt: Prompt.Prompt): string =>
-  JSON.stringify(encodePrompt(prompt))
+  JSON.stringify(prompt.content)
 
 // -----------------------------------------------------------------------------
 // capOutput

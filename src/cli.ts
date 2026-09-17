@@ -123,25 +123,15 @@ const prompt = Flag.String("prompt").pipe(
   Flag.optional,
 )
 
-const noCompaction = Flag.Boolean("no-compaction").pipe(
+// Kill switch: `--no-compaction` or CLANKA_COMPACTION=false.
+const compaction = Flag.Boolean("compaction").pipe(
   Flag.withDescription(
-    "Disable auto-compaction of the conversation history (the execute output cap stays on). CLANKA_COMPACTION=false does the same.",
+    "Auto-compact the conversation history when it nears the context window. Disable with --no-compaction or CLANKA_COMPACTION=false; the execute output cap stays on.",
+  ),
+  Flag.withFallbackConfig(
+    Config.Boolean("CLANKA_COMPACTION").pipe(Config.withDefault(true)),
   ),
 )
-
-// Kill switch: `--no-compaction` or CLANKA_COMPACTION=false. Nothing else is
-// configurable from the CLI in v1.
-const CompactionLayer = (disabled: boolean) =>
-  Layer.unwrap(
-    Effect.gen(function* () {
-      const enabled = yield* Config.Boolean("CLANKA_COMPACTION").pipe(
-        Config.withDefault(true),
-      )
-      return Compaction.CompactionConfig.layer({
-        enabled: enabled && !disabled,
-      })
-    }),
-  ).pipe(Layer.orDie)
 
 const Kvs = Layer.unwrap(
   Effect.gen(function* () {
@@ -203,7 +193,7 @@ const acpModel = Flag.String("model").pipe(
   Flag.withDefault("openai/gpt-6-astra/medium"),
 )
 
-const acp = Command.make("acp", { model: acpModel, noCompaction }).pipe(
+const acp = Command.make("acp", { model: acpModel, compaction }).pipe(
   Command.withDescription(
     "Run as an Agent Client Protocol (ACP) server over stdio",
   ),
@@ -221,12 +211,12 @@ const acp = Command.make("acp", { model: acpModel, noCompaction }).pipe(
         ),
     }),
   ),
-  Command.provide(({ noCompaction }) =>
+  Command.provide(({ compaction }) =>
     Layer.mergeAll(
       Agent.ConversationMode.layer(true),
       Layer.succeed(Logger.LogToStderr, true),
       DeviceCodeHandler.layerLog,
-      CompactionLayer(noCompaction),
+      Compaction.CompactionConfig.layer({ enabled: compaction }),
     ),
   ),
 )
@@ -236,7 +226,7 @@ Command.make("clanka", {
   model,
   semantic,
   prompt,
-  noCompaction,
+  compaction,
 }).pipe(
   Command.withHandler(
     Effect.fnUntraced(function* ({
@@ -292,10 +282,10 @@ Command.make("clanka", {
       )
     }),
   ),
-  Command.provide(({ prompt, noCompaction }) =>
+  Command.provide(({ prompt, compaction }) =>
     Layer.mergeAll(
       Agent.ConversationMode.layer(Option.isNone(prompt)),
-      CompactionLayer(noCompaction),
+      Compaction.CompactionConfig.layer({ enabled: compaction }),
     ),
   ),
   Command.withSubcommands([acp]),

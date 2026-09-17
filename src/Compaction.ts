@@ -14,14 +14,15 @@
  */
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
+import { identity } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as Predicate from "effect/Predicate"
-import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
 import * as AiError from "effect/unstable/ai/AiError"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as Prompt from "effect/unstable/ai/Prompt"
+import type * as AgentOutput from "./AgentOutput.ts"
 
 // =============================================================================
 // Configuration
@@ -74,6 +75,19 @@ export class CompactionConfig extends Context.Reference<CompactionConfigService>
     Layer.succeed(CompactionConfig, { ...defaultConfig, ...options })
 }
 
+/**
+ * Wraps the summarizer model call so a provider can apply request overrides
+ * (e.g. Copilot's `max_output_tokens`). Defaults to the identity.
+ *
+ * @since 1.0.0
+ * @category Configuration
+ */
+export class SummarizerTransform extends Context.Reference<
+  <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
+>("clanka/Compaction/SummarizerTransform", {
+  defaultValue: () => identity,
+}) {}
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -87,14 +101,8 @@ export class CompactionConfig extends Context.Reference<CompactionConfigService>
  */
 export const executeOutputCapChars = 32_000
 
-/**
- * Cap applied to `execute` results when they are rendered into the summarizer
- * input.
- *
- * @since 1.0.0
- * @category Constants
- */
-export const summarizerToolResultCapChars = 2_000
+/** Cap applied to `execute` results rendered into the summarizer input. */
+const summarizerToolResultCapChars = 2_000
 
 /**
  * Cap applied to `execute` results that remain in the kept tail when the tail
@@ -196,11 +204,8 @@ export const capOutput = (
 // Token accounting
 // =============================================================================
 
-const encodePrompt = Schema.encodeSync(Prompt.Prompt)
-const encodeMessage = Schema.encodeSync(Prompt.Message)
-
 /**
- * Cheap token estimate for a Prompt: encoded JSON length / 4. Used when no
+ * Cheap token estimate for a Prompt: JSON length / 4. Used when no
  * `contextTokens` usage has been observed yet (first turn, ACP session load)
  * and for sizing the kept tail.
  *
@@ -208,7 +213,7 @@ const encodeMessage = Schema.encodeSync(Prompt.Message)
  * @category Tokens
  */
 export const estimateTokens = (prompt: Prompt.Prompt): number =>
-  Math.ceil(JSON.stringify(encodePrompt(prompt)).length / 4)
+  Math.ceil(JSON.stringify(prompt.content).length / 4)
 
 /**
  * Token estimate for a single message. Same measure as `estimateTokens`.
@@ -217,7 +222,7 @@ export const estimateTokens = (prompt: Prompt.Prompt): number =>
  * @category Tokens
  */
 export const estimateMessageTokens = (message: Prompt.Message): number =>
-  Math.ceil(JSON.stringify(encodeMessage(message)).length / 4)
+  Math.ceil(JSON.stringify(message).length / 4)
 
 /**
  * Whether the threshold trigger fires for the next model call.
@@ -246,30 +251,32 @@ export const shouldCompact = (options: {
 // =============================================================================
 
 const contextLengthPattern =
-  /context[_ ]?(length|window)|maximum context length|too many tokens|prompt is too long|prompt token count|exceeds the (context|token|input )?limit|input token limit|exceeds the model'?s? (context|token|input)/i
+  /context[_ ]?(length|window)|too many tokens|prompt is too long|prompt token count|exceeds the (context|token|input )?limit|input token limit|exceeds the model'?s? (context|token|input)/i
 
-const openAiErrorCode = (reason: {
-  readonly metadata?: unknown
-}): string | undefined => {
-  const metadata = reason.metadata
-  if (
-    Predicate.hasProperty(metadata, "errorCode") &&
-    Predicate.isString(metadata.errorCode)
-  ) {
-    return metadata.errorCode
+const contextLengthCode = "context_length_exceeded"
+
+/**
+ * Provider error code from `reason.metadata`, either at the top level or
+ * under a provider key (`metadata.openai.errorCode`).
+ */
+const errorCode = (metadata: unknown): string | undefined => {
+  if (!Predicate.isObject(metadata)) return undefined
+  if (Predicate.isString(metadata.errorCode)) return metadata.errorCode
+  for (const value of Object.values(metadata)) {
+    if (Predicate.isObject(value) && Predicate.isString(value.errorCode)) {
+      return value.errorCode
+    }
   }
-  if (!Predicate.hasProperty(metadata, "openai")) return undefined
-  const openai = metadata.openai
-  if (!Predicate.hasProperty(openai, "errorCode")) return undefined
-  return Predicate.isString(openai.errorCode) ? openai.errorCode : undefined
+  return undefined
 }
 
 /**
  * Whether an `AiError` is a context-length overflow from a known provider
  * (Codex / Copilot), as opposed to any other request or transport failure.
  *
- * Only these errors trigger `compactAfterOverflow`; other retryable errors go
- * through the normal retry policy without compacting.
+ * Any request, unknown or provider error counts when it carries a 413 status,
+ * a `context_length_exceeded` code, or a context-length description. These
+ * errors are never retried as-is; the Agent compacts first.
  *
  * @since 1.0.0
  * @category Overflow
@@ -278,16 +285,14 @@ export const isContextLengthError = (error: AiError.AiError): boolean => {
   const reason = error.reason
   switch (reason._tag) {
     case "InvalidRequestError":
-    case "UnknownError": {
-      if (reason.http?.response?.status === 413) return true
-      if (openAiErrorCode(reason) === "context_length_exceeded") return true
-      return (
-        reason.description !== undefined &&
-        contextLengthPattern.test(reason.description)
-      )
-    }
+    case "UnknownError":
     case "InternalProviderError":
-      return openAiErrorCode(reason) === "context_length_exceeded"
+      return (
+        reason.http?.response?.status === 413 ||
+        errorCode(reason.metadata) === contextLengthCode ||
+        (reason.description !== undefined &&
+          contextLengthPattern.test(reason.description))
+      )
     default:
       return false
   }
@@ -334,6 +339,16 @@ const summaryText = (message: Prompt.Message): Option.Option<string> => {
       .trim(),
   )
 }
+
+/**
+ * Whether a message is the synthetic `<compaction-summary>` user message
+ * produced by `rewrite`. Surfaces that replay history (ACP) skip it.
+ *
+ * @since 1.0.0
+ * @category Cut points
+ */
+export const isSummaryMessage = (message: Prompt.Message): boolean =>
+  Option.isSome(summaryText(message))
 
 /**
  * Peel the system message and a previous summary off a prompt, returning the
@@ -604,12 +619,7 @@ ${previous}<conversation>
 ${conversation}
 </conversation>`
 
-  return Prompt.fromMessages([
-    Prompt.makeMessage("system", { content: summarizerSystem }),
-    Prompt.makeMessage("user", {
-      content: [Prompt.makePart("text", { text })],
-    }),
-  ])
+  return Prompt.make(text).pipe(Prompt.setSystem(summarizerSystem))
 }
 
 /**
@@ -652,7 +662,7 @@ export const rewrite = (options: {
  * @since 1.0.0
  * @category Compaction
  */
-export type CompactionReason = "threshold" | "overflow"
+export type CompactionReason = typeof AgentOutput.CompactionReason.Type
 
 /**
  * @since 1.0.0
@@ -669,49 +679,35 @@ export interface CompactionResult {
 }
 
 /**
- * Hooks shared by the compaction entry points.
+ * Run one compaction of `prompt`.
  *
- * - `onStart` runs once a cut point was found and before the summarizer is
- *   called. It is not invoked for no-op compactions.
- * - `withSummarizer` wraps the summarizer model call so providers can apply
- *   request overrides (e.g. `max_output_tokens`, out-of-band instructions).
- *
- * @since 1.0.0
- * @category Compaction
- */
-export interface CompactionHooks {
-  readonly onStart?:
-    ((reason: CompactionReason) => Effect.Effect<void>) | undefined
-  readonly withSummarizer?:
-    | (<A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>)
-    | undefined
-}
-
-/**
- * Run one compaction of `prompt` regardless of thresholds.
- *
- * Steps: `split` (None → returns None, prompt untouched), `summarizerPrompt`,
- * a direct `LanguageModel.streamText` call with no tools, then `rewrite` with
- * `trimKept(kept)`. Provider hooks apply output-token limits where supported.
- * Streaming is required by the Codex backend and selects the websocket
- * transport when available; generateText uses a non-streaming HTTP request.
+ * Returns `None` without calling the model when compaction is disabled or
+ * when `split` finds nothing to summarize. Otherwise `onStart` runs, the
+ * summarizer is called with `streamText` (the Codex backend rejects
+ * non-streaming requests) through `SummarizerTransform`, and the prompt is
+ * rewritten to `system + summary + trimKept(kept)`.
  *
  * Fails with the summarizer's `AiError`. Callers decide whether that is fatal.
  *
  * @since 1.0.0
  * @category Compaction
  */
-export const compact: (
-  options: CompactionHooks & {
-    readonly prompt: Prompt.Prompt
-    readonly reason: CompactionReason
-  },
-) => Effect.Effect<
+export const compact: (options: {
+  readonly prompt: Prompt.Prompt
+  readonly reason: CompactionReason
+  /**
+   * Runs once a cut point was found, before the summarizer call. Not invoked
+   * for no-op compactions.
+   */
+  readonly onStart?:
+    ((reason: CompactionReason) => Effect.Effect<void>) | undefined
+}) => Effect.Effect<
   Option.Option<CompactionResult>,
   AiError.AiError,
   LanguageModel.LanguageModel
 > = Effect.fnUntraced(function* (options) {
   const config = yield* CompactionConfig
+  if (!config.enabled) return Option.none()
   const parts = split(options.prompt, config.keepRecentTokens)
   if (Option.isNone(parts)) return Option.none()
   const { system, previousSummary, toSummarize, kept } = parts.value
@@ -721,19 +717,20 @@ export const compact: (
   }
 
   const ai = yield* LanguageModel.LanguageModel
-  const summarize = ai
-    .streamText({
-      prompt: summarizerPrompt({ previousSummary, messages: toSummarize }),
-    })
-    .pipe(
-      Stream.runFold(
-        () => "",
-        (text, part) => (part.type === "text-delta" ? text + part.delta : text),
+  const transform = yield* SummarizerTransform
+  const summary = (yield* transform(
+    ai
+      .streamText({
+        prompt: summarizerPrompt({ previousSummary, messages: toSummarize }),
+      })
+      .pipe(
+        Stream.runFold(
+          () => "",
+          (text, part) =>
+            part.type === "text-delta" ? text + part.delta : text,
+        ),
       ),
-    )
-  const summary = (yield* options.withSummarizer
-    ? options.withSummarizer(summarize)
-    : summarize).trim()
+  )).trim()
 
   if (summary.length === 0) {
     return yield* AiError.make({
@@ -768,26 +765,18 @@ export const compact: (
  * @since 1.0.0
  * @category Compaction
  */
-export const compactIfNeeded: (
-  options: CompactionHooks & {
-    readonly prompt: Prompt.Prompt
-    readonly contextTokens: number | undefined
-  },
-) => Effect.Effect<
+export const compactIfNeeded: (options: {
+  readonly prompt: Prompt.Prompt
+  readonly contextTokens: number | undefined
+  readonly onStart?:
+    ((reason: CompactionReason) => Effect.Effect<void>) | undefined
+}) => Effect.Effect<
   Option.Option<CompactionResult>,
   never,
   LanguageModel.LanguageModel
 > = Effect.fnUntraced(function* (options) {
   const config = yield* CompactionConfig
-  if (
-    !shouldCompact({
-      prompt: options.prompt,
-      contextTokens: options.contextTokens,
-      config,
-    })
-  ) {
-    return Option.none()
-  }
+  if (!shouldCompact({ ...options, config })) return Option.none()
   return yield* compact({ ...options, reason: "threshold" }).pipe(
     Effect.catch((error) =>
       Effect.logWarning(
@@ -796,28 +785,4 @@ export const compactIfNeeded: (
       ).pipe(Effect.as(Option.none<CompactionResult>())),
     ),
   )
-})
-
-/**
- * Compact after a context-length overflow error.
- *
- * Returns `None` when compaction is disabled or a no-op, in which case the
- * caller fails the turn with the original error. A failing summarizer fails
- * the turn.
- *
- * @since 1.0.0
- * @category Compaction
- */
-export const compactAfterOverflow: (
-  options: CompactionHooks & {
-    readonly prompt: Prompt.Prompt
-  },
-) => Effect.Effect<
-  Option.Option<CompactionResult>,
-  AiError.AiError,
-  LanguageModel.LanguageModel
-> = Effect.fnUntraced(function* (options) {
-  const config = yield* CompactionConfig
-  if (!config.enabled) return Option.none()
-  return yield* compact({ ...options, reason: "overflow" })
 })

@@ -574,13 +574,15 @@ describe("Agent auto-compaction", () => {
 
   for (const reason of ["threshold", "overflow"] as const) {
     it.effect(
-      `clears the provided response tracker after ${reason} compaction`,
+      `sends the full prompt to an incremental provider after ${reason} compaction`,
       () =>
         Effect.gen(function* () {
+          // A Codex websocket session tracks every message it has sent. The
+          // rewritten prompt starts with a new summary message, so the
+          // tracker must fall back to a full send by itself.
           const tracker = yield* ResponseIdTracker.make
           tracker.markParts(fatHistory.content, "stale-response")
           assert.isTrue(Option.isSome(tracker.prepareUnsafe(fatHistory)))
-          let clears = 0
           let summarized = false
           const result = yield* runAgentCollect({
             history: fatHistory,
@@ -591,35 +593,19 @@ describe("Agent auto-compaction", () => {
             },
             respond: (call) => {
               if (call.isSummarizer) {
-                assert.strictEqual(clears, 0)
                 summarized = true
                 return Stream.fromIterable(text("TRACKER-SUMMARY"))
               }
               if (!summarized) return Stream.fail(contextLengthError)
-              assert.strictEqual(
-                clears,
-                1,
-                "Agent must explicitly clear the injected tracker",
-              )
               assert.isTrue(
-                Option.isNone(tracker.prepareUnsafe(fatHistory)),
-                "the old tracked prompt must no longer be reusable",
+                Option.isNone(tracker.prepareUnsafe(call.prompt)),
+                "the compacted prompt must be sent in full",
               )
-              assert.isTrue(Option.isNone(tracker.prepareUnsafe(call.prompt)))
               assertCompactedShape(call.prompt, "TRACKER-SUMMARY")
               return Stream.fromIterable(text("full prompt sent"))
             },
-          }).pipe(
-            Effect.provideService(ResponseIdTracker.ResponseIdTracker, {
-              ...tracker,
-              clearUnsafe: () => {
-                clears++
-                tracker.clearUnsafe()
-              },
-            }),
-          )
+          })
           assert.deepStrictEqual(result.exit, Exit.succeed("full prompt sent"))
-          assert.strictEqual(clears, 1)
         }),
     )
   }
@@ -909,7 +895,6 @@ describe("Agent overflow compaction", () => {
           respond: (call, index) => {
             switch (index) {
               case 0:
-              case 2:
                 assert.isFalse(call.isSummarizer)
                 assert.include(promptJson(call.prompt), "SENTINEL-ONE")
                 return Stream.fail(contextLengthError)
@@ -922,11 +907,13 @@ describe("Agent overflow compaction", () => {
                     }),
                   ),
                 )
-              case 3:
+              case 2:
+                // The stalled summary is retried once without re-sending
+                // the fat prompt.
                 assertSummarizerCall(call)
                 assert.isTrue(interrupted)
                 return Stream.fromIterable(text("RECOVERED-SUMMARY"))
-              case 4:
+              case 3:
                 assertCompactedShape(call.prompt, "RECOVERED-SUMMARY")
                 return Stream.fromIterable(text("recovered after timeout"))
               default:
@@ -935,7 +922,7 @@ describe("Agent overflow compaction", () => {
           },
         }).pipe(Effect.timeout("2 seconds"))
         assert.deepStrictEqual(exit, Exit.succeed("recovered after timeout"))
-        assert.strictEqual(calls.length, 5)
+        assert.strictEqual(calls.length, 4)
       }),
   )
 

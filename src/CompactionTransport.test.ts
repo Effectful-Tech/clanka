@@ -12,7 +12,6 @@ import * as Prompt from "effect/unstable/ai/Prompt"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import type * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
-import * as Agent from "./Agent.ts"
 import * as Codex from "./Codex.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Copilot from "./Copilot.ts"
@@ -62,24 +61,19 @@ const body = (
   return JSON.parse(new TextDecoder().decode(request.body.body))
 }
 
-const compact = Effect.gen(function* () {
-  const config = yield* Agent.AgentModelConfig
-  return yield* Compaction.compact({
-    prompt: history,
-    reason: "threshold",
-    withSummarizer: config.summarizerTransform,
-  })
+const compact = Compaction.compact({
+  prompt: history,
+  reason: "threshold",
 }).pipe(
   Effect.provide(Compaction.CompactionConfig.layer({ keepRecentTokens: 100 })),
 )
 
 const streamedSummary = Effect.gen(function* () {
   const ai = yield* LanguageModel.LanguageModel
-  const config = yield* Agent.AgentModelConfig
-  const request = ai.streamText({ prompt: summaryPrompt }).pipe(Stream.runDrain)
-  return yield* config.summarizerTransform
-    ? config.summarizerTransform(request)
-    : request
+  const transform = yield* Compaction.SummarizerTransform
+  return yield* transform(
+    ai.streamText({ prompt: summaryPrompt }).pipe(Stream.runDrain),
+  )
 })
 
 const socketError = AiError.make({

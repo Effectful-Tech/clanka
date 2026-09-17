@@ -199,12 +199,9 @@ const textContent = (text: string) => ({ type: "text", text })
 
 const historyUpdates = (history: Prompt.Prompt) => {
   const updates: Array<object> = []
-  const summary = Option.isSome(Compaction.findPreviousSummary(history))
-    ? history.content.find((message) => message.role !== "system")
-    : undefined
   for (const message of history.content) {
-    if (message === summary) continue
     if (message.role !== "user" && message.role !== "assistant") continue
+    if (Compaction.isSummaryMessage(message)) continue
     const sessionUpdate =
       message.role === "user" ? "user_message_chunk" : "agent_message_chunk"
     for (const part of message.content) {

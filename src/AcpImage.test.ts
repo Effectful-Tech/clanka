@@ -2,6 +2,8 @@ import { assert, describe, it } from "@effect/vitest"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as NodePath from "@effect/platform-node/NodePath"
 import * as Effect from "effect/Effect"
+import * as Fiber from "effect/Fiber"
+import { TestClock } from "effect/testing"
 import * as Encoding from "effect/Encoding"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
@@ -120,16 +122,19 @@ const textOf = (message: Prompt.UserMessage): string =>
     .join("\n")
 
 /** An HttpClient that serves `bytes` as `image/png` and records the URLs. */
-const makeHttp = (bytes: Uint8Array) => {
+const makeHttp = (bytes: Uint8Array | ((url: URL) => Uint8Array)) => {
   const urls: Array<string> = []
   const client = HttpClient.make((request, url) =>
     Effect.sync(() => {
       urls.push(url.toString())
       return HttpClientResponse.fromWeb(
         request,
-        new Response(new Uint8Array(bytes), {
-          headers: { "content-type": "image/png" },
-        }),
+        new Response(
+          new Uint8Array(typeof bytes === "function" ? bytes(url) : bytes),
+          {
+            headers: { "content-type": "image/png" },
+          },
+        ),
       )
     }),
   )
@@ -265,7 +270,11 @@ describe("Acp images", () => {
   )
 
   it.effect("fetches an https resource_link with an image mime type", () => {
-    const http = makeHttp(tinyPng)
+    const http = makeHttp((url) =>
+      url.pathname.endsWith(".svg")
+        ? new TextEncoder().encode("<svg/>")
+        : tinyPng,
+    )
     return withServices(
       Effect.gen(function* () {
         const server = yield* makeServer()
@@ -282,16 +291,16 @@ describe("Acp images", () => {
             },
             {
               type: "resource_link",
-              uri: "https://docs.example/guide.md",
-              name: "guide.md",
-              mimeType: "text/markdown",
+              uri: "https://docs.example/diagram.svg",
+              name: "diagram.svg",
+              mimeType: "image/svg+xml",
             },
           ],
         })
         assert.deepStrictEqual(done.result, { stopReason: "end_turn" })
         assert.include(
           textOf(lastUserMessage(server.prompts[0]!)),
-          "https://docs.example/guide.md",
+          "https://docs.example/diagram.svg",
         )
         assert.deepStrictEqual(http.urls, [
           "https://attachments.example/shot.png",
@@ -302,6 +311,106 @@ describe("Acp images", () => {
         assert.isTrue(equalBytes(bytesOf(images[0]!.data), tinyPng))
       }),
       http.layer,
+    )
+  })
+
+  it.effect(
+    "rejects an oversized streamed image before consuming the whole body",
+    () => {
+      let pulled = 0
+      let cancelled = false
+      const chunk = new Uint8Array(1024 * 1024)
+      chunk.set(tinyPng)
+      const client = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(
+              new ReadableStream<Uint8Array>({
+                pull(controller) {
+                  if (pulled === 64) controller.close()
+                  else {
+                    pulled++
+                    controller.enqueue(chunk)
+                  }
+                },
+                cancel() {
+                  cancelled = true
+                },
+              }),
+              { headers: { "content-type": "image/png" } },
+            ),
+          ),
+        ),
+      )
+      return withServices(
+        Effect.gen(function* () {
+          const server = yield* makeServer()
+          const sessionId = yield* server.newSession("/tmp")
+          const done = yield* server.request(2, "session/prompt", {
+            sessionId,
+            prompt: [
+              {
+                type: "resource_link",
+                uri: "https://attachments.example/large.png",
+                mimeType: "image/png",
+              },
+            ],
+          })
+          assert.strictEqual(done.error?.code, -32602)
+          assert.strictEqual(server.prompts.length, 0)
+          // No Content-Length: the actual stream must be bounded, not just headers.
+          assert.isBelow(pulled, 64, "must stop before buffering 64 MiB")
+          assert.isTrue(cancelled, "rejection must cancel the remaining body")
+        }),
+        Layer.succeed(HttpClient.HttpClient, client),
+      )
+    },
+  )
+
+  it.effect("times out a stalled image body without calling the model", () => {
+    const client = HttpClient.make((request) =>
+      Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(tinyPng)
+              },
+            }),
+            { headers: { "content-type": "image/png" } },
+          ),
+        ),
+      ),
+    )
+    return withServices(
+      Effect.gen(function* () {
+        const server = yield* makeServer()
+        const sessionId = yield* server.newSession("/tmp")
+        const fiber = yield* server
+          .request(2, "session/prompt", {
+            sessionId,
+            prompt: [
+              {
+                type: "resource_link",
+                uri: "https://attachments.example/stalled.png",
+                mimeType: "image/png",
+              },
+            ],
+          })
+          .pipe(Effect.forkChild)
+        // A generous upper bound, not a configurable production deadline.
+        yield* TestClock.adjust("1 minute")
+        assert.isDefined(
+          fiber.pollUnsafe(),
+          "image ingestion must finish within one minute",
+        )
+        const done = yield* Fiber.join(fiber)
+        assert.strictEqual(done.error?.code, -32602)
+        assert.strictEqual(server.prompts.length, 0)
+      }),
+      Layer.succeed(HttpClient.HttpClient, client),
     )
   })
 
@@ -343,7 +452,7 @@ describe("Acp images", () => {
       Effect.gen(function* () {
         const server = yield* makeServer()
         const sessionId = yield* server.newSession("/tmp")
-        yield* server.request(2, "session/prompt", {
+        const done = yield* server.request(2, "session/prompt", {
           sessionId,
           prompt: [
             {
@@ -354,9 +463,19 @@ describe("Acp images", () => {
                 blob: base64(tinyPng),
               },
             },
+            {
+              type: "resource",
+              resource: {
+                uri: "file:///attached/diagram.svg",
+                mimeType: "image/svg+xml",
+                blob: base64(new TextEncoder().encode("<svg/>")),
+              },
+            },
           ],
         })
+        assert.deepStrictEqual(done.result, { stopReason: "end_turn" })
         const message = lastUserMessage(server.prompts[0]!)
+        assert.include(textOf(message), "file:///attached/diagram.svg")
         const images = fileParts(message)
         assert.strictEqual(images.length, 1)
         assert.isTrue(equalBytes(bytesOf(images[0]!.data), tinyPng))

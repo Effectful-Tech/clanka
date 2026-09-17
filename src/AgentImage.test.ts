@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import * as Duration from "effect/Duration"
+import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
 import * as Exit from "effect/Exit"
 import * as Layer from "effect/Layer"
@@ -177,18 +178,58 @@ describe("Agent images", () => {
   )
 
   it.effect(
-    "retries once without images when the provider rejects image input",
+    "retries without images and discards attachments from the failed attempt",
     () =>
       Effect.gen(function* () {
-        const { exit, calls } = yield* runAgent({
+        const attached = yield* Deferred.make<void>()
+        let executions = 0
+        const executor = makeExecutor(({ onImage }) =>
+          Stream.fromEffect(
+            Effect.gen(function* () {
+              executions++
+              yield* onImage({
+                data: tinyPng,
+                mediaType: "image/png",
+                fileName: executions === 1 ? "discarded.png" : "shot.png",
+              })
+              yield* Deferred.succeed(attached, undefined)
+              return "Image attached"
+            }),
+          ),
+        )
+        const { exit, calls, history } = yield* runAgent({
           prompt: imagePrompt,
+          executor,
           respond: (_, index) =>
             index === 0
-              ? Stream.fail(unsupportedImageError)
-              : Stream.fromIterable(text("Text only, but I tried.")),
+              ? Stream.make(
+                  toolCall("discarded", 'await readFile({ path: "shot.png" })'),
+                ).pipe(
+                  // Advance past the tool-call chunk so its handler starts.
+                  Stream.concat(
+                    Stream.make({ type: "text-start", id: "failed" } as const),
+                  ),
+                  Stream.concat(
+                    Stream.fromEffect(
+                      Deferred.await(attached).pipe(
+                        Effect.andThen(Effect.fail(unsupportedImageError)),
+                      ),
+                    ),
+                  ),
+                )
+              : index === 1
+                ? Stream.make(
+                    toolCall("retried", 'await readFile({ path: "shot.png" })'),
+                  )
+                : Stream.fromIterable(text("Text only, but I tried.")),
         })
         assert.isTrue(Exit.isSuccess(exit))
-        assert.strictEqual(calls.length, 2)
+        assert.strictEqual(calls.length, 3)
+        assert.strictEqual(executions, 2)
+        assert.deepStrictEqual(
+          fileParts(history).map((part) => part.fileName),
+          ["shot.png", "shot.png"],
+        )
         assert.strictEqual(fileParts(calls[0]!.prompt).length, 1)
         assert.strictEqual(fileParts(calls[1]!.prompt).length, 0)
         const retried = userText(calls[1]!.prompt)

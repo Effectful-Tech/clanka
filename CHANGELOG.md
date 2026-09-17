@@ -1,5 +1,11 @@
 # clanka
 
+## 0.3.1
+
+### Patch Changes
+
+- [`9b8ed42`](https://github.com/Effectful-Tech/clanka/commit/9b8ed42d1b64f8a3d416880743dfc052822df4f8) Thanks [@tim-smart](https://github.com/tim-smart)! - bump cli version
+
 ## 0.3.0
 
 ### Minor Changes

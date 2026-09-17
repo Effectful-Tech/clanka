@@ -501,7 +501,7 @@ describe("Agent execute output cap", () => {
 
 describe("Agent auto-compaction", () => {
   it.effect(
-    "uses generateText without tools for summarization and streams the next turn",
+    "streams summarization without tools and streams the next turn",
     () =>
       Effect.gen(function* () {
         const result = yield* runAgentCollect({
@@ -519,7 +519,7 @@ describe("Agent auto-compaction", () => {
         assert.deepStrictEqual(result.exit, Exit.succeed("continued"))
         assert.deepStrictEqual(
           result.calls.map((call) => call.method),
-          ["generateText", "streamText"],
+          ["streamText", "streamText"],
         )
         assertSummarizerCall(result.calls[0]!)
         assertCompactedShape(result.calls[1]!.prompt, "GENERATED-SUMMARY")

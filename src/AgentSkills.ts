@@ -9,6 +9,7 @@ import * as FileSystem from "effect/FileSystem"
 import * as Option from "effect/Option"
 import * as Path from "effect/Path"
 import * as Schema from "effect/Schema"
+import * as Yaml from "yaml"
 
 /**
  * @since 1.0.0
@@ -85,9 +86,13 @@ export const discover: (options: {
       if (Option.isNone(content)) continue
       const frontmatter = parseFrontmatter(content.value)
       if (Option.isNone(frontmatter)) continue
-      const description = frontmatter.value.get("description")?.trim()
+      const description = frontmatter.value.description
+        .replace(/\s+/g, " ")
+        .trim()
       if (!description) continue
-      const name = frontmatter.value.get("name")?.trim() || entry
+      const name = Schema.is(Schema.String)(frontmatter.value.name)
+        ? frontmatter.value.name.trim() || entry
+        : entry
       if (byName.has(name)) continue
       byName.set(name, new Skill({ name, description, location, source }))
     }
@@ -109,7 +114,9 @@ export const renderCatalog = (
   if (skills.length === 0) return Option.none()
   const entries = skills
     .map(
-      (skill) => `- ${skill.name}: ${skill.description}
+      (
+        skill,
+      ) => `- ${skill.name.replace(/\s+/g, " ")}: ${skill.description.replace(/\s+/g, " ")}
   location: ${skill.location}`,
     )
     .join("\n")
@@ -131,60 +138,53 @@ ${entries}`)
 // Internal
 // -------------------------------------------
 
-const frontmatterKey = /^([A-Za-z0-9_-]+):(.*)$/
+const decodeFrontmatter = Schema.decodeUnknownOption(
+  Schema.Struct({
+    name: Schema.optional(Schema.Unknown),
+    description: Schema.String,
+  }),
+)
+
+const parseYaml = Option.liftThrowable((source: string): unknown =>
+  Yaml.parse(source),
+)
 
 /**
- * A lenient YAML frontmatter reader.
- *
- * Only top-level `key: value` pairs are extracted. Nested mappings are
- * ignored, block scalars (`|`, `>`) are joined, and unquoted colons inside a
- * value are kept as-is. Returns `None` when the frontmatter block is missing
- * or contains a top-level line that cannot be read as a key.
+ * Parse the whole frontmatter so malformed ignored fields still invalidate
+ * a skill. If parsing fails, recover unquoted colons in a plain description
+ * by quoting that value, then validate the entire document again.
  */
 const parseFrontmatter = (
   content: string,
-): Option.Option<ReadonlyMap<string, string>> => {
+): Option.Option<{ readonly name?: unknown; readonly description: string }> => {
   const lines = content.split(/\r?\n/)
   if (lines[0]?.trim() !== "---") return Option.none()
-  const end = lines.indexOf("---", 1)
+  const end = lines.findIndex(
+    (line, index) => index > 0 && line.trim() === "---",
+  )
   if (end === -1) return Option.none()
 
-  const result = new Map<string, string>()
-  let i = 1
-  while (i < end) {
-    const line = lines[i]!
-    i++
-    const trimmed = line.trim()
-    if (trimmed === "" || trimmed.startsWith("#")) continue
-    if (/^\s/.test(line)) continue // nested content of a previous key
-    const match = frontmatterKey.exec(line)
-    if (!match) return Option.none()
-    const key = match[1]!
-    let value = match[2]!.trim()
-    const block = /^[|>][-+]?$/.test(value)
-    if (block || value === "") {
-      const folded = value.startsWith(">")
-      const parts: Array<string> = []
-      while (i < end && (/^\s/.test(lines[i]!) || lines[i]!.trim() === "")) {
-        parts.push(lines[i]!.trim())
-        i++
-      }
-      // An empty value followed by indented lines is a nested mapping, which
-      // is not needed for the catalog.
-      value = block ? parts.join(folded ? " " : "\n").trim() : ""
-    } else {
-      value = unquote(value)
-    }
-    if (!result.has(key)) result.set(key, value)
-  }
-  return Option.some(result)
-}
-
-const unquote = (value: string): string => {
-  const first = value[0]
-  const last = value[value.length - 1]
-  if (value.length >= 2 && first === last && (first === '"' || first === "'")) {
-    return value.slice(1, -1)
-  }
-  return value
+  const source = lines.slice(1, end).join("\n")
+  return parseYaml(source).pipe(
+    Option.orElse(() => {
+      const recovered = source.replace(
+        /^description:[ \t]+(.+)$/m,
+        (line, value: string) => {
+          value = value.trim()
+          // Leave quoted scalars, collections, tags, aliases and block scalars
+          // to the parser. Only plain text with an unquoted colon is recoverable.
+          if (
+            /^["'[\]{}|>&*!#%@`]/.test(value) ||
+            /^[-?:](?:\s|$)/.test(value) ||
+            !/:\s/.test(value)
+          ) {
+            return line
+          }
+          return `description: ${JSON.stringify(value)}`
+        },
+      )
+      return recovered === source ? Option.none() : parseYaml(recovered)
+    }),
+    Option.flatMap(decodeFrontmatter),
+  )
 }

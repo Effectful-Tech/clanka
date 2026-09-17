@@ -76,6 +76,7 @@ export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
    */
   skills: Schema.Array(AgentSkills.Skill).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed([])),
+    Schema.withConstructorDefault(Effect.succeed([])),
   ),
 }) {}
 

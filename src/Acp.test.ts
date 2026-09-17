@@ -4,6 +4,7 @@ import * as Fiber from "effect/Fiber"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
+import * as Prompt from "effect/unstable/ai/Prompt"
 import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as Model from "effect/unstable/ai/Model"
@@ -11,6 +12,7 @@ import type * as Response from "effect/unstable/ai/Response"
 import * as Acp from "./Acp.ts"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
+import * as Compaction from "./Compaction.ts"
 
 type Message = {
   readonly id?: number
@@ -231,6 +233,88 @@ describe("Acp", () => {
         )
       }),
     ),
+  )
+
+  it.effect(
+    "hides a persisted compaction summary during replay but keeps it for the next model call",
+    () =>
+      withStore(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const kvs = yield* KeyValueStore.KeyValueStore
+            const store = KeyValueStore.toSchemaStore(
+              KeyValueStore.prefix(kvs, "session-"),
+              Acp.SessionRecord,
+            )
+            const sessionId = "compacted-session"
+            const userText =
+              "Explain the <compaction-summary> tag without hiding this message"
+            const history = Compaction.rewrite({
+              system: Option.some(
+                Prompt.makeMessage("system", { content: "Original system" }),
+              ),
+              summary: "PRIVATE-COMPACTION-SUMMARY",
+              kept: [
+                Prompt.makeMessage("user", {
+                  content: [Prompt.makePart("text", { text: userText })],
+                }),
+                Prompt.makeMessage("assistant", {
+                  content: [
+                    Prompt.makePart("text", { text: "Kept assistant reply" }),
+                  ],
+                }),
+              ],
+            })
+            yield* store.set(
+              sessionId,
+              new Acp.SessionRecord({
+                cwd: "/tmp",
+                model: "test/model",
+                history,
+              }),
+            )
+
+            let modelPrompt: Prompt.Prompt | undefined
+            const server = yield* makeServer((options) => {
+              modelPrompt = options.prompt
+              return assistantSays("Continued after reload")
+            })
+            const loaded = yield* server.request(1, "session/load", {
+              sessionId,
+              cwd: "/tmp",
+            })
+            assert.isUndefined(loaded.error)
+            const replay = server.updates(sessionId)
+
+            const continued = yield* server.request(2, "session/prompt", {
+              sessionId,
+              prompt: [{ type: "text", text: "continue" }],
+            })
+            assert.deepStrictEqual(continued.result, { stopReason: "end_turn" })
+            assert.isDefined(modelPrompt)
+            assert.deepStrictEqual(
+              Compaction.findPreviousSummary(modelPrompt!),
+              Option.some("PRIVATE-COMPACTION-SUMMARY"),
+            )
+            const persisted = Option.getOrThrow(yield* store.get(sessionId))
+            assert.deepStrictEqual(
+              Compaction.findPreviousSummary(persisted.history),
+              Option.some("PRIVATE-COMPACTION-SUMMARY"),
+            )
+
+            assert.deepStrictEqual(replay, [
+              {
+                sessionUpdate: "user_message_chunk",
+                content: { type: "text", text: userText },
+              },
+              {
+                sessionUpdate: "agent_message_chunk",
+                content: { type: "text", text: "Kept assistant reply" },
+              },
+            ])
+          }),
+        ),
+      ),
   )
 
   it.effect("rejects unknown models and methods", () =>

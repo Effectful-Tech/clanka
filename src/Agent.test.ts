@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import * as Effect from "effect/Effect"
+import * as Duration from "effect/Duration"
 import * as Exit from "effect/Exit"
 import * as Layer from "effect/Layer"
 import * as MutableRef from "effect/MutableRef"
@@ -11,6 +12,7 @@ import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as Model from "effect/unstable/ai/Model"
 import * as Prompt from "effect/unstable/ai/Prompt"
 import type * as Response from "effect/unstable/ai/Response"
+import * as ResponseIdTracker from "effect/unstable/ai/ResponseIdTracker"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import type * as AgentOutput from "./AgentOutput.ts"
@@ -134,11 +136,12 @@ describe("Agent", () => {
 // Compaction acceptance tests
 //
 // These drive the real Agent loop with a scripted LanguageModel. Every
-// `streamText` call is recorded so tests can assert on exactly what the model
+// model call is recorded so tests can assert on exactly what the model
 // was sent. The summarizer call is recognised by having no tools.
 // =============================================================================
 
 interface RecordedCall {
+  readonly method: "generateText" | "streamText"
   readonly prompt: Prompt.Prompt
   readonly isSummarizer: boolean
 }
@@ -154,6 +157,7 @@ const runAgentCollect = (options: {
   readonly history?: Prompt.Prompt | undefined
   readonly compaction?: Partial<Compaction.CompactionConfigService> | undefined
   readonly prompt?: string | undefined
+  readonly turnTimeout?: Duration.Duration | undefined
   readonly respond: ScriptedResponse
 }) =>
   Effect.scoped(
@@ -162,9 +166,31 @@ const runAgentCollect = (options: {
       const outputs: Array<AgentOutput.Output> = []
 
       const languageModel = yield* LanguageModel.make({
-        generateText: () => Effect.succeed([]),
+        generateText: (providerOptions) => {
+          const call: RecordedCall = {
+            method: "generateText",
+            prompt: providerOptions.prompt,
+            isSummarizer: providerOptions.tools.length === 0,
+          }
+          const index = calls.push(call) - 1
+          return options.respond(call, index).pipe(
+            Stream.runCollect,
+            Effect.map((parts): Array<Response.PartEncoded> => {
+              const text = parts
+                .flatMap((part) =>
+                  part.type === "text-delta" ? [part.delta] : [],
+                )
+                .join("")
+              return [
+                { type: "text", text },
+                ...parts.filter((part) => part.type === "finish"),
+              ]
+            }),
+          )
+        },
         streamText: (providerOptions) => {
           const call: RecordedCall = {
+            method: "streamText",
             prompt: providerOptions.prompt,
             isSummarizer: providerOptions.tools.length === 0,
           }
@@ -209,6 +235,10 @@ const runAgentCollect = (options: {
               Agent.ConversationMode.layer(options.conversationMode ?? true),
               Agent.layerSubagentModel(modelLayer),
               Compaction.CompactionConfig.layer(options.compaction ?? {}),
+              Layer.succeed(
+                Agent.TurnTimeout,
+                options.turnTimeout ?? Duration.minutes(5),
+              ),
             ),
           ),
           Effect.exit,
@@ -470,6 +500,130 @@ describe("Agent execute output cap", () => {
 })
 
 describe("Agent auto-compaction", () => {
+  it.effect(
+    "uses generateText without tools for summarization and streams the next turn",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* runAgentCollect({
+          history: fatHistory,
+          compaction: {
+            contextWindow: 12_000,
+            reserveTokens: 2_000,
+            keepRecentTokens: 9_000,
+          },
+          respond: (call) =>
+            Stream.fromIterable(
+              text(call.isSummarizer ? "GENERATED-SUMMARY" : "continued"),
+            ),
+        })
+        assert.deepStrictEqual(result.exit, Exit.succeed("continued"))
+        assert.deepStrictEqual(
+          result.calls.map((call) => call.method),
+          ["generateText", "streamText"],
+        )
+        assertSummarizerCall(result.calls[0]!)
+        assertCompactedShape(result.calls[1]!.prompt, "GENERATED-SUMMARY")
+      }),
+  )
+
+  it.live(
+    "times out a stalled threshold summarizer and continues with the original prompt",
+    () =>
+      Effect.gen(function* () {
+        let interrupted = false
+        const result = yield* runAgentCollect({
+          history: fatHistory,
+          turnTimeout: Duration.millis(100),
+          compaction: {
+            contextWindow: 12_000,
+            reserveTokens: 2_000,
+            keepRecentTokens: 9_000,
+          },
+          respond: (call, index) => {
+            if (index === 0) {
+              assertSummarizerCall(call)
+              return Stream.fromEffect(Effect.never).pipe(
+                Stream.ensuring(
+                  Effect.sync(() => {
+                    interrupted = true
+                  }),
+                ),
+              )
+            }
+            assert.isFalse(call.isSummarizer)
+            assert.include(promptJson(call.prompt), "SENTINEL-ONE")
+            assert.isTrue(
+              Option.isNone(Compaction.findPreviousSummary(call.prompt)),
+            )
+            return Stream.fromIterable(text("continued after timeout"))
+          },
+        }).pipe(Effect.timeoutOption("2 seconds"))
+        assert.isTrue(
+          Option.isSome(result),
+          "threshold summarization must not hang the turn",
+        )
+        const { exit, calls, outputs } = Option.getOrThrow(result)
+        assert.deepStrictEqual(exit, Exit.succeed("continued after timeout"))
+        assert.isTrue(interrupted)
+        assert.strictEqual(calls.length, 2)
+        const ended = outputsOfTag(outputs, "CompactionEnded")
+        assert.strictEqual(ended.length, 1)
+        assert.strictEqual(ended[0]!.tokensAfter, ended[0]!.tokensBefore)
+      }),
+  )
+
+  for (const reason of ["threshold", "overflow"] as const) {
+    it.effect(
+      `clears the provided response tracker after ${reason} compaction`,
+      () =>
+        Effect.gen(function* () {
+          const tracker = yield* ResponseIdTracker.make
+          tracker.markParts(fatHistory.content, "stale-response")
+          assert.isTrue(Option.isSome(tracker.prepareUnsafe(fatHistory)))
+          let clears = 0
+          let summarized = false
+          const result = yield* runAgentCollect({
+            history: fatHistory,
+            compaction: {
+              contextWindow: reason === "threshold" ? 12_000 : 1_000_000,
+              reserveTokens: 2_000,
+              keepRecentTokens: 9_000,
+            },
+            respond: (call) => {
+              if (call.isSummarizer) {
+                assert.strictEqual(clears, 0)
+                summarized = true
+                return Stream.fromIterable(text("TRACKER-SUMMARY"))
+              }
+              if (!summarized) return Stream.fail(contextLengthError)
+              assert.strictEqual(
+                clears,
+                1,
+                "Agent must explicitly clear the injected tracker",
+              )
+              assert.isTrue(
+                Option.isNone(tracker.prepareUnsafe(fatHistory)),
+                "the old tracked prompt must no longer be reusable",
+              )
+              assert.isTrue(Option.isNone(tracker.prepareUnsafe(call.prompt)))
+              assertCompactedShape(call.prompt, "TRACKER-SUMMARY")
+              return Stream.fromIterable(text("full prompt sent"))
+            },
+          }).pipe(
+            Effect.provideService(ResponseIdTracker.ResponseIdTracker, {
+              ...tracker,
+              clearUnsafe: () => {
+                clears++
+                tracker.clearUnsafe()
+              },
+            }),
+          )
+          assert.deepStrictEqual(result.exit, Exit.succeed("full prompt sent"))
+          assert.strictEqual(clears, 1)
+        }),
+    )
+  }
+
   // Small window so the fat history trips the threshold: 20k - 4k = 16k tokens.
   const smallWindow = {
     contextWindow: 20_000,
@@ -721,7 +875,16 @@ describe("Agent auto-compaction", () => {
       })
       assert.deepStrictEqual(exit, Exit.succeed("carried on"))
       assert.strictEqual(calls.length, 2)
-      assert.strictEqual(outputsOfTag(outputs, "CompactionEnded").length, 0)
+      const started = outputsOfTag(outputs, "CompactionStarted")
+      const ended = outputsOfTag(outputs, "CompactionEnded")
+      assert.strictEqual(started.length, 1)
+      assert.strictEqual(
+        ended.length,
+        1,
+        "failed compaction must close its progress event",
+      )
+      assert.strictEqual(ended[0]!.reason, "threshold")
+      assert.strictEqual(ended[0]!.tokensAfter, ended[0]!.tokensBefore)
     }),
   )
 })
@@ -733,6 +896,48 @@ describe("Agent overflow compaction", () => {
     reserveTokens: 1_000,
     keepRecentTokens: 9_000,
   }
+
+  it.live(
+    "can compact again after a timeout interrupts the first overflow summary",
+    () =>
+      Effect.gen(function* () {
+        let interrupted = false
+        const { exit, calls } = yield* runAgentCollect({
+          history: fatHistory,
+          compaction: bigWindow,
+          turnTimeout: Duration.millis(100),
+          respond: (call, index) => {
+            switch (index) {
+              case 0:
+              case 2:
+                assert.isFalse(call.isSummarizer)
+                assert.include(promptJson(call.prompt), "SENTINEL-ONE")
+                return Stream.fail(contextLengthError)
+              case 1:
+                assertSummarizerCall(call)
+                return Stream.fromEffect(Effect.never).pipe(
+                  Stream.ensuring(
+                    Effect.sync(() => {
+                      interrupted = true
+                    }),
+                  ),
+                )
+              case 3:
+                assertSummarizerCall(call)
+                assert.isTrue(interrupted)
+                return Stream.fromIterable(text("RECOVERED-SUMMARY"))
+              case 4:
+                assertCompactedShape(call.prompt, "RECOVERED-SUMMARY")
+                return Stream.fromIterable(text("recovered after timeout"))
+              default:
+                return Stream.die(`unexpected model call #${index}`)
+            }
+          },
+        }).pipe(Effect.timeout("2 seconds"))
+        assert.deepStrictEqual(exit, Exit.succeed("recovered after timeout"))
+        assert.strictEqual(calls.length, 5)
+      }),
+  )
 
   it.live("compacts once and retries after a context-length error", () =>
     Effect.gen(function* () {

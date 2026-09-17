@@ -339,6 +339,78 @@ describe("Compaction.isContextLengthError", () => {
     assert.isTrue(Compaction.isContextLengthError(error))
   })
 
+  for (const body of [
+    "",
+    "<html><body>Request Entity Too Large</body></html>",
+  ]) {
+    it(`matches a proxy 413 without a parsed description (${body === "" ? "empty" : "HTML"} body)`, () => {
+      assert.isTrue(
+        Compaction.isContextLengthError(
+          openAiError(
+            new AiError.UnknownError({ http: httpContext(413, body) }),
+          ),
+        ),
+      )
+    })
+  }
+
+  it("matches flat provider error-code metadata without a context-length description", () => {
+    assert.isTrue(
+      Compaction.isContextLengthError(
+        openAiError(
+          new AiError.UnknownError({
+            description: "Request rejected",
+            http: httpContext(422, ""),
+            metadata: { errorCode: "context_length_exceeded" },
+          }),
+        ),
+      ),
+    )
+  })
+
+  it("matches an explicit flat context-length code on an internal provider error", () => {
+    assert.isTrue(
+      Compaction.isContextLengthError(
+        openAiError(
+          new AiError.InternalProviderError({
+            description: "Request rejected",
+            http: httpContext(500, ""),
+            metadata: { errorCode: "context_length_exceeded" },
+          }),
+        ),
+      ),
+    )
+  })
+
+  it("matches nested provider metadata without relying on the description", () => {
+    assert.isTrue(
+      Compaction.isContextLengthError(
+        openAiError(
+          new AiError.InvalidRequestError({
+            metadata: {
+              openai: { errorCode: "context_length_exceeded" },
+            } as never,
+          }),
+        ),
+      ),
+    )
+  })
+
+  it("does not treat unrelated unknown HTTP errors or error codes as overflow", () => {
+    for (const status of [400, 404, 422, 502]) {
+      assert.isFalse(
+        Compaction.isContextLengthError(
+          openAiError(
+            new AiError.UnknownError({
+              http: httpContext(status, "<html>Request failed</html>"),
+              metadata: { errorCode: "invalid_value" },
+            }),
+          ),
+        ),
+      )
+    }
+  })
+
   it("does not match other invalid requests", () => {
     const error = openAiError(
       new AiError.InvalidRequestError({

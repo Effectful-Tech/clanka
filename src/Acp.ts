@@ -199,8 +199,9 @@ const toRpcError = (cause: Cause.Cause<unknown>) => {
 
 const renderLink = (uri: string, name?: string) => `[${name ?? uri}](${uri})`
 
-const isImageMime = (mimeType: string | undefined): mimeType is string =>
-  mimeType !== undefined && mimeType.startsWith("image/")
+// Bound remote input before decoding/resizing; the prepared image has its own cap.
+const maxRemoteImageBytes = 20 * 1024 * 1024
+const remoteImageTimeout = "30 seconds"
 
 const invalidParams = (message: string) =>
   new RpcError({ code: -32602, message })
@@ -362,24 +363,55 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
           invalidParams(`Cannot fetch image ${uri}: no HttpClient available`),
         ),
       onSome: (client) =>
-        client.get(uri).pipe(
-          Effect.flatMap(
-            Effect.fnUntraced(function* (response) {
-              if (response.status < 200 || response.status >= 300) {
-                return yield* invalidParams(
-                  `Failed to fetch image ${uri}: HTTP ${response.status}`,
-                )
-              }
-              return new Uint8Array(yield* response.arrayBuffer)
-            }),
+        HttpClient.withScope(client)
+          .get(uri)
+          .pipe(
+            Effect.flatMap(
+              Effect.fnUntraced(function* (response) {
+                if (response.status < 200 || response.status >= 300) {
+                  return yield* invalidParams(
+                    `Failed to fetch image ${uri}: HTTP ${response.status}`,
+                  )
+                }
+                const tooLarge = () =>
+                  invalidParams(
+                    `Image ${uri} exceeds the ${maxRemoteImageBytes} byte download limit`,
+                  )
+                if (
+                  Number(response.headers["content-length"]) >
+                  maxRemoteImageBytes
+                ) {
+                  return yield* tooLarge()
+                }
+                const chunks: Array<Uint8Array> = []
+                let size = 0
+                yield* Stream.runForEach(response.stream, (chunk) => {
+                  if (chunk.byteLength > maxRemoteImageBytes - size) {
+                    return Effect.fail(tooLarge())
+                  }
+                  size += chunk.byteLength
+                  chunks.push(chunk)
+                  return Effect.void
+                })
+                const bytes = new Uint8Array(size)
+                let offset = 0
+                for (const chunk of chunks) {
+                  bytes.set(chunk, offset)
+                  offset += chunk.byteLength
+                }
+                return bytes
+              }),
+            ),
+            Effect.scoped,
+            Effect.timeout(remoteImageTimeout),
+            Effect.mapError((error) =>
+              error instanceof RpcError
+                ? error
+                : invalidParams(
+                    `Failed to fetch image ${uri}: ${error.message}`,
+                  ),
+            ),
           ),
-          Effect.mapError((error) =>
-            error instanceof RpcError
-              ? error
-              : invalidParams(`Failed to fetch image ${uri}: ${error.message}`),
-          ),
-          Effect.scoped,
-        ),
     })
 
   /**
@@ -506,7 +538,10 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
           break
         }
         case "resource_link": {
-          if (isImageMime(block.mimeType)) {
+          if (
+            block.mimeType !== undefined &&
+            Image.isImageMediaType(block.mimeType)
+          ) {
             const bytes = yield* resolveImageUri(cwd, block.uri)
             addImage(
               yield* imagePart(
@@ -522,7 +557,11 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         }
         case "resource": {
           const { uri, mimeType, text: body, blob } = block.resource
-          if (blob !== undefined && isImageMime(mimeType)) {
+          if (
+            blob !== undefined &&
+            mimeType !== undefined &&
+            Image.isImageMediaType(mimeType)
+          ) {
             const bytes = yield* decodeBase64(blob, `resource ${uri}`)
             addImage(yield* imagePart(bytes, mimeType, fileNameOf(uri)))
           } else if (body !== undefined) {

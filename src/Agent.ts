@@ -575,6 +575,7 @@ ${content}
                   }),
                 })
                 response = []
+                pendingImages.length = 0
                 return true
               }
               // Never retry a context-length error as is: the overflow
@@ -595,6 +596,7 @@ ${content}
                 }
               }
               response = []
+              pendingImages.length = 0
               return err.isRetryable
             },
             schedule: retryPolicy,
@@ -612,6 +614,7 @@ ${content}
             (err) => {
               sendImages = false
               response = []
+              pendingImages.length = 0
               maybeSend({ agentId, part: new ErrorRetry({ error: err }) })
               return attempt
             },
@@ -625,6 +628,7 @@ ${content}
             (err) =>
               Effect.gen(function* () {
                 response = []
+                pendingImages.length = 0
                 const compacted = yield* compactWithEvents(
                   "overflow",
                   Compaction.compact({

@@ -94,7 +94,7 @@ export const maxBytes = 5 * 1024 * 1024
 export const maxInputBytes = 20 * 1024 * 1024
 
 /**
- * Maximum declared canvas area before allocating decoder buffers.
+ * Maximum declared canvas or frame area before allocating decoder buffers.
  * @since 1.0.0
  * @category Limits
  */
@@ -223,8 +223,9 @@ const validDimensions = (width: number, height: number) =>
   width > 0 && height > 0 ? Option.some({ width, height }) : Option.none()
 
 /**
- * Read dimensions without decoding pixels. Truncated or malformed headers
- * are rejected before they can reach Photon.
+ * Read conservative dimension bounds without decoding pixels, including inner
+ * frames in container formats. Truncated or malformed headers are rejected
+ * before they can reach Photon; over-budget dimensions stop parsing early.
  * @since 1.0.0
  * @category Detection
  */
@@ -243,9 +244,59 @@ export const dimensions = (
       )
         return Option.none()
       return validDimensions(view.getUint32(16), view.getUint32(20))
-    case "image/gif":
+    case "image/gif": {
       if (bytes.length < 13) return Option.none()
-      return validDimensions(view.getUint16(6, true), view.getUint16(8, true))
+      let width = view.getUint16(6, true)
+      let height = view.getUint16(8, true)
+      if (width === 0 || height === 0) return Option.none()
+      if (width * height > maxInputPixels) return validDimensions(width, height)
+      let offset = 13
+      const skipColorTable = (packed: number) => {
+        if (packed & 0x80) offset += 3 * (1 << ((packed & 7) + 1))
+        return offset <= bytes.length
+      }
+      const skipSubBlocks = () => {
+        while (offset < bytes.length) {
+          const length = view.getUint8(offset++)
+          if (length === 0) return true
+          if (length > bytes.length - offset) return false
+          offset += length
+        }
+        return false
+      }
+      if (!skipColorTable(view.getUint8(10))) return Option.none()
+      let hasFrame = false
+      while (offset < bytes.length) {
+        const tag = view.getUint8(offset++)
+        if (tag === 0x3b) {
+          return hasFrame ? validDimensions(width, height) : Option.none()
+        }
+        if (tag === 0x21) {
+          // Extension label followed by length-prefixed sub-blocks.
+          if (offset >= bytes.length) return Option.none()
+          offset++
+          if (!skipSubBlocks()) return Option.none()
+          continue
+        }
+        if (tag !== 0x2c || bytes.length - offset < 9) return Option.none()
+        const frameWidth = view.getUint16(offset + 4, true)
+        const frameHeight = view.getUint16(offset + 6, true)
+        if (frameWidth === 0 || frameHeight === 0) return Option.none()
+        // The decoder allocates the frame independently of the logical screen.
+        width = Math.max(width, frameWidth)
+        height = Math.max(height, frameHeight)
+        if (width * height > maxInputPixels)
+          return validDimensions(width, height)
+        const packed = view.getUint8(offset + 8)
+        offset += 9
+        if (!skipColorTable(packed) || offset >= bytes.length)
+          return Option.none()
+        offset++ // LZW minimum code size; pixel decoding validates its value.
+        if (!skipSubBlocks()) return Option.none()
+        hasFrame = true
+      }
+      return Option.none()
+    }
     case "image/jpeg": {
       let offset = 2
       while (offset < bytes.length) {
@@ -291,51 +342,81 @@ export const dimensions = (
     case "image/webp": {
       if (bytes.length < 20) return Option.none()
       const end = view.getUint32(4, true) + 8
-      const length = view.getUint32(16, true)
-      if (
-        end < 20 ||
-        end > bytes.length ||
-        length > end - 20 ||
-        length + (length & 1) > end - 20
-      )
-        return Option.none()
+      if (end < 20 || end > bytes.length) return Option.none()
       const u24 = (offset: number) =>
         view.getUint8(offset) |
         (view.getUint8(offset + 1) << 8) |
         (view.getUint8(offset + 2) << 16)
-      if (startsWith(bytes, ascii("VP8X"), 12)) {
-        if (length !== 10) return Option.none()
-        return validDimensions(u24(24) + 1, u24(27) + 1)
+      let width = 0
+      let height = 0
+      let hasFrame = false
+      const include = (w: number, h: number) => {
+        if (w === 0 || h === 0) return false
+        width = Math.max(width, w)
+        height = Math.max(height, h)
+        return true
       }
-      if (startsWith(bytes, ascii("VP8L"), 12)) {
-        if (
-          length < 5 ||
-          view.getUint8(20) !== 0x2f ||
-          view.getUint8(24) >> 5 !== 0
-        ) {
-          return Option.none()
+      // Only one level of nesting is legal: ANMF contains frame chunks, not ANMF.
+      const scan = (
+        start: number,
+        limit: number,
+        inFrame: boolean,
+      ): boolean => {
+        let offset = start
+        while (offset < limit) {
+          if (limit - offset < 8) return false
+          const length = view.getUint32(offset + 4, true)
+          const data = offset + 8
+          const paddedLength = length + (length & 1)
+          if (paddedLength > limit - data) return false
+          if (startsWith(bytes, ascii("VP8X"), offset)) {
+            if (inFrame || offset !== 12 || length !== 10) return false
+            include(u24(data + 4) + 1, u24(data + 7) + 1)
+          } else if (startsWith(bytes, ascii("VP8L"), offset)) {
+            if (
+              length < 5 ||
+              view.getUint8(data) !== 0x2f ||
+              view.getUint8(data + 4) >> 5 !== 0
+            )
+              return false
+            include(
+              (view.getUint8(data + 1) |
+                ((view.getUint8(data + 2) & 0x3f) << 8)) +
+                1,
+              ((view.getUint8(data + 2) >> 6) |
+                (view.getUint8(data + 3) << 2) |
+                ((view.getUint8(data + 4) & 0x0f) << 10)) +
+                1,
+            )
+            hasFrame = true
+          } else if (startsWith(bytes, ascii("VP8 "), offset)) {
+            if (
+              length < 10 ||
+              (view.getUint8(data) & 1) !== 0 ||
+              !startsWith(bytes, [0x9d, 0x01, 0x2a], data + 3) ||
+              !include(
+                view.getUint16(data + 6, true) & 0x3fff,
+                view.getUint16(data + 8, true) & 0x3fff,
+              )
+            )
+              return false
+            hasFrame = true
+          } else if (startsWith(bytes, ascii("ANMF"), offset)) {
+            if (inFrame || length < 16) return false
+            include(u24(data + 6) + 1, u24(data + 9) + 1)
+            if (width * height > maxInputPixels) return true
+            if (!scan(data + 16, data + length, true)) return false
+          }
+          // Reject over-budget headers even if the pixel payload is incomplete.
+          if (width * height > maxInputPixels) return true
+          offset = data + paddedLength
         }
-        return validDimensions(
-          (view.getUint8(21) | ((view.getUint8(22) & 0x3f) << 8)) + 1,
-          ((view.getUint8(22) >> 6) |
-            (view.getUint8(23) << 2) |
-            ((view.getUint8(24) & 0x0f) << 10)) +
-            1,
-        )
+        return true
       }
-      if (startsWith(bytes, ascii("VP8 "), 12)) {
-        if (
-          length < 10 ||
-          (view.getUint8(20) & 1) !== 0 ||
-          !startsWith(bytes, [0x9d, 0x01, 0x2a], 23)
-        )
-          return Option.none()
-        return validDimensions(
-          view.getUint16(26, true) & 0x3fff,
-          view.getUint16(28, true) & 0x3fff,
-        )
-      }
-      return Option.none()
+      if (!scan(12, end, false)) return Option.none()
+      return hasFrame || width * height > maxInputPixels
+        ? validDimensions(width, height)
+        : Option.none()
     }
   }
 }

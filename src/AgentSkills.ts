@@ -71,15 +71,20 @@ export const discover: (options: {
     entries.sort()
     for (const entry of entries) {
       const location = path.join(skillsDir, entry, "SKILL.md")
-      const content = yield* Effect.option(fs.readFileString(location))
+      const content = yield* Effect.option(
+        fs.stat(location).pipe(
+          Effect.filterOrFail((info) => info.type === "File"),
+          Effect.andThen(() => fs.readFileString(location)),
+        ),
+      )
       if (Option.isNone(content)) continue
       const frontmatter = parseFrontmatter(content.value)
       if (Option.isNone(frontmatter)) continue
       const description = singleLine(frontmatter.value.description)
       if (description === "") continue
       const name = Predicate.isString(frontmatter.value.name)
-        ? singleLine(frontmatter.value.name) || entry
-        : entry
+        ? singleLine(frontmatter.value.name) || singleLine(entry)
+        : singleLine(entry)
       if (byName.has(name)) continue
       byName.set(name, new Skill({ name, description, location, source }))
     }
@@ -101,7 +106,7 @@ export const renderCatalog = (
   const entries = skills
     .map(
       (skill) => `- ${skill.name}: ${skill.description}
-  location: ${skill.location}`,
+  location: ${renderLocation(skill.location)}`,
     )
     .join("\n")
   return Option.some(`# Skills
@@ -111,6 +116,8 @@ a specific kind of task.
 
 When a task matches a skill's description, use "readFile" to read the file at
 its location BEFORE proceeding, then follow the instructions it contains.
+Double-quoted locations are JSON strings; decode them to get the exact file
+path. Unquoted locations are literal paths.
 Relative paths mentioned inside a skill (such as "scripts/" or "references/")
 are relative to the skill's directory (the parent of SKILL.md); use absolute
 paths when accessing them.
@@ -141,3 +148,8 @@ const parseFrontmatter = (
 }
 
 const singleLine = (value: string): string => value.replace(/\s+/g, " ").trim()
+
+const renderLocation = (location: string): string => {
+  const encoded = JSON.stringify(location)
+  return encoded.slice(1, -1) === location ? location : encoded
+}

@@ -9,7 +9,7 @@ import * as FileSystem from "effect/FileSystem"
 import * as Option from "effect/Option"
 import * as Path from "effect/Path"
 import * as Schema from "effect/Schema"
-import * as Yaml from "yaml"
+import * as Yaml from "effect/unstable/encoding/Yaml"
 
 /**
  * @since 1.0.0
@@ -150,9 +150,9 @@ const parseYaml = Option.liftThrowable((source: string): unknown =>
 )
 
 /**
- * Parse the whole frontmatter so malformed ignored fields still invalidate
- * a skill. If parsing fails, recover unquoted colons in a plain description
- * by quoting that value, then validate the entire document again.
+ * Parse the whole frontmatter block with effect's YAML parser, so a skill with
+ * malformed frontmatter is skipped even when its `description` looks fine.
+ * Plain scalars may contain unquoted colons.
  */
 const parseFrontmatter = (
   content: string,
@@ -164,27 +164,7 @@ const parseFrontmatter = (
   )
   if (end === -1) return Option.none()
 
-  const source = lines.slice(1, end).join("\n")
-  return parseYaml(source).pipe(
-    Option.orElse(() => {
-      const recovered = source.replace(
-        /^description:[ \t]+(.+)$/m,
-        (line, value: string) => {
-          value = value.trim()
-          // Leave quoted scalars, collections, tags, aliases and block scalars
-          // to the parser. Only plain text with an unquoted colon is recoverable.
-          if (
-            /^["'[\]{}|>&*!#%@`]/.test(value) ||
-            /^[-?:](?:\s|$)/.test(value) ||
-            !/:\s/.test(value)
-          ) {
-            return line
-          }
-          return `description: ${JSON.stringify(value)}`
-        },
-      )
-      return recovered === source ? Option.none() : parseYaml(recovered)
-    }),
+  return parseYaml(lines.slice(1, end).join("\n")).pipe(
     Option.flatMap(decodeFrontmatter),
   )
 }

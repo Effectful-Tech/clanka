@@ -35,9 +35,6 @@ importers:
       turndown:
         specifier: ^7.2.4
         version: 7.2.4
-      yaml:
-        specifier: ^2.9.1
-        version: 2.9.1
     devDependencies:
       '@changesets/changelog-github':
         specifier: ^1.0.1

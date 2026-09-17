@@ -121,7 +121,7 @@ export const AgentTools = Toolkit.make(
   }),
   Tool.make("delegate", {
     description:
-      "Delegate a task to another software engineer / sub-agent. Returns the result of the task. Delegates share the executor's working directory: a delegate's directory changes affect the caller and other delegates. Avoid concurrent navigation and use absolute paths when working concurrently.",
+      "Delegate a task to another software engineer / sub-agent. Returns the result of the task.",
     parameters: Schema.String.annotate({
       identifier: "task",
     }),

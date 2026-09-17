@@ -481,6 +481,11 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
                   }
                   return Effect.void
                 }),
+                Effect.onExit((exit) =>
+                  Exit.isSuccess(exit)
+                    ? Queue.end(queue)
+                    : Queue.failCause(queue, exit.cause),
+                ),
                 Effect.forkScoped,
               )
 

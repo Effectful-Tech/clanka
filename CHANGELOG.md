@@ -1,5 +1,17 @@
 # clanka
 
+## 0.4.0
+
+### Minor Changes
+
+- [#172](https://github.com/Effectful-Tech/clanka/pull/172) [`5182bad`](https://github.com/Effectful-Tech/clanka/commit/5182bad8777cbb8758ae7bc26df4c2dd4fa2ed3e) Thanks [@tim-smart](https://github.com/tim-smart)! - Add Agent Skills support. Discover skills in project and user `.agents/skills` directories on the executor, expose them through `AgentExecutor.Capabilities.skills`, and list them in the system prompt for on-demand reading.
+
+- [#171](https://github.com/Effectful-Tech/clanka/pull/171) [`062c6aa`](https://github.com/Effectful-Tech/clanka/commit/062c6aa777b97b08ef4324248c7d7978ee643788) Thanks [@tim-smart](https://github.com/tim-smart)! - Add auto-compaction: an always-on 32k character cap on `execute` results and threshold / overflow compaction of the live Prompt (`Compaction` module, `CompactionConfig`, `ExecuteOutputCapped` / `CompactionStarted` / `CompactionEnded` output events). Disable compaction with `--no-compaction` or `CLANKA_COMPACTION=false`; the output cap stays on.
+
+  By default, threshold compaction triggers above 220k tokens of reported usage or estimated prompt size, using a 236k context window with a 16k reserve. Exactly 220k tokens does not trigger compaction.
+
+  Summaries use `streamText`, as the Codex backend rejects non-streaming requests. Codex also rejects `max_output_tokens`, so its summaries have no configured output-token cap; Copilot retains a 4k cap. Compaction handles stalled summarizers, interrupted overflow recovery, and proxy 413 responses. Failed threshold compactions close their progress event. ACP session replay hides the synthetic summary while retaining it in the model's history.
+
 ## 0.3.1
 
 ### Patch Changes

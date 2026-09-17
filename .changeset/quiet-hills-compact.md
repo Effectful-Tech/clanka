@@ -6,4 +6,4 @@ Add auto-compaction: an always-on 32k character cap on `execute` results and thr
 
 By default, threshold compaction triggers above 220k tokens of reported usage or estimated prompt size, using a 236k context window with a 16k reserve. Exactly 220k tokens does not trigger compaction.
 
-Summaries use `generateText`. Compaction handles stalled summarizers, interrupted overflow recovery, and proxy 413 responses. Failed threshold compactions close their progress event. ACP session replay hides the synthetic summary while retaining it in the model's history.
+Summaries use `streamText`, as the Codex backend rejects non-streaming requests. Codex also rejects `max_output_tokens`, so its summaries have no configured output-token cap; Copilot retains a 4k cap. Compaction handles stalled summarizers, interrupted overflow recovery, and proxy 413 responses. Failed threshold compactions close their progress event. ACP session replay hides the synthetic summary while retaining it in the model's history.

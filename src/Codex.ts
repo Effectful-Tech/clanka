@@ -6,7 +6,6 @@ import * as Layer from "effect/Layer"
 import * as Struct from "effect/Struct"
 import { CodexAuth } from "./CodexAuth.ts"
 import { AgentModelConfig } from "./Agent.ts"
-import * as Compaction from "./Compaction.ts"
 import * as Model from "effect/unstable/ai/Model"
 import type * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import type * as Socket from "effect/unstable/socket/Socket"
@@ -87,11 +86,8 @@ const layerModel = (
           OpenAiLanguageModel.withConfigOverride(effect, {
             instructions: system,
           }),
-        summarizerTransform: (effect) =>
-          OpenAiLanguageModel.withConfigOverride(effect, {
-            instructions: Compaction.summarizerSystem,
-            max_output_tokens: Compaction.summarizerMaxOutputTokens,
-          }),
+        // Codex rejects max_output_tokens, so summaries have no configured
+        // output-token cap. The summary instructions are already in the Prompt.
       }),
     ),
   )

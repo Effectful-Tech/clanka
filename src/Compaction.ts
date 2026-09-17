@@ -18,6 +18,7 @@ import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as Predicate from "effect/Predicate"
 import * as Schema from "effect/Schema"
+import * as Stream from "effect/Stream"
 import * as AiError from "effect/unstable/ai/AiError"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as Prompt from "effect/unstable/ai/Prompt"
@@ -105,7 +106,9 @@ export const summarizerToolResultCapChars = 2_000
 export const keptToolResultStubChars = 2_000
 
 /**
- * Maximum output tokens requested from the summarizer model call.
+ * Maximum output tokens requested by providers that support a summary cap.
+ * Copilot uses this limit; Codex rejects max_output_tokens and has no
+ * configured summary output-token cap.
  *
  * @since 1.0.0
  * @category Constants
@@ -128,9 +131,7 @@ export const summaryOpenTag = "<compaction-summary>"
 export const summaryCloseTag = "</compaction-summary>"
 
 /**
- * System prompt for the summarizer model call. Providers that send
- * instructions out of band (Codex) should apply it through their
- * `summarizerTransform`.
+ * System prompt included in the summarizer's Prompt.
  *
  * @since 1.0.0
  * @category Constants
@@ -690,8 +691,10 @@ export interface CompactionHooks {
  * Run one compaction of `prompt` regardless of thresholds.
  *
  * Steps: `split` (None → returns None, prompt untouched), `summarizerPrompt`,
- * a direct `LanguageModel.generateText` call with no tools and
- * `summarizerMaxOutputTokens`, then `rewrite` with `trimKept(kept)`.
+ * a direct `LanguageModel.streamText` call with no tools, then `rewrite` with
+ * `trimKept(kept)`. Provider hooks apply output-token limits where supported.
+ * Streaming is required by the Codex backend and selects the websocket
+ * transport when available; generateText uses a non-streaming HTTP request.
  *
  * Fails with the summarizer's `AiError`. Callers decide whether that is fatal.
  *
@@ -719,10 +722,15 @@ export const compact: (
 
   const ai = yield* LanguageModel.LanguageModel
   const summarize = ai
-    .generateText({
+    .streamText({
       prompt: summarizerPrompt({ previousSummary, messages: toSummarize }),
     })
-    .pipe(Effect.map((response) => response.text))
+    .pipe(
+      Stream.runFold(
+        () => "",
+        (text, part) => (part.type === "text-delta" ? text + part.delta : text),
+      ),
+    )
   const summary = (yield* options.withSummarizer
     ? options.withSummarizer(summarize)
     : summarize).trim()

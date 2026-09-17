@@ -1,5 +1,11 @@
 # clanka
 
+## 0.6.1
+
+### Patch Changes
+
+- [#182](https://github.com/Effectful-Tech/clanka/pull/182) [`eaf6f6d`](https://github.com/Effectful-Tech/clanka/commit/eaf6f6d110ad85a55639c1886f9c92fc54f2bc6b) Thanks [@tim-smart](https://github.com/tim-smart)! - Use the package.json version for the CLI and ACP agent metadata instead of a hardcoded version.
+
 ## 0.6.0
 
 ### Minor Changes

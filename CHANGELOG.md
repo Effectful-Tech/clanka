@@ -1,5 +1,11 @@
 # clanka
 
+## 0.3.0
+
+### Minor Changes
+
+- [`ac008eb`](https://github.com/Effectful-Tech/clanka/commit/ac008ebd7a7d53b9c9eab6ea828cb152bedb7695) Thanks [@tim-smart](https://github.com/tim-smart)! - add `clanka acp` subcommand, an Agent Client Protocol server over stdio
+
 ## 0.2.72
 
 ### Patch Changes

@@ -164,7 +164,84 @@ const parseFrontmatter = (
   )
   if (end === -1) return Option.none()
 
-  return parseYaml(lines.slice(1, end).join("\n")).pipe(
+  const frontmatter = lines.slice(1, end)
+  return parseYaml(frontmatter.join("\n")).pipe(
+    Option.orElse(() => parseYaml(normalizeFrontmatter(frontmatter))),
     Option.flatMap(decodeFrontmatter),
   )
+}
+
+/**
+ * Adapt two YAML shapes unsupported by Effect's configuration parser. Keep
+ * every field for the subsequent full-document parse; never skip bad lines.
+ */
+const normalizeFrontmatter = (lines: ReadonlyArray<string>): string => {
+  const normalized = [...lines]
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    if (!/^[^\s#][^:]*:[ \t]*(?:#.*)?$/.test(line)) continue
+
+    let start = i + 1
+    while (start < lines.length && /^\s*(?:#.*)?$/.test(lines[start]!)) start++
+    if (start === lines.length) continue
+
+    // An indentless sequence is a value of the preceding empty mapping key.
+    // Move its items and their nested content together, preserving indentation.
+    if (/^-(?: |$)/.test(lines[start]!)) {
+      let end = start
+      while (
+        end < lines.length &&
+        (/^-(?: |$)/.test(lines[end]!) ||
+          /^\s/.test(lines[end]!) ||
+          /^#|^$/.test(lines[end]!))
+      ) {
+        normalized[end] = `  ${lines[end]!}`
+        end++
+      }
+      i = end - 1
+      continue
+    }
+
+    if (!line.startsWith("description:")) continue
+    const first = lines[start]!
+    const indent = /^ +/.exec(first)?.[0]
+    if (!indent) continue
+    // A mapping, collection, quoted value or block scalar is not a plain
+    // description. Leave those to the parser rather than turning them into text.
+    if (
+      /^["'[\]{}|>&*!#%@`]/.test(first.trimStart()) ||
+      /^[-?:](?:\s|$)/.test(first.trimStart())
+    )
+      continue
+
+    let end = start
+    const parts: Array<string> = []
+    let plain = true
+    while (
+      end < lines.length &&
+      (/^\s/.test(lines[end]!) || /^#|^$/.test(lines[end]!))
+    ) {
+      const current = lines[end]!
+      if (/^\s*(?:#.*)?$/.test(current)) {
+        parts.push("")
+      } else {
+        const text = current.replace(/[ \t]+#.*$/, "")
+        // Do not hide nested mappings or invalid indentation in a block scalar.
+        if (
+          /^ +/.exec(current)?.[0] !== indent ||
+          /:\s|:$/.test(text) ||
+          /^ *\t/.test(current)
+        )
+          plain = false
+        parts.push(text)
+      }
+      end++
+    }
+    if (plain && parts.length > 1) {
+      normalized[i] = "description: >-"
+      for (let j = start; j < end; j++) normalized[j] = parts[j - start]!
+    }
+    i = end - 1
+  }
+  return normalized.join("\n")
 }

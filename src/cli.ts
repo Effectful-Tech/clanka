@@ -28,7 +28,7 @@ import * as Option from "effect/Option"
 import { OpenAiClient, OpenAiEmbeddingModel } from "@effect/ai-openai"
 import { DeviceCodeHandler } from "./index.ts"
 
-const version = "0.0.1"
+const version = "1.0.0"
 
 type Provider = "openai" | "copilot"
 

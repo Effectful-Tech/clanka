@@ -333,10 +333,10 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
           return update(session.id, {
             sessionUpdate: "tool_call",
             toolCallId,
-            title: "execute",
+            title: `terminal: ${script.replace(/\s+/g, " ").trim().slice(0, 120)}`,
             kind: "execute",
             status: "in_progress",
-            rawInput: { script },
+            rawInput: { command: script },
             content: [{ type: "content", content: textContent(script) }],
           })
         case "ScriptOutput":
@@ -344,7 +344,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
             sessionUpdate: "tool_call_update",
             toolCallId,
             status: "completed",
-            rawOutput: { output: part.output },
+            rawOutput: part.output,
             content: [{ type: "content", content: textContent(part.output) }],
           })
         case "Usage":
@@ -366,7 +366,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
           return update(session.id, {
             sessionUpdate: "tool_call",
             toolCallId: `subagent-${part.id}`,
-            title: "subagent",
+            title: `delegate: ${part.prompt.replace(/\s+/g, " ").trim().slice(0, 120)}`,
             kind: "think",
             status: "in_progress",
             rawInput: { prompt: part.prompt },

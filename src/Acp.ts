@@ -11,11 +11,14 @@
 import { randomUUID } from "node:crypto"
 import * as Cause from "effect/Cause"
 import * as Effect from "effect/Effect"
+import * as Encoding from "effect/Encoding"
 import * as Exit from "effect/Exit"
 import * as Fiber from "effect/Fiber"
+import * as FileSystem from "effect/FileSystem"
 import type * as Layer from "effect/Layer"
 import * as MutableRef from "effect/MutableRef"
 import * as Option from "effect/Option"
+import * as Path from "effect/Path"
 import type * as PlatformError from "effect/PlatformError"
 import * as Queue from "effect/Queue"
 import * as Schema from "effect/Schema"
@@ -25,10 +28,12 @@ import * as Stream from "effect/Stream"
 import type * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import type * as Model from "effect/unstable/ai/Model"
 import * as Prompt from "effect/unstable/ai/Prompt"
+import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
 import type * as Agent from "./Agent.ts"
 import type * as AgentOutput from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
+import * as Image from "./Image.ts"
 
 /**
  * @since 1.0.0
@@ -139,21 +144,36 @@ const TextBlock = Schema.Struct({
   text: Schema.String,
 })
 
+const ImageBlock = Schema.Struct({
+  type: Schema.Literal("image"),
+  data: Schema.String,
+  mimeType: Schema.String,
+  uri: Schema.optionalKey(Schema.String),
+})
+
 const ResourceLinkBlock = Schema.Struct({
   type: Schema.Literal("resource_link"),
   uri: Schema.String,
   name: Schema.optionalKey(Schema.String),
+  mimeType: Schema.optionalKey(Schema.String),
 })
 
 const ResourceBlock = Schema.Struct({
   type: Schema.Literal("resource"),
   resource: Schema.Struct({
     uri: Schema.String,
+    mimeType: Schema.optionalKey(Schema.String),
     text: Schema.optionalKey(Schema.String),
+    blob: Schema.optionalKey(Schema.String),
   }),
 })
 
-const ContentBlock = Schema.Union([TextBlock, ResourceLinkBlock, ResourceBlock])
+const ContentBlock = Schema.Union([
+  TextBlock,
+  ImageBlock,
+  ResourceLinkBlock,
+  ResourceBlock,
+])
 
 const PromptParams = Schema.Struct({
   sessionId: Schema.String,
@@ -177,25 +197,34 @@ const toRpcError = (cause: Cause.Cause<unknown>) => {
     : new RpcError({ code: -32603, message: Cause.pretty(cause) })
 }
 
-const renderPrompt = (
-  blocks: ReadonlyArray<typeof ContentBlock.Type>,
-): string =>
-  blocks
-    .map((block) => {
-      switch (block.type) {
-        case "text":
-          return block.text
-        case "resource_link":
-          return `[${block.name ?? block.uri}](${block.uri})`
-        case "resource":
-          return block.resource.text === undefined
-            ? `[${block.resource.uri}](${block.resource.uri})`
-            : `<resource uri="${block.resource.uri}">\n${block.resource.text}\n</resource>`
-      }
-    })
-    .join("\n\n")
+const renderLink = (uri: string, name?: string) => `[${name ?? uri}](${uri})`
+
+const isImageMime = (mimeType: string | undefined): mimeType is string =>
+  mimeType !== undefined && mimeType.startsWith("image/")
+
+const invalidParams = (message: string) =>
+  new RpcError({ code: -32602, message })
+
+const decodeBase64 = (data: string, what: string) => {
+  const decoded = Encoding.decodeBase64(data)
+  return decoded._tag === "Success"
+    ? Effect.succeed(decoded.success)
+    : Effect.fail(invalidParams(`Invalid base64 image data in ${what}`))
+}
+
+const fileNameOf = (uri: string | undefined): string | undefined => {
+  if (uri === undefined) return undefined
+  return uri.split(/[\\/]/).findLast((part) => part.length > 0)
+}
 
 const textContent = (text: string) => ({ type: "text", text })
+
+const imageContent = (part: Prompt.FilePart) =>
+  Option.map(Image.partBytes(part), (bytes) => ({
+    type: "image",
+    data: Encoding.encodeBase64(bytes),
+    mimeType: part.mediaType,
+  }))
 
 const historyUpdates = (history: Prompt.Prompt) => {
   const updates: Array<object> = []
@@ -207,6 +236,11 @@ const historyUpdates = (history: Prompt.Prompt) => {
     for (const part of message.content) {
       if (part.type === "text") {
         updates.push({ sessionUpdate, content: textContent(part.text) })
+      } else if (message.role === "user" && Image.isImagePart(part)) {
+        const content = imageContent(part)
+        if (Option.isSome(content)) {
+          updates.push({ sessionUpdate, content: content.value })
+        }
       }
     }
   }
@@ -234,6 +268,12 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
   KeyValueStore.KeyValueStore | Scope.Scope
 > {
   const kvs = yield* KeyValueStore.KeyValueStore
+  // Optional: `https:` images need an HttpClient and `file:` images need a
+  // FileSystem and Path. Inline (base64) images work without either. When a
+  // service is missing the corresponding block is rejected, never fetched.
+  const http = yield* Effect.serviceOption(HttpClient.HttpClient)
+  const fs = yield* Effect.serviceOption(FileSystem.FileSystem)
+  const path = yield* Effect.serviceOption(Path.Path)
   const store = KeyValueStore.toSchemaStore(
     KeyValueStore.prefix(kvs, "session-"),
     SessionRecord,
@@ -307,9 +347,200 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       { discard: true },
     )
 
+  // ---------------------------------------------------------------------
+  // Prompt content blocks
+  // ---------------------------------------------------------------------
+
+  /**
+   * Fetch an `http(s):` image. Any transport or non-2xx failure rejects the
+   * prompt; nothing is retried here.
+   */
+  const fetchImage = (uri: string): Effect.Effect<Uint8Array, RpcError> =>
+    Option.match(http, {
+      onNone: () =>
+        Effect.fail(
+          invalidParams(`Cannot fetch image ${uri}: no HttpClient available`),
+        ),
+      onSome: (client) =>
+        client.get(uri).pipe(
+          Effect.flatMap(
+            Effect.fnUntraced(function* (response) {
+              if (response.status < 200 || response.status >= 300) {
+                return yield* invalidParams(
+                  `Failed to fetch image ${uri}: HTTP ${response.status}`,
+                )
+              }
+              return new Uint8Array(yield* response.arrayBuffer)
+            }),
+          ),
+          Effect.mapError((error) =>
+            error instanceof RpcError
+              ? error
+              : invalidParams(`Failed to fetch image ${uri}: ${error.message}`),
+          ),
+          Effect.scoped,
+        ),
+    })
+
+  /**
+   * Read a `file:` image, but only when its real path (symlinks resolved)
+   * is inside the session directory (symlinks resolved as well).
+   */
+  const readLocalImage = (
+    cwd: string,
+    uri: string,
+  ): Effect.Effect<Uint8Array, RpcError> =>
+    Option.match(Option.all([fs, path]), {
+      onNone: () =>
+        Effect.fail(
+          invalidParams(`Cannot read image ${uri}: no FileSystem available`),
+        ),
+      onSome: ([fs, path]) =>
+        Effect.gen(function* () {
+          const url = yield* Effect.try({
+            try: () => new URL(uri),
+            catch: () => invalidParams(`Invalid file URI: ${uri}`),
+          })
+          const filePath = yield* path
+            .fromFileUrl(url)
+            .pipe(
+              Effect.mapError(() => invalidParams(`Invalid file URI: ${uri}`)),
+            )
+          const resolved = path.resolve(cwd, filePath)
+          const [realCwd, real] = yield* Effect.all([
+            fs.realPath(cwd),
+            fs.realPath(resolved),
+          ]).pipe(
+            Effect.mapError(() =>
+              invalidParams(`Image file not found: ${uri}`),
+            ),
+          )
+          if (real !== realCwd && !real.startsWith(realCwd + path.sep)) {
+            return yield* invalidParams(
+              `Image file is outside the session directory: ${uri}`,
+            )
+          }
+          return yield* fs
+            .readFile(real)
+            .pipe(
+              Effect.mapError((error) =>
+                invalidParams(`Failed to read image ${uri}: ${error.message}`),
+              ),
+            )
+        }),
+    })
+
+  const resolveImageUri = (
+    cwd: string,
+    uri: string,
+  ): Effect.Effect<Uint8Array, RpcError> => {
+    if (/^https?:\/\//i.test(uri)) return fetchImage(uri)
+    if (/^file:/i.test(uri)) return readLocalImage(cwd, uri)
+    return Effect.fail(invalidParams(`Unsupported image URI scheme: ${uri}`))
+  }
+
+  /**
+   * Turn raw image bytes into a prompt part, sniffing the real type and
+   * applying the shared size limits.
+   */
+  const imagePart = Effect.fnUntraced(function* (
+    bytes: Uint8Array,
+    declared: string | undefined,
+    fileName: string | undefined,
+  ) {
+    const mediaType = Option.getOrElse(Image.mediaTypeFromBytes(bytes), () =>
+      declared !== undefined && Image.isImageMediaType(declared)
+        ? declared
+        : undefined,
+    )
+    if (mediaType === undefined) {
+      return yield* invalidParams(
+        `Unsupported image type${declared === undefined ? "" : `: ${declared}`}`,
+      )
+    }
+    const prepared = yield* Image.prepare({ data: bytes, mediaType }).pipe(
+      Effect.mapError((error) => invalidParams(error.message)),
+    )
+    return Prompt.makePart("file", {
+      mediaType: prepared.mediaType,
+      ...(fileName === undefined ? {} : { fileName }),
+      data: prepared.data,
+    })
+  })
+
+  /**
+   * Map ACP content blocks onto one user message. Text-like blocks are
+   * joined into text parts; image blocks become `file` parts in place.
+   */
+  const promptFromBlocks = Effect.fnUntraced(function* (
+    cwd: string,
+    blocks: ReadonlyArray<typeof ContentBlock.Type>,
+  ): Effect.fn.Return<Prompt.RawInput, RpcError> {
+    const parts: Array<Prompt.UserMessagePart> = []
+    let text: Array<string> = []
+    const flush = () => {
+      if (text.length === 0) return
+      parts.push(Prompt.makePart("text", { text: text.join("\n\n") }))
+      text = []
+    }
+    const addImage = (part: Prompt.FilePart) => {
+      flush()
+      parts.push(part)
+    }
+
+    for (const block of blocks) {
+      switch (block.type) {
+        case "text":
+          text.push(block.text)
+          break
+        case "image": {
+          const bytes =
+            block.data.length > 0
+              ? yield* decodeBase64(block.data, "image block")
+              : block.uri !== undefined
+                ? yield* resolveImageUri(cwd, block.uri)
+                : yield* invalidParams("Image block has no data")
+          addImage(
+            yield* imagePart(bytes, block.mimeType, fileNameOf(block.uri)),
+          )
+          break
+        }
+        case "resource_link": {
+          if (isImageMime(block.mimeType)) {
+            const bytes = yield* resolveImageUri(cwd, block.uri)
+            addImage(
+              yield* imagePart(
+                bytes,
+                block.mimeType,
+                block.name ?? fileNameOf(block.uri),
+              ),
+            )
+          } else {
+            text.push(renderLink(block.uri, block.name))
+          }
+          break
+        }
+        case "resource": {
+          const { uri, mimeType, text: body, blob } = block.resource
+          if (blob !== undefined && isImageMime(mimeType)) {
+            const bytes = yield* decodeBase64(blob, `resource ${uri}`)
+            addImage(yield* imagePart(bytes, mimeType, fileNameOf(uri)))
+          } else if (body !== undefined) {
+            text.push(`<resource uri="${uri}">\n${body}\n</resource>`)
+          } else {
+            text.push(renderLink(uri))
+          }
+          break
+        }
+      }
+    }
+    flush()
+    return [{ role: "user", content: parts }]
+  })
+
   const runTurn = Effect.fnUntraced(function* (
     session: Session,
-    prompt: string,
+    prompt: Prompt.RawInput,
   ) {
     const stream = yield* session.agent.send({ prompt })
     let script = ""
@@ -399,7 +630,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     protocolVersion: 1,
     agentCapabilities: {
       loadSession: true,
-      promptCapabilities: { image: false, audio: false, embeddedContext: true },
+      promptCapabilities: { image: true, audio: false, embeddedContext: true },
       mcpCapabilities: { http: false, sse: false },
     },
     authMethods: [],
@@ -475,7 +706,10 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       })
     }
     const model = yield* requireModel(session.model)
-    session.running = yield* runTurn(session, renderPrompt(prompt)).pipe(
+    // Resolve images before the turn starts, so a bad block rejects the
+    // request without a model call.
+    const input = yield* promptFromBlocks(session.cwd, prompt)
+    session.running = yield* runTurn(session, input).pipe(
       Effect.provide(model),
       Effect.scoped,
       Effect.forkChild,

@@ -11,6 +11,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(zod@4.4.2)
+      '@silvia-odwyer/photon-node':
+        specifier: ^0.3.4
+        version: 0.3.4
       '@vscode/ripgrep':
         specifier: ^1.18.0
         version: 1.18.0
@@ -545,6 +548,9 @@ packages:
 
   '@rolldown/pluginutils@1.0.0-rc.17':
     resolution: {integrity: sha512-n8iosDOt6Ig1UhJ2AYqoIhHWh/isz0xpicHTzpKBeotdVsTEcxsSA/i3EVM7gQAj0rU27OLAxCjzlj15IWY7bg==}
+
+  '@silvia-odwyer/photon-node@0.3.4':
+    resolution: {integrity: sha512-bnly4BKB3KDTFxrUIcgCLbaeVVS8lrAkri1pEzskpmxu9MdfGQTy8b8EgcD83ywD3RPMsIulY8xJH5Awa+t9fA==}
 
   '@tybys/wasm-util@0.10.4':
     resolution: {integrity: sha512-W3c4gRigFS0T/Ma4qIYF3GDAc5AQdHb1yL5znJT1Zv1YaD9Kitx656wBjvr19qbiosmZT8lWDM5BEMynUqX65A==}
@@ -1983,6 +1989,8 @@ snapshots:
     optional: true
 
   '@rolldown/pluginutils@1.0.0-rc.17': {}
+
+  '@silvia-odwyer/photon-node@0.3.4': {}
 
   '@tybys/wasm-util@0.10.4':
     dependencies:

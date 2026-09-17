@@ -23,6 +23,7 @@ import * as AiError from "effect/unstable/ai/AiError"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as Prompt from "effect/unstable/ai/Prompt"
 import type * as AgentOutput from "./AgentOutput.ts"
+import * as Image from "./Image.ts"
 
 // =============================================================================
 // Configuration
@@ -531,8 +532,22 @@ const renderMessage = (message: Prompt.Message): string => {
     case "system":
       return ""
     case "user": {
+      // Image bytes never reach the summarizer: stub them in place.
       const text = message.content
-        .flatMap((part) => (part.type === "text" ? [part.text] : []))
+        .flatMap((part) => {
+          switch (part.type) {
+            case "text":
+              return [part.text]
+            case "file":
+              return [
+                part.mediaType.startsWith("image/")
+                  ? Image.omittedText(part.fileName)
+                  : `[file: ${part.fileName ?? part.mediaType} omitted]`,
+              ]
+            default:
+              return []
+          }
+        })
         .join("\n")
       return `[user]\n${text}`
     }

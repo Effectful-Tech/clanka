@@ -34,6 +34,7 @@
   "packageManager": "pnpm@10.28.0+sha512.05df71d1421f21399e053fde567cea34d446fa02c76571441bfc1c7956e98e363088982d940465fd34480d4d90a0668bc12362f8aa88000a64e83d0b0e47be48",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@silvia-odwyer/photon-node": "^0.3.4",
     "@vscode/ripgrep": "^1.18.0",
     "chalk": "^6.0.0",
     "glob": "^13.0.6",

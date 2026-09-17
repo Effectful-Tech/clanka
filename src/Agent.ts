@@ -37,6 +37,8 @@ import * as Duration from "effect/Duration"
 import * as Cause from "effect/Cause"
 import * as Latch from "effect/Latch"
 import * as Clock from "effect/Clock"
+import * as Exit from "effect/Exit"
+import * as Compaction from "./Compaction.ts"
 import {
   ScriptEnd,
   ScriptOutput,
@@ -53,6 +55,9 @@ import {
   ScriptStart,
   ScriptDelta,
   AgentStart,
+  ExecuteOutputCapped,
+  CompactionStarted,
+  CompactionEnded,
 } from "./AgentOutput.ts"
 
 /**
@@ -188,6 +193,9 @@ ${content}
     const conversationMode = yield* ConversationMode
     const turnTimeout = yield* TurnTimeout
     let finalSummary = Option.none<string>()
+    // `inputTokens.total` from the most recent finish part; undefined until
+    // the first response and after every compaction.
+    let lastContextTokens: number | undefined = undefined
 
     const output = yield* Queue.make<Output, AgentFinished | AiError.AiError>()
     let inputTokens = 0
@@ -320,6 +328,50 @@ ${content}
       }
     })
 
+    // Compaction. `compactWithEvents` applies a successful rewrite and closes
+    // the progress event on every exit: success, failure, timeout, interrupt.
+    let compactionStarted = false
+    const onCompactionStart = (reason: Compaction.CompactionReason) =>
+      Effect.sync(() => {
+        compactionStarted = true
+        maybeSend({ agentId, part: new CompactionStarted({ reason }) })
+      })
+    const compactWithEvents = <E, R>(
+      reason: Compaction.CompactionReason,
+      compaction: Effect.Effect<
+        Option.Option<Compaction.CompactionResult>,
+        E,
+        R
+      >,
+    ) =>
+      Effect.suspend(() => {
+        compactionStarted = false
+        return compaction
+      }).pipe(
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            if (!compactionStarted) return
+            const result = Exit.isSuccess(exit) ? exit.value : Option.none()
+            let tokensBefore: number
+            let tokensAfter: number
+            if (Option.isSome(result)) {
+              MutableRef.set(prompt, result.value.prompt)
+              lastContextTokens = undefined
+              tokensBefore = result.value.tokensBefore
+              tokensAfter = result.value.tokensAfter
+            } else {
+              tokensBefore = tokensAfter = Compaction.estimateTokens(
+                prompt.current,
+              )
+            }
+            maybeSend({
+              agentId,
+              part: new CompactionEnded({ reason, tokensBefore, tokensAfter }),
+            })
+          }),
+        ),
+      )
+
     // Script execution
     const executeScript = Effect.fnUntraced(function* (script: string) {
       yield* toolLatchAcquire
@@ -336,8 +388,20 @@ ${content}
         }),
         Stream.mkString,
       )
+      // Always-on cap on what enters the Prompt. The ScriptOutput event keeps
+      // the full output for display; the formatter applies its own truncation.
+      const capped = Compaction.capOutput(output)
+      if (capped.capped) {
+        maybeSend({
+          agentId,
+          part: new ExecuteOutputCapped({
+            charsBefore: capped.charsBefore,
+            charsAfter: capped.charsAfter,
+          }),
+        })
+      }
       maybeSend({ agentId, part: new ScriptOutput({ output }) })
-      return output
+      return capped.output
     }, Effect.ensuring(toolLatchRelease))
 
     if (!modelConfig.systemPromptTransform) {
@@ -370,12 +434,29 @@ ${content}
           pendingMessages.clear()
         }
 
+        // Threshold compaction before the next model call
+        yield* compactWithEvents(
+          "threshold",
+          Compaction.compactIfNeeded({
+            prompt: prompt.current,
+            contextTokens: lastContextTokens,
+            onStart: onCompactionStart,
+          }).pipe(Effect.timeout(turnTimeout)),
+        ).pipe(
+          Effect.catchTag("TimeoutError", (error) =>
+            Effect.logWarning(
+              "Compaction timed out, continuing with the uncompacted prompt",
+              error,
+            ),
+          ),
+        )
+
         // oxlint-disable-next-line typescript/no-explicit-any
         let response = Array.empty<Response.StreamPart<any>>()
         let reasoningStarted = false
         let hadReasoningDelta = false
         let hadToolCall = false
-        yield* pipe(
+        const runModel = pipe(
           Stream.suspend(() =>
             ai.streamText({ prompt: prompt.current, toolkit: singleTool }),
           ),
@@ -432,6 +513,7 @@ ${content}
                     outputTokens += usage.outputTokens.total
                   }
                   if (usage.inputTokens.total !== undefined) {
+                    lastContextTokens = usage.inputTokens.total
                     inputTokens += usage.inputTokens.total
                     maybeSend({
                       agentId,
@@ -450,6 +532,12 @@ ${content}
             }
             return Effect.void
           }),
+          modelConfig.systemPromptTransform
+            ? (effect) => modelConfig.systemPromptTransform!(system, effect)
+            : identity,
+        )
+        const attempt = pipe(
+          runModel,
           Effect.raceFirst(turnTimeoutEffect),
           Effect.retry({
             while: (err) => {
@@ -469,6 +557,9 @@ ${content}
                 response = []
                 return true
               }
+              // Never retry a context-length error as is: the overflow
+              // handler below compacts first.
+              if (Compaction.isContextLengthError(err)) return false
               if (err.isRetryable) {
                 maybeSend({ agentId, part: new ErrorRetry({ error: err }) })
                 switch (err.reason._tag) {
@@ -489,9 +580,33 @@ ${content}
             schedule: retryPolicy,
           }),
           Effect.catchTag("TimeoutError", Effect.die),
-          modelConfig.systemPromptTransform
-            ? (effect) => modelConfig.systemPromptTransform!(system, effect)
-            : identity,
+        )
+        // Overflow: compact once, retry the attempt once, then fail.
+        yield* attempt.pipe(
+          Effect.catchIf(
+            (err): err is AiError.AiError =>
+              Compaction.isContextLengthError(err),
+            (err) =>
+              Effect.gen(function* () {
+                response = []
+                const compacted = yield* compactWithEvents(
+                  "overflow",
+                  Compaction.compact({
+                    prompt: prompt.current,
+                    reason: "overflow",
+                    onStart: onCompactionStart,
+                  }).pipe(
+                    Effect.timeout(turnTimeout),
+                    Effect.retry({
+                      while: (error) => error._tag === "TimeoutError",
+                      times: 1,
+                    }),
+                    Effect.catchTag("TimeoutError", Effect.die),
+                  ),
+                )
+                return Option.isSome(compacted) ? yield* attempt : yield* err
+              }),
+          ),
         )
         MutableRef.update(
           prompt,

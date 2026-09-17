@@ -138,6 +138,58 @@ export class SubagentComplete extends Schema.TaggedClass<SubagentComplete>()(
   },
 ) {}
 
+/**
+ * Emitted when an `execute` result exceeded the always-on output cap and was
+ * shortened before being appended to the Prompt.
+ *
+ * @since 1.0.0
+ * @category Output
+ */
+export class ExecuteOutputCapped extends Schema.TaggedClass<ExecuteOutputCapped>()(
+  "ExecuteOutputCapped",
+  {
+    charsBefore: Schema.Number,
+    charsAfter: Schema.Number,
+  },
+) {}
+
+/**
+ * @since 1.0.0
+ * @category Output
+ */
+export const CompactionReason = Schema.Literals(["threshold", "overflow"])
+
+/**
+ * Emitted when auto-compaction begins. `reason` is `threshold` when the
+ * context token count crossed the configured limit before a model call, and
+ * `overflow` when a context-length error from the provider triggered it.
+ *
+ * @since 1.0.0
+ * @category Output
+ */
+export class CompactionStarted extends Schema.TaggedClass<CompactionStarted>()(
+  "CompactionStarted",
+  {
+    reason: CompactionReason,
+  },
+) {}
+
+/**
+ * Emitted when auto-compaction finished and the Prompt was rewritten.
+ * `tokensBefore` / `tokensAfter` are estimates.
+ *
+ * @since 1.0.0
+ * @category Output
+ */
+export class CompactionEnded extends Schema.TaggedClass<CompactionEnded>()(
+  "CompactionEnded",
+  {
+    reason: CompactionReason,
+    tokensBefore: Schema.Number,
+    tokensAfter: Schema.Number,
+  },
+) {}
+
 export type ContentPart =
   | ReasoningStart
   | ReasoningDelta
@@ -148,6 +200,9 @@ export type ContentPart =
   | ScriptOutput
   | Usage
   | ErrorRetry
+  | ExecuteOutputCapped
+  | CompactionStarted
+  | CompactionEnded
 
 export const ContentPart = Schema.Union([
   ReasoningStart,
@@ -159,6 +214,9 @@ export const ContentPart = Schema.Union([
   ScriptOutput,
   Usage,
   ErrorRetry,
+  ExecuteOutputCapped,
+  CompactionStarted,
+  CompactionEnded,
 ])
 
 /**

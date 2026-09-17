@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer"
 import * as Struct from "effect/Struct"
 import { API_URL, GithubCopilotAuth } from "./CopilotAuth.ts"
 import { AgentModelConfig } from "./Agent.ts"
+import * as Compaction from "./Compaction.ts"
 import * as Model from "effect/unstable/ai/Model"
 import type * as LanguageModel from "effect/unstable/ai/LanguageModel"
 
@@ -34,7 +35,7 @@ export const model = (
   Model.make(
     "openai",
     model,
-    Layer.merge(
+    Layer.mergeAll(
       OpenAiLanguageModel.layer({
         model,
         config: Struct.omit(options ?? {}, ["systemPromptTransform"]),
@@ -42,5 +43,11 @@ export const model = (
       AgentModelConfig.layer({
         systemPromptTransform: options?.systemPromptTransform,
       }),
+      // Cap compaction summaries; Copilot honours max_output_tokens.
+      Layer.succeed(Compaction.SummarizerTransform, (effect) =>
+        OpenAiLanguageModel.withConfigOverride(effect, {
+          max_output_tokens: Compaction.summarizerMaxOutputTokens,
+        }),
+      ),
     ),
   )

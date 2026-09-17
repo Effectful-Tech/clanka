@@ -12,6 +12,7 @@ import * as AgentExecutor from "./AgentExecutor.ts"
 import * as Codex from "./Codex.ts"
 import * as Copilot from "./Copilot.ts"
 import * as Agent from "./Agent.ts"
+import * as Compaction from "./Compaction.ts"
 import * as Stream from "effect/Stream"
 import * as OutputFormatter from "./OutputFormatter.ts"
 import * as Stdio from "effect/Stdio"
@@ -122,6 +123,16 @@ const prompt = Flag.String("prompt").pipe(
   Flag.optional,
 )
 
+// Kill switch: `--no-compaction` or CLANKA_COMPACTION=false.
+const compaction = Flag.Boolean("compaction").pipe(
+  Flag.withDescription(
+    "Auto-compact the conversation history when it nears the context window. Disable with --no-compaction or CLANKA_COMPACTION=false; the execute output cap stays on.",
+  ),
+  Flag.withFallbackConfig(
+    Config.Boolean("CLANKA_COMPACTION").pipe(Config.withDefault(true)),
+  ),
+)
+
 const Kvs = Layer.unwrap(
   Effect.gen(function* () {
     const path = yield* Path.Path
@@ -182,7 +193,7 @@ const acpModel = Flag.String("model").pipe(
   Flag.withDefault("openai/gpt-6-astra/medium"),
 )
 
-const acp = Command.make("acp", { model: acpModel }).pipe(
+const acp = Command.make("acp", { model: acpModel, compaction }).pipe(
   Command.withDescription(
     "Run as an Agent Client Protocol (ACP) server over stdio",
   ),
@@ -200,16 +211,23 @@ const acp = Command.make("acp", { model: acpModel }).pipe(
         ),
     }),
   ),
-  Command.provide(
+  Command.provide(({ compaction }) =>
     Layer.mergeAll(
       Agent.ConversationMode.layer(true),
       Layer.succeed(Logger.LogToStderr, true),
       DeviceCodeHandler.layerLog,
+      Compaction.CompactionConfig.layer({ enabled: compaction }),
     ),
   ),
 )
 
-Command.make("clanka", { provider, model, semantic, prompt }).pipe(
+Command.make("clanka", {
+  provider,
+  model,
+  semantic,
+  prompt,
+  compaction,
+}).pipe(
   Command.withHandler(
     Effect.fnUntraced(function* ({
       provider,
@@ -264,8 +282,11 @@ Command.make("clanka", { provider, model, semantic, prompt }).pipe(
       )
     }),
   ),
-  Command.provide(({ prompt }) =>
-    Agent.ConversationMode.layer(Option.isNone(prompt)),
+  Command.provide(({ prompt, compaction }) =>
+    Layer.mergeAll(
+      Agent.ConversationMode.layer(Option.isNone(prompt)),
+      Compaction.CompactionConfig.layer({ enabled: compaction }),
+    ),
   ),
   Command.withSubcommands([acp]),
   Command.run({

@@ -28,6 +28,7 @@ import * as Prompt from "effect/unstable/ai/Prompt"
 import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
 import type * as Agent from "./Agent.ts"
 import type * as AgentOutput from "./AgentOutput.ts"
+import * as Compaction from "./Compaction.ts"
 
 /**
  * @since 1.0.0
@@ -200,6 +201,7 @@ const historyUpdates = (history: Prompt.Prompt) => {
   const updates: Array<object> = []
   for (const message of history.content) {
     if (message.role !== "user" && message.role !== "assistant") continue
+    if (Compaction.isSummaryMessage(message)) continue
     const sessionUpdate =
       message.role === "user" ? "user_message_chunk" : "agent_message_chunk"
     for (const part of message.content) {

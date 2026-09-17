@@ -152,6 +152,7 @@ describe("Acp", () => {
 
   for (const script of [
     "console.log(1)",
+    'console.log("' + "x".repeat(200) + '")',
     'console.log("first")\nconsole.log("second")',
   ]) {
     it.effect(
@@ -192,6 +193,12 @@ describe("Acp", () => {
               assert.match(tools[0].title, /^terminal: console\.log\(/)
               assert.notMatch(tools[0].title, /[\r\n]/)
               assert.deepStrictEqual(tools[0].rawInput, { command: script })
+              const preview = script.replace(/\s+/g, " ").trim()
+              assert.strictEqual(
+                tools[0].title,
+                "terminal: " + preview.slice(0, 120),
+              )
+              assert.isAtMost(tools[0].title.length, "terminal: ".length + 120)
             }),
           ),
         ),
@@ -247,7 +254,9 @@ describe("Acp", () => {
     withStore(
       Effect.scoped(
         Effect.gen(function* () {
-          const prompt = "Inspect the repository\nSummarize the findings"
+          const prompt =
+            "Inspect the repository\nSummarize the findings " + "x".repeat(200)
+          const summary = "First finding\nSecond finding\n"
           let calls = 0
           const server = yield* makeServer(
             () =>
@@ -258,7 +267,7 @@ describe("Acp", () => {
                     name: "execute",
                     params: { script: "await delegate()" },
                   })
-                : assistantSays("done"),
+                : assistantSays(summary),
             {
               ...executor,
               execute: ({ onSubagent }) =>
@@ -284,11 +293,21 @@ describe("Acp", () => {
           assert.strictEqual(tools[0].sessionUpdate, "tool_call")
           assert.strictEqual(tools[0].status, "in_progress")
           assert.deepStrictEqual(tools[0].rawInput, { prompt })
+          assert.strictEqual(tools[0].kind, "think")
           assert.strictEqual(tools[1].sessionUpdate, "tool_call_update")
           assert.strictEqual(tools[1].toolCallId, tools[0].toolCallId)
           assert.strictEqual(tools[1].status, "completed")
           assert.match(tools[0].title, /^delegate: Inspect the repository/)
           assert.notMatch(tools[0].title, /[\r\n]/)
+          assert.strictEqual(
+            tools[0].title,
+            "delegate: " + prompt.replace(/\s+/g, " ").slice(0, 120),
+          )
+          assert.strictEqual(tools[0].title.length, "delegate: ".length + 120)
+          assert.deepStrictEqual(tools[1].content, [
+            { type: "content", content: { type: "text", text: summary } },
+          ])
+          assert.strictEqual(tools[1].rawOutput, summary)
         }),
       ),
     ),

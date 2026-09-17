@@ -1,5 +1,11 @@
 # clanka
 
+## 0.5.0
+
+### Minor Changes
+
+- [#174](https://github.com/Effectful-Tech/clanka/pull/174) [`f78e00a`](https://github.com/Effectful-Tech/clanka/commit/f78e00a6f5ed9a4ffd6210d9d068bc0394a7afff) Thanks [@tim-smart](https://github.com/tim-smart)! - Add a `changeDirectory` tool that validates and changes the executor's working directory across tool calls and scripts. Navigation is shared with delegates, while startup configuration and the semantic-search index root stay fixed. Keep semantic-index updates anchored to absolute file paths after navigation.
+
 ## 0.4.0
 
 ### Minor Changes

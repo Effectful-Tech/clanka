@@ -376,7 +376,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
             sessionUpdate: "tool_call_update",
             toolCallId: `subagent-${part.id}`,
             status: "completed",
-            rawOutput: { summary: part.summary },
+            rawOutput: part.summary,
             content: [{ type: "content", content: textContent(part.summary) }],
           })
         default:

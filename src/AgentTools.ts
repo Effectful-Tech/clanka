@@ -36,6 +36,15 @@ export class CurrentDirectory extends Context.Service<
  * @since 1.0.0
  * @category Context
  */
+export class DirectoryChanger extends Context.Service<
+  DirectoryChanger,
+  (directory: string) => Effect.Effect<string>
+>()("clanka/AgentTools/DirectoryChanger") {}
+
+/**
+ * @since 1.0.0
+ * @category Context
+ */
 export class TaskCompleter extends Context.Service<
   TaskCompleter,
   (output: string) => Effect.Effect<void>
@@ -57,6 +66,7 @@ export class SubagentExecutor extends Context.Service<
 export const makeContextNoop = (cwd?: string) =>
   SubagentExecutor.context(() => Effect.die("Not implemented")).pipe(
     Context.add(CurrentDirectory, cwd ?? "/"),
+    Context.add(DirectoryChanger, () => Effect.die("Not implemented")),
     Context.add(TaskCompleter, () => Effect.void),
   )
 
@@ -73,6 +83,13 @@ class TodoItem extends Schema.Opaque<TodoItem>()(
  * @category Toolkit
  */
 export const AgentTools = Toolkit.make(
+  Tool.make("changeDirectory", {
+    description:
+      "Change the executor's working directory to an existing directory and return its absolute path. Relative paths resolve from the current directory without shell expansion. Await this before dependent tools. The change persists across scripts and is shared with delegates using this executor. Startup AGENTS.md, skills, the semantic-search index root, and the ACP resume directory remain fixed.",
+    parameters: Schema.String.annotate({ identifier: "directory" }),
+    success: Schema.String,
+    dependencies: [DirectoryChanger],
+  }),
   Tool.make("readFile", {
     description:
       "Read a file and optionally filter the lines to return. Returns null if the file doesn't exist.",
@@ -284,6 +301,15 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     }, Effect.scoped)
 
     return AgentToolsWithSearch.of({
+      changeDirectory: Effect.fn("AgentTools.changeDirectory")(
+        function* (directory) {
+          yield* Effect.logInfo(`Calling "changeDirectory"`).pipe(
+            Effect.annotateLogs({ directory }),
+          )
+          const changeDirectory = yield* DirectoryChanger
+          return yield* changeDirectory(directory)
+        },
+      ),
       readFile: Effect.fn("AgentTools.readFile")(function* (options) {
         yield* Effect.logInfo(`Calling "readFile"`).pipe(
           Effect.annotateLogs(options),
@@ -321,7 +347,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           recursive: true,
         })
         yield* fs.writeFileString(path, options.content)
-        yield* SemanticSearch.maybeUpdateFile(pathService.relative(cwd, path))
+        yield* SemanticSearch.maybeUpdateFile(path)
       }, Effect.orDie),
       removeFile: Effect.fn("AgentTools.removeFile")(function* (path) {
         yield* Effect.logInfo(`Calling "removeFile"`).pipe(
@@ -330,9 +356,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         const cwd = yield* CurrentDirectory
         const absolutePath = pathService.resolve(cwd, path)
         yield* fs.remove(absolutePath, { force: true })
-        yield* SemanticSearch.maybeRemoveFile(
-          pathService.relative(cwd, absolutePath),
-        )
+        yield* SemanticSearch.maybeRemoveFile(absolutePath)
       }, Effect.orDie),
       renameFile: Effect.fn("AgentTools.renameFile")(function* (options) {
         yield* Effect.logInfo(`Calling "renameFile"`).pipe(
@@ -345,8 +369,8 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           recursive: true,
         })
         yield* fs.rename(from, to)
-        yield* SemanticSearch.maybeRemoveFile(pathService.relative(cwd, from))
-        yield* SemanticSearch.maybeUpdateFile(pathService.relative(cwd, to))
+        yield* SemanticSearch.maybeRemoveFile(from)
+        yield* SemanticSearch.maybeUpdateFile(to)
       }, Effect.orDie),
       ls: Effect.fn("AgentTools.ls")(function* (directory) {
         yield* Effect.logInfo(`Calling "ls"`).pipe(
@@ -597,7 +621,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
                 recursive: true,
               })
               yield* fs.writeFileString(step.path, step.next)
-              yield* SemanticSearch.maybeUpdateFile(rel(step.path))
+              yield* SemanticSearch.maybeUpdateFile(step.path)
               break
             }
             case "move": {
@@ -606,13 +630,13 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
               })
               yield* fs.writeFileString(step.movePath, step.next)
               yield* fs.remove(step.path)
-              yield* SemanticSearch.maybeRemoveFile(rel(step.path))
-              yield* SemanticSearch.maybeUpdateFile(rel(step.movePath))
+              yield* SemanticSearch.maybeRemoveFile(step.path)
+              yield* SemanticSearch.maybeUpdateFile(step.movePath)
               break
             }
             case "delete": {
               yield* fs.remove(step.path)
-              yield* SemanticSearch.maybeRemoveFile(rel(step.path))
+              yield* SemanticSearch.maybeRemoveFile(step.path)
               break
             }
           }

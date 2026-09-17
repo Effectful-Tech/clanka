@@ -10,6 +10,7 @@ import {
   AgentTools,
   AgentToolsWithSearch,
   CurrentDirectory,
+  DirectoryChanger,
   SubagentExecutor,
   TaskCompleter,
 } from "./AgentTools.ts"
@@ -100,12 +101,22 @@ export const makeLocal = Effect.fnUntraced(function* <
       Toolkit extends Toolkit.Toolkit<infer T>
         ? Tool.HandlersFor<T> | Tool.HandlerServices<T[keyof T]>
         : never,
-      CurrentDirectory | SubagentExecutor | TaskCompleter
+      CurrentDirectory | DirectoryChanger | SubagentExecutor | TaskCompleter
     >
 > {
   const fs = yield* FileSystem.FileSystem
   const pathService = yield* Path.Path
   const renderer = yield* ToolkitRenderer
+  let currentDirectory = pathService.resolve(options.directory)
+  const changeDirectory = Effect.fnUntraced(function* (directory: string) {
+    const target = pathService.resolve(currentDirectory, directory)
+    const info = yield* fs.stat(target)
+    if (info.type !== "Directory") {
+      return yield* Effect.die(new Error(`Not a directory: ${target}`))
+    }
+    currentDirectory = target
+    return target
+  }, Effect.orDie)
   const search = yield* Effect.serviceOption(SemanticSearch)
   const hasSearch = Option.isSome(search)
   const AllTools = Toolkit.merge(
@@ -142,7 +153,7 @@ export const makeLocal = Effect.fnUntraced(function* <
 
     const taskServices = Context.empty().pipe(
       Context.add(TaskCompleter, opts.onTaskComplete),
-      Context.add(CurrentDirectory, options.directory),
+      Context.add(DirectoryChanger, changeDirectory),
       Context.add(SubagentExecutor, opts.onSubagent),
       Context.add(Console.Console, console),
       Context.add(References.CurrentLogAnnotations, {}),
@@ -165,12 +176,13 @@ export const makeLocal = Effect.fnUntraced(function* <
 
       for (let i = 0; i < toolEntries.length; i++) {
         const { name, handler, services } = toolEntries[i]!
-        const runFork = Effect.runForkWith(
-          Context.merge(services, taskServices),
-        )
+        const toolServices = Context.merge(services, taskServices)
 
         // oxlint-disable-next-line typescript/no-explicit-any
         sandbox[name] = function (params: any) {
+          const runFork = Effect.runForkWith(
+            Context.add(toolServices, CurrentDirectory, currentDirectory),
+          )
           running++
           const fiber = trackFiber(runFork(handler(params, {})))
           return new Promise((resolve, reject) => {
@@ -225,33 +237,35 @@ export const makeLocal = Effect.fnUntraced(function* <
       })
     }),
     execute,
-    executeUnsafe: (opts) => {
-      const tool = tools.tools[opts.tool as keyof typeof tools.tools]
-      const handler = services.mapUnsafe.get(tool.id) as Tool.Handler<string>
-      if (!handler || !tool) {
-        return Effect.die(new Error(`Unknown tool: ${opts.tool}`))
-      }
+    executeUnsafe: (opts) =>
+      Effect.suspend(() => {
+        const tool = tools.tools[opts.tool as keyof typeof tools.tools]
+        const handler = services.mapUnsafe.get(tool.id) as Tool.Handler<string>
+        if (!handler || !tool) {
+          return Effect.die(new Error(`Unknown tool: ${opts.tool}`))
+        }
 
-      const taskServices = handler.context.pipe(
-        Context.add(TaskCompleter, () => Effect.void),
-        Context.add(CurrentDirectory, options.directory),
-        Context.add(SubagentExecutor, () => Effect.succeed("")),
-        Context.add(References.CurrentLogAnnotations, {}),
-        Option.isSome(search)
-          ? Context.add(SemanticSearch, search.value)
-          : identity,
-      )
+        const taskServices = handler.context.pipe(
+          Context.add(TaskCompleter, () => Effect.void),
+          Context.add(CurrentDirectory, currentDirectory),
+          Context.add(DirectoryChanger, changeDirectory),
+          Context.add(SubagentExecutor, () => Effect.succeed("")),
+          Context.add(References.CurrentLogAnnotations, {}),
+          Option.isSome(search)
+            ? Context.add(SemanticSearch, search.value)
+            : identity,
+        )
 
-      const encodeSuccess = Schema.encodeUnknownEffect(
-        Schema.toCodecJson(tool.successSchema as Schema.Top),
-      )
-      return pipe(
-        handler.handler(opts.params, {}),
-        Effect.flatMap(encodeSuccess),
-        Effect.provideContext(taskServices),
-        Effect.orDie,
-      ) as Effect.Effect<Schema.Json>
-    },
+        const encodeSuccess = Schema.encodeUnknownEffect(
+          Schema.toCodecJson(tool.successSchema as Schema.Top),
+        )
+        return pipe(
+          handler.handler(opts.params, {}),
+          Effect.flatMap(encodeSuccess),
+          Effect.provideContext(taskServices),
+          Effect.orDie,
+        ) as Effect.Effect<Schema.Json>
+      }),
   })
 })
 
@@ -319,7 +333,7 @@ export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
       Toolkit extends Toolkit.Toolkit<infer T>
         ? Tool.HandlersFor<T> | Tool.HandlerServices<T[keyof T]>
         : never,
-      CurrentDirectory | SubagentExecutor | TaskCompleter
+      CurrentDirectory | DirectoryChanger | SubagentExecutor | TaskCompleter
     >
 > =>
   Layer.effect(AgentExecutor, makeLocal(options)).pipe(
@@ -359,7 +373,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
       Toolkit extends Toolkit.Toolkit<infer T>
         ? Tool.HandlersFor<T> | Tool.HandlerServices<T[keyof T]>
         : never,
-      CurrentDirectory | SubagentExecutor | TaskCompleter
+      CurrentDirectory | DirectoryChanger | SubagentExecutor | TaskCompleter
     >
 > =>
   RpcServer.layer(Rpcs, {

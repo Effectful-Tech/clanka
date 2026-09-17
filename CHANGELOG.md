@@ -1,5 +1,11 @@
 # clanka
 
+## 0.5.2
+
+### Patch Changes
+
+- [#178](https://github.com/Effectful-Tech/clanka/pull/178) [`ab31aac`](https://github.com/Effectful-Tech/clanka/commit/ab31aac0e18032140c331228b7e9bea55061473c) Thanks [@tim-smart](https://github.com/tim-smart)! - Align ACP execute and subagent payloads with Hermes clients so scripts render as terminal commands, stdout stays plain text, and subagents appear as delegated tasks.
+
 ## 0.5.1
 
 ### Patch Changes

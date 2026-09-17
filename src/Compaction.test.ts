@@ -362,8 +362,8 @@ describe("Compaction.split", () => {
 
   it("keeps the most recent messages that fit and summarizes the rest", () => {
     const prompt = Prompt.fromMessages([system, ...conversation])
-    // Budget fits the last two call/result pairs (~4 x 2k tokens) but not three.
-    const result = Option.getOrThrow(Compaction.split(prompt, 9_000))
+    // Each pair is ~2.1k tokens: 5k fits the last two pairs but not three.
+    const result = Option.getOrThrow(Compaction.split(prompt, 5_000))
 
     assert.isTrue(Option.isSome(result.system))
     assert.strictEqual(Option.getOrThrow(result.system).role, "system")
@@ -424,7 +424,7 @@ describe("Compaction.split", () => {
       user(Compaction.wrapSummary(previous)),
       ...conversation,
     ])
-    const result = Option.getOrThrow(Compaction.split(prompt, 9_000))
+    const result = Option.getOrThrow(Compaction.split(prompt, 5_000))
     assert.deepStrictEqual(result.previousSummary, Option.some(previous))
     assert.deepStrictEqual(result.toSummarize, conversation.slice(0, 3))
     assert.isFalse(
@@ -479,9 +479,13 @@ describe("Compaction.trimKept", () => {
       assistantCall("c2", "ls()", filler("think", 4_000)),
       toolResult("c2", "ok"),
     ]
-    // Budget: both tool results and calls fit without reasoning, only one
-    // reasoning block fits.
-    const budget = Compaction.estimateMessageTokens(kept[2]!) + 3 * 20
+    // Budget: everything fits once the oldest reasoning block is gone, so
+    // exactly one reasoning block must be dropped.
+    const budget =
+      Compaction.estimateMessageTokens(assistantCall("c1", "ls()")) +
+      Compaction.estimateMessageTokens(kept[1]!) +
+      Compaction.estimateMessageTokens(kept[2]!) +
+      Compaction.estimateMessageTokens(kept[3]!)
     const trimmed = Compaction.trimKept(kept, budget)
 
     assert.strictEqual(trimmed.length, 4)

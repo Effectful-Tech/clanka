@@ -36,6 +36,8 @@ import * as Duration from "effect/Duration"
 import * as Cause from "effect/Cause"
 import * as Latch from "effect/Latch"
 import * as Clock from "effect/Clock"
+import * as ResponseIdTracker from "effect/unstable/ai/ResponseIdTracker"
+import * as Compaction from "./Compaction.ts"
 import {
   ScriptEnd,
   ScriptOutput,
@@ -52,6 +54,9 @@ import {
   ScriptStart,
   ScriptDelta,
   AgentStart,
+  ExecuteOutputCapped,
+  CompactionStarted,
+  CompactionEnded,
 } from "./AgentOutput.ts"
 
 /**
@@ -186,7 +191,13 @@ ${content}
     const modelConfig = yield* AgentModelConfig
     const conversationMode = yield* ConversationMode
     const turnTimeout = yield* TurnTimeout
+    const responseIdTracker = yield* Effect.serviceOption(
+      ResponseIdTracker.ResponseIdTracker,
+    )
     let finalSummary = Option.none<string>()
+    // `inputTokens.total` from the most recent finish part; undefined until
+    // the first response and after every compaction.
+    let lastContextTokens: number | undefined = undefined
 
     const output = yield* Queue.make<Output, AgentFinished | AiError.AiError>()
     let inputTokens = 0
@@ -319,6 +330,32 @@ ${content}
       }
     })
 
+    // Compaction
+    const applyCompaction = (result: Compaction.CompactionResult) => {
+      MutableRef.set(prompt, result.prompt)
+      lastContextTokens = undefined
+      // Incremental (Codex websocket) sessions must send the rewritten
+      // prompt in full rather than continue from a stale previousResponseId.
+      if (Option.isSome(responseIdTracker)) {
+        responseIdTracker.value.clearUnsafe()
+      }
+      maybeSend({
+        agentId,
+        part: new CompactionEnded({
+          reason: result.reason,
+          tokensBefore: result.tokensBefore,
+          tokensAfter: result.tokensAfter,
+        }),
+      })
+    }
+    const compactionHooks: Compaction.CompactionHooks = {
+      onStart: (reason) =>
+        Effect.sync(() => {
+          maybeSend({ agentId, part: new CompactionStarted({ reason }) })
+        }),
+      withSummarizer: modelConfig.summarizerTransform,
+    }
+
     // Script execution
     const executeScript = Effect.fnUntraced(function* (script: string) {
       yield* toolLatchAcquire
@@ -335,8 +372,20 @@ ${content}
         }),
         Stream.mkString,
       )
+      // Always-on cap on what enters the Prompt. The ScriptOutput event keeps
+      // the full output for display; the formatter applies its own truncation.
+      const capped = Compaction.capOutput(output)
+      if (capped.capped) {
+        maybeSend({
+          agentId,
+          part: new ExecuteOutputCapped({
+            charsBefore: capped.charsBefore,
+            charsAfter: capped.charsAfter,
+          }),
+        })
+      }
       maybeSend({ agentId, part: new ScriptOutput({ output }) })
-      return output
+      return capped.output
     }, Effect.ensuring(toolLatchRelease))
 
     if (!modelConfig.systemPromptTransform) {
@@ -369,12 +418,24 @@ ${content}
           pendingMessages.clear()
         }
 
+        // Threshold compaction before the next model call
+        const compacted = yield* Compaction.compactIfNeeded({
+          prompt: prompt.current,
+          contextTokens: lastContextTokens,
+          ...compactionHooks,
+        })
+        if (Option.isSome(compacted)) {
+          applyCompaction(compacted.value)
+        }
+
         // oxlint-disable-next-line typescript/no-explicit-any
         let response = Array.empty<Response.StreamPart<any>>()
         let reasoningStarted = false
         let hadReasoningDelta = false
         let hadToolCall = false
-        yield* pipe(
+        let overflowCompacted = false
+        let compactionFailed = false
+        const runModel = pipe(
           Stream.suspend(() =>
             ai.streamText({ prompt: prompt.current, toolkit: singleTool }),
           ),
@@ -431,6 +492,7 @@ ${content}
                     outputTokens += usage.outputTokens.total
                   }
                   if (usage.inputTokens.total !== undefined) {
+                    lastContextTokens = usage.inputTokens.total
                     inputTokens += usage.inputTokens.total
                     maybeSend({
                       agentId,
@@ -449,9 +511,43 @@ ${content}
             }
             return Effect.void
           }),
+          modelConfig.systemPromptTransform
+            ? (effect) => modelConfig.systemPromptTransform!(system, effect)
+            : identity,
+        )
+        yield* pipe(
+          runModel,
+          // Overflow compaction: compact once, retry once, then fail.
+          Effect.catchIf(
+            (err): err is AiError.AiError =>
+              !overflowCompacted && Compaction.isContextLengthError(err),
+            (err) =>
+              Effect.gen(function* () {
+                overflowCompacted = true
+                response = []
+                const result = yield* Compaction.compactAfterOverflow({
+                  prompt: prompt.current,
+                  ...compactionHooks,
+                }).pipe(
+                  Effect.tapError(() =>
+                    Effect.sync(() => {
+                      // A failed overflow compaction fails the turn; the
+                      // retry policy must not re-run the same fat prompt.
+                      compactionFailed = true
+                    }),
+                  ),
+                )
+                if (Option.isNone(result)) {
+                  return yield* err
+                }
+                applyCompaction(result.value)
+                return yield* runModel
+              }),
+          ),
           Effect.raceFirst(turnTimeoutEffect),
           Effect.retry({
             while: (err) => {
+              if (compactionFailed) return false
               if (err._tag === "TimeoutError") {
                 maybeSend({
                   agentId,
@@ -488,9 +584,6 @@ ${content}
             schedule: retryPolicy,
           }),
           Effect.catchTag("TimeoutError", Effect.die),
-          modelConfig.systemPromptTransform
-            ? (effect) => modelConfig.systemPromptTransform!(system, effect)
-            : identity,
         )
         MutableRef.update(
           prompt,
@@ -747,6 +840,14 @@ export class AgentModelConfig extends Context.Reference<{
         system: string,
         effect: Effect.Effect<A, E, R>,
       ) => Effect.Effect<A, E, R>)
+    | undefined
+  /**
+   * Wraps the compaction summarizer model call, so providers can apply
+   * request overrides such as `max_output_tokens` or out-of-band
+   * instructions.
+   */
+  readonly summarizerTransform?:
+    | (<A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>)
     | undefined
 }>("clanka/Agent/SystemPromptTransform", {
   defaultValue: () => ({}),

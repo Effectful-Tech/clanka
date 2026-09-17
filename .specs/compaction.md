@@ -1,6 +1,6 @@
 # Auto-compaction
 
-Issue: EFF-1391. Status: **interfaces and tests landed, implementation pending**.
+Issue: EFF-1391. Status: **implemented**.
 
 Clanka keeps the full `Prompt` for the life of an Agent. Long sessions blow the
 context window, overflow retries the same fat prompt, and ACP persists it
@@ -33,9 +33,14 @@ References (shape only, do not copy wholesale):
 
 ## Interfaces (`src/Compaction.ts`)
 
-All signatures exist and are exercised by `src/Compaction.test.ts` and the
-acceptance tests in `src/Agent.test.ts`. Bodies currently throw
-`Compaction.<name> is not implemented`.
+All signatures are exercised by `src/Compaction.test.ts` and the acceptance
+tests in `src/Agent.test.ts`.
+
+The compaction entry points take `CompactionHooks`: `onStart(reason)` fires
+once a cut point exists and before the summarizer call (not for no-ops), and
+`withSummarizer(effect)` wraps the summarizer call. `AgentModelConfig` gained
+`summarizerTransform` for the latter: Codex sets `instructions` to
+`summarizerSystem` and `max_output_tokens`; Copilot sets `max_output_tokens`.
 
 ### Config
 
@@ -48,8 +53,9 @@ acceptance tests in `src/Agent.test.ts`. Bodies currently throw
 | `reserveTokens`    | 16 000  | headroom below the window                           |
 | `keepRecentTokens` | 20 000  | tail kept verbatim after a compaction               |
 
-`CompactionConfig.layer(partial)` merges over the defaults. Wire a CLI/env kill
-switch only; no `settings.json`.
+`CompactionConfig.layer(partial)` merges over the defaults. The only runtime
+switch is the kill switch: `clanka --no-compaction` / `clanka acp
+--no-compaction`, or `CLANKA_COMPACTION=false`. No `settings.json`.
 
 ### Constants
 
@@ -157,7 +163,7 @@ tokensBefore, tokensAfter })`. Fails with the summarizer's `AiError`.
 - `compactAfterOverflow({ prompt })`: `None` when disabled; otherwise
   `compact` with reason `overflow`. Failures propagate.
 
-## Agent loop wiring (implementation run)
+## Agent loop wiring
 
 In `Agent.ts` `spawn`:
 

@@ -11,5 +11,4 @@
   refresh, and a fully wired `LanguageModel` layer.
 - [Auto-compaction](./compaction.md) - Always-on 32k cap on `execute` results
   and threshold / overflow compaction of the live Prompt in the shared Agent
-  loop. Interfaces in `src/Compaction.ts`, acceptance tests first,
-  implementation to follow.
+  loop. Implemented in `src/Compaction.ts` and wired into `src/Agent.ts`.

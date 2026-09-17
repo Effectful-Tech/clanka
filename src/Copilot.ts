@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer"
 import * as Struct from "effect/Struct"
 import { API_URL, GithubCopilotAuth } from "./CopilotAuth.ts"
 import { AgentModelConfig } from "./Agent.ts"
+import * as Compaction from "./Compaction.ts"
 import * as Model from "effect/unstable/ai/Model"
 import type * as LanguageModel from "effect/unstable/ai/LanguageModel"
 
@@ -37,10 +38,19 @@ export const model = (
     Layer.merge(
       OpenAiLanguageModel.layer({
         model,
-        config: Struct.omit(options ?? {}, ["systemPromptTransform"]),
+        config: Struct.omit(options ?? {}, [
+          "systemPromptTransform",
+          "summarizerTransform",
+        ]),
       }),
       AgentModelConfig.layer({
         systemPromptTransform: options?.systemPromptTransform,
+        summarizerTransform:
+          options?.summarizerTransform ??
+          ((effect) =>
+            OpenAiLanguageModel.withConfigOverride(effect, {
+              max_output_tokens: Compaction.summarizerMaxOutputTokens,
+            })),
       }),
     ),
   )

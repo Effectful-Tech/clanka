@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer"
 import * as Struct from "effect/Struct"
 import { CodexAuth } from "./CodexAuth.ts"
 import { AgentModelConfig } from "./Agent.ts"
+import * as Compaction from "./Compaction.ts"
 import * as Model from "effect/unstable/ai/Model"
 import type * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import type * as Socket from "effect/unstable/socket/Socket"
@@ -67,7 +68,11 @@ const layerModel = (
   OpenAiLanguageModel.layer({
     model,
     config: {
-      ...Struct.omit(options ?? {}, ["reasoning"]),
+      ...Struct.omit(options ?? {}, [
+        "reasoning",
+        "systemPromptTransform",
+        "summarizerTransform",
+      ]),
       store: false,
       reasoning: {
         effort: "medium",
@@ -81,6 +86,11 @@ const layerModel = (
         systemPromptTransform: (system, effect) =>
           OpenAiLanguageModel.withConfigOverride(effect, {
             instructions: system,
+          }),
+        summarizerTransform: (effect) =>
+          OpenAiLanguageModel.withConfigOverride(effect, {
+            instructions: Compaction.summarizerSystem,
+            max_output_tokens: Compaction.summarizerMaxOutputTokens,
           }),
       }),
     ),

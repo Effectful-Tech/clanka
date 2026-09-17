@@ -2,6 +2,7 @@
  * @since 1.0.0
  */
 import * as NodeConsole from "node:console"
+import * as NodeOs from "node:os"
 import * as NodeVm from "node:vm"
 import { Writable } from "node:stream"
 import {
@@ -13,6 +14,7 @@ import {
   TaskCompleter,
 } from "./AgentTools.ts"
 import { ToolkitRenderer } from "./ToolkitRenderer.ts"
+import * as AgentSkills from "./AgentSkills.ts"
 import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
 import type * as HttpClient from "effect/unstable/http/HttpClient"
 import * as Context from "effect/Context"
@@ -69,6 +71,12 @@ export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
   toolsDts: Schema.String,
   agentsMd: Schema.Option(Schema.String),
   supportsSearch: Schema.Boolean,
+  /**
+   * Agent Skills discovered on the executor filesystem. See `AgentSkills`.
+   */
+  skills: Schema.Array(AgentSkills.Skill).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+  ),
 }) {}
 
 /**
@@ -201,10 +209,18 @@ export const makeLocal = Effect.fnUntraced(function* <
       const agentsMd = yield* Effect.option(
         fs.readFileString(pathService.join(options.directory, "AGENTS.md")),
       )
+      const skills = yield* AgentSkills.discover({
+        directory: options.directory,
+        homeDirectory: homeDirectory(),
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, pathService),
+      )
       return new Capabilities({
         toolsDts,
         agentsMd,
         supportsSearch: hasSearch,
+        skills,
       })
     }),
     execute,
@@ -499,6 +515,16 @@ const compileScript = (script: string): NodeVm.Script => {
 }
 
 const defaultMain = () => Promise.resolve()
+
+const homeDirectory = (): Option.Option<string> => {
+  const fromEnv = process.env.HOME
+  if (fromEnv) return Option.some(fromEnv)
+  try {
+    return Option.some(NodeOs.homedir())
+  } catch {
+    return Option.none()
+  }
+}
 
 const makeConsole = Effect.fn(function* (
   queue: Queue.Queue<string, Cause.Done>,

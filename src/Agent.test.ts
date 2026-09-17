@@ -12,6 +12,7 @@ const capabilities = new AgentExecutor.Capabilities({
   toolsDts: "",
   agentsMd: Option.none(),
   supportsSearch: false,
+  skills: [],
 })
 
 const makeExecutor = (

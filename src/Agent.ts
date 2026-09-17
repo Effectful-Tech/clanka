@@ -11,6 +11,7 @@ import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessS
 import type * as HttpClient from "effect/unstable/http/HttpClient"
 import type {
   CurrentDirectory,
+  DirectoryChanger,
   SubagentExecutor,
   TaskCompleter,
 } from "./AgentTools.ts"
@@ -792,7 +793,7 @@ export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
       Toolkit extends Toolkit.Toolkit<infer T>
         ? Tool.HandlersFor<T> | Tool.HandlerServices<T[keyof T]>
         : never,
-      CurrentDirectory | SubagentExecutor | TaskCompleter
+      CurrentDirectory | DirectoryChanger | SubagentExecutor | TaskCompleter
     >
 > => layer.pipe(Layer.provide(AgentExecutor.layerLocal(options)))
 

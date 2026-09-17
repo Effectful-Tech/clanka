@@ -85,7 +85,7 @@ class TodoItem extends Schema.Opaque<TodoItem>()(
 export const AgentTools = Toolkit.make(
   Tool.make("changeDirectory", {
     description:
-      "Change the executor's working directory to an existing directory and return its absolute path. Relative paths resolve from the current directory without shell expansion. Await this before dependent tools. The change persists across scripts and is shared with delegates using this executor. Startup AGENTS.md, skills, the semantic-search index root, and the ACP resume directory remain fixed.",
+      "Change the executor's working directory to an existing directory and return its absolute path. Relative paths resolve from the current directory without shell expansion. Await this before dependent tools. The change persists across scripts and is shared with delegates using this executor. Startup AGENTS.md, skills, and the semantic-search index root remain fixed. Navigation does not survive a session reload.",
     parameters: Schema.String.annotate({ identifier: "directory" }),
     success: Schema.String,
     dependencies: [DirectoryChanger],
@@ -121,7 +121,7 @@ export const AgentTools = Toolkit.make(
   }),
   Tool.make("delegate", {
     description:
-      "Delegate a task to another software engineer / sub-agent. Returns the result of the task.",
+      "Delegate a task to another software engineer / sub-agent. Returns the result of the task. Delegates share the executor's working directory: a delegate's directory changes affect the caller and other delegates. Avoid concurrent navigation and use absolute paths when working concurrently.",
     parameters: Schema.String.annotate({
       identifier: "task",
     }),

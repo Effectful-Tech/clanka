@@ -30,6 +30,7 @@ const capabilities = new AgentExecutor.Capabilities({
 })
 
 const executor = AgentExecutor.AgentExecutor.of({
+  currentDirectory: Effect.succeed("/tmp"),
   capabilities: Effect.succeed(capabilities),
   execute: () => Stream.make("script output"),
   executeUnsafe: () => Effect.die("executeUnsafe not implemented"),

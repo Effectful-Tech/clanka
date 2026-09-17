@@ -507,6 +507,7 @@ body`,
 
 const makeExecutor = (skills: ReadonlyArray<AgentSkills.Skill>) =>
   AgentExecutor.AgentExecutor.of({
+    currentDirectory: Effect.succeed("/"),
     capabilities: Effect.succeed(
       new AgentExecutor.Capabilities({
         toolsDts: "",

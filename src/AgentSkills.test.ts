@@ -64,6 +64,11 @@ const discover = (roots: { readonly project: string; readonly home: string }) =>
 describe("AgentSkills", () => {
   for (const [label, frontmatter, description] of [
     [
+      "an unindented allowed-tools sequence",
+      "description: Deploy the service\nallowed-tools:\n- Read\n- Bash",
+      "Deploy the service",
+    ],
+    [
       "an allowed-tools sequence",
       "description: Deploy the service\nallowed-tools:\n  - Read\n  - Bash",
       "Deploy the service",
@@ -81,6 +86,11 @@ describe("AgentSkills", () => {
     [
       "a folded description spanning lines",
       "description: >-\n  Use when the user asks about deployment, rollbacks, or\n  anything touching the production cluster.\nmetadata:\n  author: someone",
+      "Use when the user asks about deployment, rollbacks, or anything touching the production cluster.",
+    ],
+    [
+      "a multiline plain scalar description",
+      "description:\n  Use when the user asks about deployment, rollbacks, or\n  anything touching the production cluster.\nmetadata:\n  author: someone",
       "Use when the user asks about deployment, rollbacks, or anything touching the production cluster.",
     ],
   ] as const) {

@@ -4,6 +4,7 @@
 import * as Model from "effect/unstable/ai/Model"
 import type * as Response from "effect/unstable/ai/Response"
 import * as AgentExecutor from "./AgentExecutor.ts"
+import * as AgentSkills from "./AgentSkills.ts"
 import { stripWrappingCodeFence } from "./ScriptExtraction.ts"
 import type * as Path from "effect/Path"
 import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
@@ -620,7 +621,12 @@ ${capabilities.toolsDts}
 
 /** The global Fetch API available for making HTTP requests. */
 declare const fetch: typeof globalThis.fetch
-\`\`\``
+\`\`\`${Option.match(AgentSkills.renderCatalog(capabilities.skills), {
+  onNone: () => "",
+  onSome: (catalog) => `
+
+${catalog}`,
+})}`
 
 class ScriptExecutor extends Context.Service<
   ScriptExecutor,

@@ -12,6 +12,7 @@ export * as Agent from "./Agent.ts"
  * @since 1.0.0
  */
 export * as AgentExecutor from "./AgentExecutor.ts"
+export * as AgentSkills from "./AgentSkills.ts"
 
 /**
  * @since 1.0.0

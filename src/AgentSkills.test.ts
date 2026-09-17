@@ -40,6 +40,7 @@ const withRoots = <A, E, R>(
   f: (roots: {
     readonly project: string
     readonly home: string
+    readonly hermes: string
   }) => Effect.Effect<A, E, R>,
 ) =>
   Effect.scoped(
@@ -49,9 +50,11 @@ const withRoots = <A, E, R>(
       const base = yield* fs.makeTempDirectoryScoped()
       const project = path.join(base, "project")
       const home = path.join(base, "home")
+      const hermes = path.join(base, "hermes-home")
+      yield* fs.makeDirectory(hermes)
       yield* fs.makeDirectory(project)
       yield* fs.makeDirectory(home)
-      return yield* f({ project, home })
+      return yield* f({ project, home, hermes })
     }),
   )
 
@@ -61,7 +64,291 @@ const discover = (roots: { readonly project: string; readonly home: string }) =>
     homeDirectory: Option.some(roots.home),
   })
 
+const writeHermesSkill = Effect.fnUntraced(function* (
+  root: string,
+  dir: string,
+  content: string,
+) {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const skillDir = path.join(root, "skills", dir)
+  yield* fs.makeDirectory(skillDir, { recursive: true })
+  const location = path.join(skillDir, "SKILL.md")
+  yield* fs.writeFileString(location, content)
+  return location
+})
+
+const discoverWithHermes = (
+  roots: {
+    readonly project: string
+    readonly home: string
+    readonly hermes: string
+  },
+  hermesHome: Option.Option<string> = Option.some(roots.hermes),
+) =>
+  AgentSkills.discover({
+    directory: roots.project,
+    homeDirectory: Option.some(roots.home),
+    hermesHome,
+  })
+
+const withLocalExecutor = <A, E, R>(
+  roots: { readonly project: string; readonly home: string },
+  hermesHome: string | undefined,
+  effect: Effect.Effect<A, E, R>,
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const previous = {
+            HOME: process.env.HOME,
+            HERMES_HOME: process.env.HERMES_HOME,
+          }
+          process.env.HOME = roots.home
+          if (hermesHome === undefined) delete process.env.HERMES_HOME
+          else process.env.HERMES_HOME = hermesHome
+          return previous
+        }),
+        (previous) =>
+          Effect.sync(() => {
+            for (const key of ["HOME", "HERMES_HOME"] as const) {
+              if (previous[key] === undefined) delete process.env[key]
+              else process.env[key] = previous[key]
+            }
+          }),
+      )
+      return yield* effect.pipe(
+        Effect.provide(
+          AgentExecutor.layerLocal({ directory: roots.project }).pipe(
+            Layer.provide(NodeHttpClient.layerUndici),
+          ),
+        ),
+      )
+    }),
+  )
+
 describe("AgentSkills", () => {
+  it.effect("catalogs a flat HERMES_HOME skill with an absolute location", () =>
+    withRoots(
+      Effect.fnUntraced(function* (roots) {
+        const path = yield* Path.Path
+        const location = yield* writeHermesSkill(
+          roots.hermes,
+          "bound",
+          skillFile("bound", "Workspace skill"),
+        )
+        const skills = yield* discoverWithHermes(roots)
+        assert.deepStrictEqual(
+          skills.map(({ name, description, location }) => [
+            name,
+            description,
+            location,
+          ]),
+          [["bound", "Workspace skill", location]],
+        )
+        assert.isTrue(path.isAbsolute(skills[0]!.location))
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  )
+
+  for (const projectWins of [true, false]) {
+    it.effect(
+      projectWins
+        ? "project skill overrides Hermes and user skills"
+        : "Hermes skill overrides a user skill",
+      () =>
+        withRoots(
+          Effect.fnUntraced(function* (roots) {
+            yield* writeSkill(roots.home, "shared", skillFile("shared", "User"))
+            const hermesLocation = yield* writeHermesSkill(
+              roots.hermes,
+              "shared",
+              skillFile("shared", "Hermes"),
+            )
+            const location = projectWins
+              ? yield* writeSkill(
+                  roots.project,
+                  "shared",
+                  skillFile("shared", "Project"),
+                )
+              : hermesLocation
+            const skills = yield* discoverWithHermes(roots)
+            assert.deepStrictEqual(
+              skills.map((skill) => [skill.description, skill.location]),
+              [[projectWins ? "Project" : "Hermes", location]],
+            )
+          }),
+        ).pipe(Effect.provide(NodeServices.layer)),
+    )
+  }
+
+  for (const mode of ["unset", "empty", "missing skills"] as const) {
+    it.effect(`preserves existing discovery with ${mode} HERMES_HOME`, () =>
+      withRoots(
+        Effect.fnUntraced(function* (roots) {
+          const fs = yield* FileSystem.FileSystem
+          const path = yield* Path.Path
+          yield* writeSkill(roots.project, "proj", skillFile("proj", "Project"))
+          yield* writeSkill(roots.home, "usr", skillFile("usr", "User"))
+          // An unset input must not fall back to ~/.hermes.
+          yield* writeHermesSkill(
+            path.join(roots.home, ".hermes"),
+            "ignored",
+            skillFile("ignored", "Ignored"),
+          )
+          const reads: Array<string> = []
+          const skills = yield* discoverWithHermes(
+            roots,
+            mode === "unset"
+              ? Option.none()
+              : Option.some(mode === "empty" ? "" : roots.hermes),
+          ).pipe(
+            Effect.provideService(
+              FileSystem.FileSystem,
+              FileSystem.FileSystem.of({
+                ...fs,
+                readDirectory: (directory) => {
+                  reads.push(directory)
+                  return fs.readDirectory(directory)
+                },
+              }),
+            ),
+          )
+          assert.deepStrictEqual(skills, yield* discover(roots))
+          if (mode !== "missing skills")
+            assert.deepStrictEqual(reads, [
+              path.join(roots.project, ".agents", "skills"),
+              path.join(roots.home, ".agents", "skills"),
+            ])
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    )
+  }
+
+  it.effect("only reads HERMES_HOME/skills/<dir>/SKILL.md", () =>
+    withRoots(
+      Effect.fnUntraced(function* (roots) {
+        yield* writeHermesSkill(
+          roots.hermes,
+          "outer/inner",
+          skillFile("nested", "Ignored"),
+        )
+        yield* writeHermesSkill(roots.hermes, "", skillFile("bare", "Ignored"))
+        yield* writeSkill(
+          roots.hermes,
+          "agents",
+          skillFile("agents", "Ignored"),
+        )
+        const location = yield* writeHermesSkill(
+          roots.hermes,
+          "real",
+          skillFile("real", "Found"),
+        )
+        const skills = yield* discoverWithHermes(roots)
+        assert.deepStrictEqual(
+          skills.map((skill) => [skill.name, skill.location]),
+          [["real", location]],
+        )
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  )
+
+  it.effect(
+    "makeLocal exposes HERMES_HOME skills and reads their relative references",
+    () =>
+      withRoots(
+        Effect.fnUntraced(function* (roots) {
+          const fs = yield* FileSystem.FileSystem
+          const path = yield* Path.Path
+          const content =
+            skillFile("bound", "Workspace skill") +
+            "Read references/guide.md.\n"
+          const location = yield* writeHermesSkill(
+            roots.hermes,
+            "bound",
+            content,
+          )
+          const reference = path.join(
+            path.dirname(location),
+            "references",
+            "guide.md",
+          )
+          yield* fs.makeDirectory(path.dirname(reference))
+          yield* fs.writeFileString(
+            reference,
+            "Workspace reference instructions.",
+          )
+          yield* withLocalExecutor(
+            roots,
+            roots.hermes,
+            Effect.gen(function* () {
+              const executor = yield* AgentExecutor.AgentExecutor
+              const capabilities = yield* executor.capabilities
+              assert.deepStrictEqual(
+                capabilities.skills.map((skill) => [
+                  skill.name,
+                  skill.location,
+                ]),
+                [["bound", location]],
+              )
+              const discovered = capabilities.skills[0]!.location
+              const body = yield* executor.executeUnsafe({
+                tool: "readFile",
+                params: { path: discovered },
+              })
+              assert.include(String(body), "Read references/guide.md.")
+              const guide = yield* executor.executeUnsafe({
+                tool: "readFile",
+                params: {
+                  path: path.resolve(
+                    path.dirname(discovered),
+                    "references/guide.md",
+                  ),
+                },
+              })
+              assert.include(String(guide), "Workspace reference instructions.")
+            }),
+          )
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+  )
+
+  for (const hermesHome of [undefined, ""]) {
+    it.effect(
+      hermesHome === undefined
+        ? "makeLocal leaves unset HERMES_HOME disabled"
+        : "makeLocal treats empty HERMES_HOME as unset",
+      () =>
+        withRoots(
+          Effect.fnUntraced(function* (roots) {
+            const path = yield* Path.Path
+            yield* writeHermesSkill(
+              path.join(roots.home, ".hermes"),
+              "ignored",
+              skillFile("ignored", "Ignored"),
+            )
+            const location = yield* writeSkill(
+              roots.project,
+              "proj",
+              skillFile("proj", "Project"),
+            )
+            const capabilities = yield* withLocalExecutor(
+              roots,
+              hermesHome,
+              AgentExecutor.AgentExecutor.pipe(
+                Effect.flatMap((executor) => executor.capabilities),
+              ),
+            )
+            assert.deepStrictEqual(
+              capabilities.skills.map((skill) => skill.location),
+              [location],
+            )
+          }),
+        ).pipe(Effect.provide(NodeServices.layer)),
+    )
+  }
+
   for (const type of ["FIFO", "Socket", "Directory"] as const) {
     it.effect(`skips a ${type} SKILL.md without attempting to read it`, () =>
       withRoots(
@@ -456,7 +743,7 @@ body`,
   it.effect("returns an empty catalog when nothing exists", () =>
     withRoots(
       Effect.fnUntraced(function* (roots) {
-        const skills = yield* discover(roots)
+        const skills = yield* discoverWithHermes(roots, Option.none())
         assert.deepStrictEqual(skills, [])
         assert.isTrue(Option.isNone(AgentSkills.renderCatalog(skills)))
       }),
@@ -478,19 +765,11 @@ body`,
         )
         yield* writeSkill(roots.project, "broken", "---\nnope\n---")
 
-        const previousHome = process.env.HOME
-        process.env.HOME = roots.home
-        const capabilities = yield* AgentExecutor.AgentExecutor.pipe(
-          Effect.flatMap((executor) => executor.capabilities),
-          Effect.provide(
-            AgentExecutor.layerLocal({ directory: roots.project }).pipe(
-              Layer.provide(NodeHttpClient.layerUndici),
-            ),
-          ),
-          Effect.ensuring(
-            Effect.sync(() => {
-              process.env.HOME = previousHome
-            }),
+        const capabilities = yield* withLocalExecutor(
+          roots,
+          undefined,
+          AgentExecutor.AgentExecutor.pipe(
+            Effect.flatMap((executor) => executor.capabilities),
           ),
         )
         assert.deepStrictEqual(
@@ -567,6 +846,48 @@ const systemPromptFor = (skills: ReadonlyArray<AgentSkills.Skill>) =>
   )
 
 describe("Agent skills catalog", () => {
+  it.effect(
+    "renders a Hermes skill in the system prompt with its absolute location",
+    () =>
+      withRoots(
+        Effect.fnUntraced(function* (roots) {
+          const location = yield* writeHermesSkill(
+            roots.hermes,
+            "bound",
+            skillFile("bound", "Workspace skill"),
+          )
+          const system = yield* systemPromptFor(
+            yield* discoverWithHermes(roots),
+          )
+          assert.include(system, "# Skills")
+          assert.include(system, "- bound: Workspace skill")
+          assert.include(system, "location: " + location)
+          assert.notInclude(system, "Instructions for bound.")
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+  )
+
+  it.effect(
+    "omits the catalog with HERMES_HOME pointing at an empty directory",
+    () =>
+      withRoots(
+        Effect.fnUntraced(function* (roots) {
+          const capabilities = yield* withLocalExecutor(
+            roots,
+            roots.hermes,
+            AgentExecutor.AgentExecutor.pipe(
+              Effect.flatMap((executor) => executor.capabilities),
+            ),
+          )
+          assert.deepStrictEqual(capabilities.skills, [])
+          assert.notInclude(
+            yield* systemPromptFor(capabilities.skills),
+            "# Skills",
+          )
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+  )
+
   it.effect(
     "escapes a newline in a catalog location without changing the filesystem path",
     () =>

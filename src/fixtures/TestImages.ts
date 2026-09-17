@@ -1,4 +1,5 @@
 import * as Photon from "@silvia-odwyer/photon-node"
+import * as Zlib from "node:zlib"
 import * as Encoding from "effect/Encoding"
 
 export const encodePng = (options: {
@@ -83,6 +84,145 @@ export const supportedImages = [
     fileName: "picture.webp",
     mediaType: "image/webp",
     data: tinyWebp,
+  },
+] as const
+
+const ascii = (text: string) => Array.from(text, (c) => c.charCodeAt(0))
+const u16be = (n: number) => [(n >>> 8) & 0xff, n & 0xff]
+const u16le = (n: number) => [n & 0xff, (n >>> 8) & 0xff]
+const u24le = (n: number) => [n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff]
+const u32be = (n: number) => [
+  (n >>> 24) & 0xff,
+  (n >>> 16) & 0xff,
+  (n >>> 8) & 0xff,
+  n & 0xff,
+]
+const u32le = (n: number) => [
+  n & 0xff,
+  (n >>> 8) & 0xff,
+  (n >>> 16) & 0xff,
+  (n >>> 24) & 0xff,
+]
+
+const pngHeader = (width: number, height: number) => {
+  const ihdr = [
+    ...ascii("IHDR"),
+    ...u32be(width),
+    ...u32be(height),
+    8,
+    6,
+    0,
+    0,
+    0,
+  ]
+  return new Uint8Array([
+    0x89,
+    0x50,
+    0x4e,
+    0x47,
+    0x0d,
+    0x0a,
+    0x1a,
+    0x0a,
+    ...u32be(13),
+    ...ihdr,
+    ...u32be(Zlib.crc32(new Uint8Array(ihdr))),
+  ])
+}
+
+const jpegHeader = (width: number, height: number) =>
+  new Uint8Array([
+    0xff,
+    0xd8,
+    // APP0 / JFIF, as emitted by most encoders, so the parser must skip it.
+    0xff,
+    0xe0,
+    ...u16be(16),
+    ...ascii("JFIF"),
+    0,
+    1,
+    2,
+    0,
+    0,
+    1,
+    0,
+    1,
+    0,
+    0,
+    // SOF0: length 17, 8-bit precision, height, width, 3 components.
+    0xff,
+    0xc0,
+    ...u16be(17),
+    8,
+    ...u16be(height),
+    ...u16be(width),
+    3,
+    1,
+    0x22,
+    0,
+    2,
+    0x11,
+    1,
+    3,
+    0x11,
+    1,
+  ])
+
+const gifHeader = (width: number, height: number) =>
+  new Uint8Array([
+    ...ascii("GIF89a"),
+    ...u16le(width),
+    ...u16le(height),
+    0,
+    0,
+    0,
+  ])
+
+/** Extended (VP8X) container, the only WebP form that carries a canvas size. */
+const webpHeader = (width: number, height: number) =>
+  new Uint8Array([
+    ...ascii("RIFF"),
+    ...u32le(22),
+    ...ascii("WEBP"),
+    ...ascii("VP8X"),
+    ...u32le(10),
+    0,
+    0,
+    0,
+    0,
+    ...u24le(width - 1),
+    ...u24le(height - 1),
+  ])
+
+/**
+ * Header-only fixtures that declare canvases far over any sane pixel budget.
+ * They carry no pixel data, so nothing can decode them: a test that passes
+ * one to the decoder is a test that would decode a bomb.
+ */
+export const oversizedHeaders = [
+  {
+    mediaType: "image/png",
+    width: 16384,
+    height: 16384,
+    data: pngHeader(16384, 16384),
+  },
+  {
+    mediaType: "image/jpeg",
+    width: 65535,
+    height: 65535,
+    data: jpegHeader(65535, 65535),
+  },
+  {
+    mediaType: "image/gif",
+    width: 65535,
+    height: 65535,
+    data: gifHeader(65535, 65535),
+  },
+  {
+    mediaType: "image/webp",
+    width: 16384,
+    height: 16384,
+    data: webpHeader(16384, 16384),
   },
 ] as const
 

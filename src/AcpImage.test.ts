@@ -1,4 +1,6 @@
+import * as Photon from "@silvia-odwyer/photon-node"
 import { assert, describe, it } from "@effect/vitest"
+import { vi } from "vitest"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as NodePath from "@effect/platform-node/NodePath"
 import * as Effect from "effect/Effect"
@@ -413,6 +415,60 @@ describe("Acp images", () => {
       Layer.succeed(HttpClient.HttpClient, client),
     )
   })
+
+  it.effect(
+    "rejects inline and file: images over the input ceiling before decoding",
+    () =>
+      withServices(
+        withTempDir((cwd) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem
+            const path = yield* Path.Path
+            // The same 20 MiB ceiling the HTTP fetch already enforces.
+            const ceiling = 20 * 1024 * 1024
+            // Sparse: a valid PNG header, then a hole up to one byte over.
+            const huge = path.join(cwd, "huge.png")
+            yield* fs.writeFile(huge, tinyPng)
+            yield* fs.truncate(huge, ceiling + 1)
+            // Base64 one quantum longer than the ceiling encodes to.
+            const inline =
+              base64(tinyPng) + "A".repeat(Math.ceil(ceiling / 3) * 4)
+
+            const decoder = vi.spyOn(Photon.PhotonImage, "new_from_byteslice")
+            try {
+              const server = yield* makeServer()
+              const sessionId = yield* server.newSession(cwd)
+              const fromInline = yield* server.request(2, "session/prompt", {
+                sessionId,
+                prompt: [
+                  { type: "image", data: inline, mimeType: "image/png" },
+                ],
+              })
+              assert.strictEqual(fromInline.error?.code, -32602)
+              const fromFile = yield* server.request(3, "session/prompt", {
+                sessionId,
+                prompt: [
+                  {
+                    type: "resource_link",
+                    uri: "file://" + huge,
+                    mimeType: "image/png",
+                  },
+                ],
+              })
+              assert.strictEqual(fromFile.error?.code, -32602)
+              assert.strictEqual(server.prompts.length, 0, "no model call")
+              assert.strictEqual(
+                decoder.mock.calls.length,
+                0,
+                "nothing over the ceiling may reach the decoder",
+              )
+            } finally {
+              decoder.mockRestore()
+            }
+          }),
+        ),
+      ),
+  )
 
   it.effect("rejects a file: resource_link outside the cwd", () =>
     withServices(

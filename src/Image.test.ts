@@ -1,13 +1,29 @@
+import * as Photon from "@silvia-odwyer/photon-node"
 import { assert, describe, it } from "@effect/vitest"
 import * as Effect from "effect/Effect"
 import * as Encoding from "effect/Encoding"
+import * as Option from "effect/Option"
+import { vi } from "vitest"
 import * as Image from "./Image.ts"
 import {
   dimensions,
   encodePng,
   noisePixel,
+  oversizedHeaders,
+  supportedImages,
   tinyPng,
 } from "./fixtures/TestImages.ts"
+
+/** Counts decoder calls without changing what the decoder does. */
+const withDecoderSpy = <A, E, R>(
+  f: (calls: () => number) => Effect.Effect<A, E, R>,
+) =>
+  Effect.suspend(() => {
+    const spy = vi.spyOn(Photon.PhotonImage, "new_from_byteslice")
+    return f(() => spy.mock.calls.length).pipe(
+      Effect.ensuring(Effect.sync(() => spy.mockRestore())),
+    )
+  })
 
 const base64Length = (bytes: Uint8Array) => Encoding.encodeBase64(bytes).length
 
@@ -84,5 +100,97 @@ describe("Image.prepare", () => {
       assert.strictEqual(error._tag, "ImageError")
       assert.strictEqual(error.reason, "Decode")
     }),
+  )
+})
+
+// =============================================================================
+// Input budget: what may reach the decoder at all
+//
+// Two bounds sit in front of Photon on every path. `maxInputBytes` caps the
+// encoded input (20 MiB, the same number the HTTP fetch already uses), and
+// `maxInputPixels` caps the canvas declared in the image header, because a
+// small, highly compressible file can expand to gigabytes of RGBA inside the
+// decoder before `prepare` ever reads a width. Both checks run before any
+// decoding; the fixtures below have no pixels, so a decoder call would fail.
+// =============================================================================
+
+describe("Image input budget", () => {
+  it("pins the shared ceilings", () => {
+    assert.strictEqual(Image.maxInputBytes, 20 * 1024 * 1024)
+    assert.strictEqual(Image.maxInputPixels, 50_000_000)
+  })
+
+  it.effect("reads dimensions from the header without decoding", () =>
+    withDecoderSpy((decoderCalls) =>
+      Effect.sync(() => {
+        for (const image of supportedImages) {
+          assert.deepStrictEqual(
+            Option.getOrThrow(Image.dimensions(image.data)),
+            dimensions(image.data),
+            image.mediaType,
+          )
+        }
+        // `dimensions` above is the Photon-backed fixture helper; reset.
+        const baseline = decoderCalls()
+        for (const header of oversizedHeaders) {
+          assert.deepStrictEqual(
+            Image.dimensions(header.data),
+            Option.some({ width: header.width, height: header.height }),
+            header.mediaType,
+          )
+        }
+        assert.deepStrictEqual(
+          Image.dimensions(new TextEncoder().encode("not an image")),
+          Option.none(),
+        )
+        assert.strictEqual(decoderCalls(), baseline)
+      }),
+    ),
+  )
+
+  it.effect("rejects an oversized canvas in every format before decoding", () =>
+    withDecoderSpy((decoderCalls) =>
+      Effect.gen(function* () {
+        for (const header of oversizedHeaders) {
+          assert.isAbove(header.width * header.height, Image.maxInputPixels)
+          const error = yield* Effect.flip(
+            Image.prepare({ data: header.data, mediaType: header.mediaType }),
+          )
+          assert.strictEqual(error._tag, "ImageError", header.mediaType)
+          assert.strictEqual(error.reason, "TooLarge", header.mediaType)
+        }
+        assert.strictEqual(decoderCalls(), 0, "the decoder must not run")
+      }),
+    ),
+  )
+
+  it.effect("rejects input over the byte ceiling before decoding", () =>
+    withDecoderSpy((decoderCalls) =>
+      Effect.gen(function* () {
+        // A real PNG header followed by padding: over the ceiling by one byte.
+        const data = new Uint8Array(20 * 1024 * 1024 + 1)
+        data.set(tinyPng)
+        const error = yield* Effect.flip(
+          Image.prepare({ data, mediaType: "image/png" }),
+        )
+        assert.strictEqual(error._tag, "ImageError")
+        assert.strictEqual(error.reason, "TooLarge")
+        assert.strictEqual(decoderCalls(), 0, "the decoder must not run")
+      }),
+    ),
+  )
+
+  it.effect("does not send undecodable bytes to the decoder", () =>
+    withDecoderSpy((decoderCalls) =>
+      Effect.gen(function* () {
+        yield* Effect.flip(
+          Image.prepare({
+            data: new TextEncoder().encode("not a png"),
+            mediaType: "image/png",
+          }),
+        )
+        assert.strictEqual(decoderCalls(), 0)
+      }),
+    ),
   )
 })

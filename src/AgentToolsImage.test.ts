@@ -1,4 +1,6 @@
+import * as Photon from "@silvia-odwyer/photon-node"
 import { assert, describe, it } from "@effect/vitest"
+import { vi } from "vitest"
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as Duration from "effect/Duration"
@@ -80,13 +82,34 @@ describe("readFile images", () => {
     ),
   )
 
-  it.effect("rejects an image that cannot be decoded", () =>
-    withProject(() =>
-      Effect.gen(function* () {
-        const exit = yield* Effect.exit(readFile({ path: "broken.png" }))
-        assert.isTrue(Exit.isFailure(exit))
-      }),
-    ),
+  it.effect(
+    "rejects undecodable and over-ceiling images without decoding them",
+    () =>
+      withProject((project) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const path = yield* Path.Path
+          // Sparse file one byte over the shared 20 MiB input ceiling.
+          const huge = path.join(project, "huge.png")
+          yield* fs.writeFile(huge, tinyPng)
+          yield* fs.truncate(huge, 20 * 1024 * 1024 + 1)
+
+          const decoder = vi.spyOn(Photon.PhotonImage, "new_from_byteslice")
+          try {
+            const broken = yield* Effect.exit(readFile({ path: "broken.png" }))
+            assert.isTrue(Exit.isFailure(broken))
+            const oversized = yield* Effect.exit(readFile({ path: "huge.png" }))
+            assert.isTrue(Exit.isFailure(oversized))
+            assert.strictEqual(
+              decoder.mock.calls.length,
+              0,
+              "neither garbage nor an over-ceiling file may reach the decoder",
+            )
+          } finally {
+            decoder.mockRestore()
+          }
+        }),
+      ),
   )
 })
 

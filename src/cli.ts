@@ -19,6 +19,9 @@ import { pipe } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Logger from "effect/Logger"
 import * as Path from "effect/Path"
+import * as Schema from "effect/Schema"
+import type * as LanguageModel from "effect/unstable/ai/LanguageModel"
+import type * as Model from "effect/unstable/ai/Model"
 import * as Config from "effect/Config"
 import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
 import * as Option from "effect/Option"
@@ -31,48 +34,43 @@ type Provider = "openai" | "copilot"
 
 const providers: ReadonlyArray<Provider> = ["openai", "copilot"]
 
+const withSubagentModel = <E, R>(
+  model: Layer.Layer<
+    LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName,
+    E,
+    R
+  >,
+) => Layer.merge(model, Agent.layerSubagentModel(model))
+
 const modelLayer = (provider: Provider, model: string, effort: string) =>
   provider === "openai"
-    ? Codex.modelWebSocket(model, {
-        reasoning: {
-          effort: effort as any,
-        },
-      }).pipe(
-        Layer.merge(
-          Agent.layerSubagentModel(
-            Codex.modelWebSocket(model, {
-              reasoning: {
-                effort: effort as any,
-              },
-            }),
-          ),
-        ),
-        Layer.provide(Codex.layerClient),
-      )
-    : Copilot.model(model, {
-        reasoning: {
-          effort,
-        },
-      }).pipe(
-        Layer.merge(
-          Agent.layerSubagentModel(
-            Copilot.model(model, {
-              reasoning: {
-                effort,
-              },
-            }),
-          ),
-        ),
+    ? withSubagentModel(
+        Codex.modelWebSocket(model, { reasoning: { effort: effort as any } }),
+      ).pipe(Layer.provide(Codex.layerClient))
+    : withSubagentModel(Copilot.model(model, { reasoning: { effort } })).pipe(
         Layer.provide(Copilot.layerClient),
       )
 
 const parseModelId = (modelId: string) => {
-  const parts = modelId.split("/")
-  if (parts.length !== 3) return Option.none()
-  const [provider, model, effort] = parts as [string, string, string]
-  if (!providers.includes(provider as Provider)) return Option.none()
-  return Option.some({ provider: provider as Provider, model, effort })
+  const [provider, model, effort, ...rest] = modelId.split("/")
+  return provider !== undefined &&
+    providers.includes(provider as Provider) &&
+    model !== undefined &&
+    effort !== undefined &&
+    rest.length === 0
+    ? Option.some({ provider: provider as Provider, model, effort })
+    : Option.none()
 }
+
+const ModelId = Schema.String.pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (modelId: string) =>
+        Option.isSome(parseModelId(modelId)) ||
+        `Invalid model "${modelId}", expected <provider>/<model>/<effort>`,
+    ),
+  ),
+)
 
 const provider = Flag.Literals("provider", providers).pipe(
   Flag.withAlias("p"),
@@ -180,6 +178,7 @@ const acpModel = Flag.String("model").pipe(
   Flag.withDescription(
     "Default model as <provider>/<model>/<effort>, e.g. openai/gpt-6-astra/medium",
   ),
+  Flag.withSchema(ModelId),
   Flag.withDefault("openai/gpt-6-astra/medium"),
 )
 
@@ -187,27 +186,18 @@ const acp = Command.make("acp", { model: acpModel }).pipe(
   Command.withDescription(
     "Run as an Agent Client Protocol (ACP) server over stdio",
   ),
-  Command.withHandler(
-    Effect.fnUntraced(function* ({ model }) {
-      if (Option.isNone(parseModelId(model))) {
-        return yield* Effect.die(
-          new Error(
-            `Invalid model "${model}", expected <provider>/<model>/<effort>`,
-          ),
-        )
-      }
-      return yield* Acp.runStdio({
-        version,
-        defaultModel: model,
-        makeAgent: (cwd) =>
-          Agent.make.pipe(
-            Effect.provide(AgentExecutor.layerLocal({ directory: cwd })),
-          ),
-        makeModel: (modelId) =>
-          Option.map(parseModelId(modelId), ({ provider, model, effort }) =>
-            modelLayer(provider, model, effort),
-          ),
-      })
+  Command.withHandler(({ model }) =>
+    Acp.runStdio({
+      version,
+      defaultModel: model,
+      makeAgent: (cwd) =>
+        Agent.make.pipe(
+          Effect.provide(AgentExecutor.layerLocal({ directory: cwd })),
+        ),
+      makeModel: (modelId) =>
+        Option.map(parseModelId(modelId), ({ provider, model, effort }) =>
+          modelLayer(provider, model, effort),
+        ),
     }),
   ),
   Command.provide(

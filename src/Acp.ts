@@ -166,6 +166,16 @@ const decodeParams = <S extends Schema.Top>(schema: S, params: unknown) =>
     ),
   )
 
+const sessionNotFound = (sessionId: string) =>
+  new RpcError({ code: -32602, message: `Session not found: ${sessionId}` })
+
+const toRpcError = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause)
+  return error instanceof RpcError
+    ? error
+    : new RpcError({ code: -32603, message: Cause.pretty(cause) })
+}
+
 const renderPrompt = (
   blocks: ReadonlyArray<typeof ContentBlock.Type>,
 ): string =>
@@ -186,12 +196,26 @@ const renderPrompt = (
 
 const textContent = (text: string) => ({ type: "text", text })
 
+const historyUpdates = (history: Prompt.Prompt) => {
+  const updates: Array<object> = []
+  for (const message of history.content) {
+    if (message.role !== "user" && message.role !== "assistant") continue
+    const sessionUpdate =
+      message.role === "user" ? "user_message_chunk" : "agent_message_chunk"
+    for (const part of message.content) {
+      if (part.type === "text") {
+        updates.push({ sessionUpdate, content: textContent(part.text) })
+      }
+    }
+  }
+  return updates
+}
+
 interface Session {
   readonly id: string
   readonly cwd: string
   model: string
   readonly agent: Agent.Agent
-  readonly scope: Scope.Closeable
   running: Fiber.Fiber<void, unknown> | undefined
   toolCalls: number
 }
@@ -212,7 +236,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     KeyValueStore.prefix(kvs, "session-"),
     SessionRecord,
   )
-  const parentScope = yield* Effect.scope
+  const scope = yield* Effect.scope
   const sessions = new Map<string, Session>()
 
   const notify = (method: string, params: object) =>
@@ -221,26 +245,17 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
   const update = (sessionId: string, update: object) =>
     notify("session/update", { sessionId, update })
 
-  const getSession = (sessionId: string) => {
-    const session = sessions.get(sessionId)
-    return session === undefined
-      ? Effect.fail(
-          new RpcError({
-            code: -32602,
-            message: `Session not found: ${sessionId}`,
-          }),
-        )
-      : Effect.succeed(session)
-  }
+  const getSession = (sessionId: string) =>
+    Effect.fromOption(Option.fromNullishOr(sessions.get(sessionId)), () =>
+      sessionNotFound(sessionId),
+    )
 
   const requireModel = (modelId: string) =>
-    Option.match(options.makeModel(modelId), {
-      onNone: () =>
-        Effect.fail(
-          new RpcError({ code: -32602, message: `Unknown model: ${modelId}` }),
-        ),
-      onSome: Effect.succeed,
-    })
+    Effect.fromOption(
+      options.makeModel(modelId),
+      () =>
+        new RpcError({ code: -32602, message: `Unknown model: ${modelId}` }),
+    )
 
   const modelsInfo = (session: Session) => ({
     availableModels: [...new Set([session.model, options.defaultModel])].map(
@@ -269,7 +284,6 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     id: string,
     record: SessionRecord,
   ) {
-    const scope = yield* Scope.fork(parentScope)
     const agent = yield* Scope.provide(options.makeAgent(record.cwd), scope)
     MutableRef.set(agent.history, record.history)
     const session: Session = {
@@ -277,7 +291,6 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       cwd: record.cwd,
       model: record.model,
       agent,
-      scope,
       running: undefined,
       toolCalls: 0,
     }
@@ -287,25 +300,8 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
 
   const replayHistory = (session: Session) =>
     Effect.forEach(
-      session.agent.history.current.content,
-      (message) => {
-        if (message.role !== "user" && message.role !== "assistant") {
-          return Effect.void
-        }
-        const sessionUpdate =
-          message.role === "user" ? "user_message_chunk" : "agent_message_chunk"
-        return Effect.forEach(
-          message.content,
-          (part) =>
-            part.type === "text"
-              ? update(session.id, {
-                  sessionUpdate,
-                  content: textContent(part.text),
-                })
-              : Effect.void,
-          { discard: true },
-        )
-      },
+      historyUpdates(session.agent.history.current),
+      (sessionUpdate) => update(session.id, sessionUpdate),
       { discard: true },
     )
 
@@ -440,10 +436,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         ),
       )
     if (Option.isNone(record)) {
-      return yield* new RpcError({
-        code: -32602,
-        message: `Session not found: ${sessionId}`,
-      })
+      return yield* sessionNotFound(sessionId)
     }
     const modelId = model ?? record.value.model
     yield* requireModel(modelId)
@@ -480,25 +473,17 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       })
     }
     const model = yield* requireModel(session.model)
-    const fiber = yield* runTurn(session, renderPrompt(prompt)).pipe(
+    session.running = yield* runTurn(session, renderPrompt(prompt)).pipe(
       Effect.provide(model),
       Effect.scoped,
       Effect.forkChild,
     )
-    session.running = fiber
-    const exit = yield* Effect.exit(Fiber.join(fiber))
+    const exit = yield* Effect.exit(Fiber.join(session.running))
     session.running = undefined
     yield* persist(session)
-    if (Exit.isFailure(exit)) {
-      if (Cause.hasInterruptsOnly(exit.cause)) {
-        return { stopReason: "cancelled" }
-      }
-      return yield* new RpcError({
-        code: -32603,
-        message: Cause.pretty(exit.cause),
-      })
-    }
-    return { stopReason: "end_turn" }
+    if (Exit.isSuccess(exit)) return { stopReason: "end_turn" }
+    if (Cause.hasInterruptsOnly(exit.cause)) return { stopReason: "cancelled" }
+    return yield* toRpcError(exit.cause)
   })
 
   const cancel = Effect.fnUntraced(function* (params: unknown) {
@@ -540,50 +525,37 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     }
   }
 
-  const handle = Effect.fnUntraced(function* (line: string) {
-    if (line.trim() === "") return
-    const message = yield* decodeIncoming(line).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("Ignoring invalid JSON-RPC message", error).pipe(
-          Effect.as(undefined),
-        ),
-      ),
-    )
-    // Responses to requests are ignored: the server never sends requests
-    if (message === undefined || message.method === undefined) return
-
-    if (message.id === undefined) {
-      if (message.method === "session/cancel") {
-        yield* cancel(message.params).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("Ignoring invalid session/cancel", error),
-          ),
-        )
+  const handle = Effect.fnUntraced(
+    function* (line: string) {
+      if (line.trim() === "") return
+      const message = yield* decodeIncoming(line)
+      // Responses to requests are ignored: the server never sends requests
+      if (message.method === undefined) return
+      if (message.id === undefined) {
+        if (message.method === "session/cancel") {
+          yield* cancel(message.params)
+        }
+        return
       }
-      return
-    }
-
-    const id = message.id
-    yield* dispatch(message.method, message.params).pipe(
-      Effect.catchCause((cause) => {
-        const error = Cause.squash(cause)
-        return Effect.fail(
-          error instanceof RpcError
-            ? error
-            : new RpcError({ code: -32603, message: Cause.pretty(cause) }),
-        )
-      }),
-      Effect.matchEffect({
-        onSuccess: (result) => options.send({ jsonrpc: "2.0", id, result }),
-        onFailure: (error) =>
-          options.send({
-            jsonrpc: "2.0",
-            id,
-            error: { code: error.code, message: error.message },
-          }),
-      }),
-    )
-  })
+      const id = message.id
+      yield* dispatch(message.method, message.params).pipe(
+        Effect.matchCauseEffect({
+          onSuccess: (result) => options.send({ jsonrpc: "2.0", id, result }),
+          onFailure: (cause) => {
+            const error = toRpcError(cause)
+            return options.send({
+              jsonrpc: "2.0",
+              id,
+              error: { code: error.code, message: error.message },
+            })
+          },
+        }),
+      )
+    },
+    Effect.catch((error) =>
+      Effect.logWarning("Ignoring invalid JSON-RPC message", error),
+    ),
+  )
 
   return { handle }
 })

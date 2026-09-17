@@ -38,10 +38,14 @@ export const model = (
     Layer.mergeAll(
       OpenAiLanguageModel.layer({
         model,
-        config: Struct.omit(options ?? {}, ["systemPromptTransform"]),
+        config: Struct.omit(options ?? {}, [
+          "systemPromptTransform",
+          "supportsImages",
+        ]),
       }),
       AgentModelConfig.layer({
         systemPromptTransform: options?.systemPromptTransform,
+        supportsImages: options?.supportsImages,
       }),
       // Cap compaction summaries; Copilot honours max_output_tokens.
       Layer.succeed(Compaction.SummarizerTransform, (effect) =>

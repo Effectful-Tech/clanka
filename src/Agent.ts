@@ -12,9 +12,12 @@ import type * as HttpClient from "effect/unstable/http/HttpClient"
 import type {
   CurrentDirectory,
   DirectoryChanger,
+  ImageAttacher,
+  ImageAttachment,
   SubagentExecutor,
   TaskCompleter,
 } from "./AgentTools.ts"
+import * as Image from "./Image.ts"
 import type * as FileSystem from "effect/FileSystem"
 import * as Prompt from "effect/unstable/ai/Prompt"
 import * as Effect from "effect/Effect"
@@ -197,6 +200,13 @@ ${content}
     // `inputTokens.total` from the most recent finish part; undefined until
     // the first response and after every compaction.
     let lastContextTokens: number | undefined = undefined
+    // Images stay in the Prompt; this only decides whether they are sent.
+    // Starts false for models known not to take images, and flips to false
+    // after a provider rejects image input once.
+    let sendImages = modelConfig.supportsImages !== false
+    // Images attached by `readFile` during the current script, spliced onto
+    // the Prompt as a user message once the tool result has been recorded.
+    const pendingImages: Array<ImageAttachment> = []
 
     const output = yield* Queue.make<Output, AgentFinished | AiError.AiError>()
     let inputTokens = 0
@@ -386,6 +396,10 @@ ${content}
             Effect.sync(() => {
               finalSummary = Option.some(summary)
             }),
+          onImage: (image) =>
+            Effect.sync(() => {
+              pendingImages.push(image)
+            }),
         }),
         Stream.mkString,
       )
@@ -454,12 +468,21 @@ ${content}
 
         // oxlint-disable-next-line typescript/no-explicit-any
         let response = Array.empty<Response.StreamPart<any>>()
+        const discardAttempt = () => {
+          response = []
+          pendingImages.length = 0
+        }
         let reasoningStarted = false
         let hadReasoningDelta = false
         let hadToolCall = false
         const runModel = pipe(
           Stream.suspend(() =>
-            ai.streamText({ prompt: prompt.current, toolkit: singleTool }),
+            ai.streamText({
+              prompt: sendImages
+                ? prompt.current
+                : Image.stripImages(prompt.current),
+              toolkit: singleTool,
+            }),
           ),
           Stream.takeUntil((part) => {
             if (
@@ -555,7 +578,7 @@ ${content}
                     }),
                   }),
                 })
-                response = []
+                discardAttempt()
                 return true
               }
               // Never retry a context-length error as is: the overflow
@@ -575,21 +598,37 @@ ${content}
                   }
                 }
               }
-              response = []
+              discardAttempt()
               return err.isRetryable
             },
             schedule: retryPolicy,
           }),
           Effect.catchTag("TimeoutError", Effect.die),
         )
+        // Unsupported images: drop them from the request and retry once.
+        // The images stay in the Prompt with an omitted note in their place.
+        const attemptWithImageFallback = attempt.pipe(
+          Effect.catchIf(
+            (err): err is AiError.AiError =>
+              sendImages &&
+              Image.hasImages(prompt.current) &&
+              Image.isUnsupportedImageError(err),
+            (err) => {
+              sendImages = false
+              discardAttempt()
+              maybeSend({ agentId, part: new ErrorRetry({ error: err }) })
+              return attempt
+            },
+          ),
+        )
         // Overflow: compact once, retry the attempt once, then fail.
-        yield* attempt.pipe(
+        yield* attemptWithImageFallback.pipe(
           Effect.catchIf(
             (err): err is AiError.AiError =>
               Compaction.isContextLengthError(err),
             (err) =>
               Effect.gen(function* () {
-                response = []
+                discardAttempt()
                 const compacted = yield* compactWithEvents(
                   "overflow",
                   Compaction.compact({
@@ -605,7 +644,9 @@ ${content}
                     Effect.catchTag("TimeoutError", Effect.die),
                   ),
                 )
-                return Option.isSome(compacted) ? yield* attempt : yield* err
+                return Option.isSome(compacted)
+                  ? yield* attemptWithImageFallback
+                  : yield* err
               }),
           ),
         )
@@ -613,6 +654,16 @@ ${content}
           prompt,
           Prompt.concat(Prompt.fromResponseParts(response)),
         )
+        if (pendingImages.length > 0) {
+          // After the tool result, so call / result pairing stays intact.
+          MutableRef.update(
+            prompt,
+            Prompt.concat(
+              Prompt.fromMessages([Image.userMessage(pendingImages)]),
+            ),
+          )
+          pendingImages.length = 0
+        }
         if (conversationMode && !hadToolCall && pendingMessages.size === 0) {
           finalSummary = Option.some(responseToSummary(response))
         }
@@ -793,7 +844,11 @@ export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
       Toolkit extends Toolkit.Toolkit<infer T>
         ? Tool.HandlersFor<T> | Tool.HandlerServices<T[keyof T]>
         : never,
-      CurrentDirectory | DirectoryChanger | SubagentExecutor | TaskCompleter
+      | CurrentDirectory
+      | DirectoryChanger
+      | SubagentExecutor
+      | TaskCompleter
+      | ImageAttacher
     >
 > => layer.pipe(Layer.provide(AgentExecutor.layerLocal(options)))
 
@@ -870,6 +925,13 @@ export class AgentModelConfig extends Context.Reference<{
         effect: Effect.Effect<A, E, R>,
       ) => Effect.Effect<A, E, R>)
     | undefined
+  /**
+   * `false` for models known not to take image input: image parts are
+   * stripped before every request. Leave unset when unknown; the Agent then
+   * sends images and retries once without them if the provider rejects
+   * them.
+   */
+  readonly supportsImages?: boolean | undefined
 }>("clanka/Agent/SystemPromptTransform", {
   defaultValue: () => ({}),
 }) {

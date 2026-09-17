@@ -21,7 +21,9 @@ import { pipe } from "effect/Function"
 import * as Array from "effect/Array"
 import * as Data from "effect/Data"
 import * as Layer from "effect/Layer"
+import * as Option from "effect/Option"
 import * as SemanticSearch from "./SemanticSearch/Service.ts"
+import * as Image from "./Image.ts"
 
 /**
  * @since 1.0.0
@@ -60,6 +62,28 @@ export class SubagentExecutor extends Context.Service<
 >()("clanka/AgentTools/SubagentExecutor") {}
 
 /**
+ * An image read by `readFile`, handed to the Agent so it can be spliced onto
+ * the Prompt for the next model turn.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export interface ImageAttachment {
+  readonly fileName: string
+  readonly mediaType: Image.ImageMediaType
+  readonly data: Uint8Array
+}
+
+/**
+ * @since 1.0.0
+ * @category Context
+ */
+export class ImageAttacher extends Context.Service<
+  ImageAttacher,
+  (image: ImageAttachment) => Effect.Effect<void>
+>()("clanka/AgentTools/ImageAttacher") {}
+
+/**
  * @since 1.0.0
  * @category Context
  */
@@ -68,6 +92,7 @@ export const makeContextNoop = (cwd?: string) =>
     Context.add(CurrentDirectory, cwd ?? "/"),
     Context.add(DirectoryChanger, () => Effect.die("Not implemented")),
     Context.add(TaskCompleter, () => Effect.void),
+    Context.add(ImageAttacher, () => Effect.void),
   )
 
 class TodoItem extends Schema.Opaque<TodoItem>()(
@@ -92,14 +117,14 @@ export const AgentTools = Toolkit.make(
   }),
   Tool.make("readFile", {
     description:
-      "Read a file and optionally filter the lines to return. Returns null if the file doesn't exist.",
+      "Read a file and optionally filter the lines to return. Returns null if the file doesn't exist. For png/jpeg/gif/webp files the image itself is attached to your next turn and a short marker is returned instead of the bytes; line ranges are not allowed on images.",
     parameters: Schema.Struct({
       path: Schema.String,
       startLine: Schema.optional(Schema.Number),
       endLine: Schema.optional(Schema.Number),
     }),
     success: Schema.NullOr(Schema.String),
-    dependencies: [CurrentDirectory],
+    dependencies: [CurrentDirectory, ImageAttacher],
   }),
   Tool.make("rg", {
     description: "Search for a pattern in files using ripgrep",
@@ -300,6 +325,51 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
       )
     }, Effect.scoped)
 
+    /**
+     * Image branch of `readFile`: the bytes go to the `ImageAttacher` for
+     * the next model turn and the script only sees a marker.
+     */
+    const readImage = Effect.fnUntraced(function* (
+      path: string,
+      extensionType: Image.ImageMediaType,
+      options: {
+        readonly startLine?: number | undefined
+        readonly endLine?: number | undefined
+      },
+    ) {
+      if (options.startLine !== undefined || options.endLine !== undefined) {
+        return yield* Effect.die(
+          new Error(
+            `startLine / endLine are not supported for images: ${path}`,
+          ),
+        )
+      }
+      const bytes = yield* Image.readBoundedFile(fs, path).pipe(
+        Effect.catchReason("PlatformError", "NotFound", () =>
+          Effect.succeed(null),
+        ),
+        Effect.orDie,
+      )
+      if (bytes === null) return null
+      // The extension picks the branch; the magic bytes pick the real type.
+      const mediaType = Option.getOrElse(
+        Image.mediaTypeFromBytes(bytes),
+        () => extensionType,
+      )
+      const prepared = yield* Image.prepare({ data: bytes, mediaType }).pipe(
+        Effect.mapError((error) => new Error(`${error.message} (${path})`)),
+        Effect.orDie,
+      )
+      const fileName = pathService.basename(path)
+      const attach = yield* ImageAttacher
+      yield* attach({
+        fileName,
+        mediaType: prepared.mediaType,
+        data: prepared.data,
+      })
+      return `Image attached: ${fileName}`
+    })
+
     return AgentToolsWithSearch.of({
       changeDirectory: Effect.fn("AgentTools.changeDirectory")(
         function* (directory) {
@@ -315,11 +385,12 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           Effect.annotateLogs(options),
         )
         const cwd = yield* CurrentDirectory
-        let stream = pipe(
-          fs.stream(pathService.resolve(cwd, options.path)),
-          Stream.decodeText,
-          Stream.splitLines,
-        )
+        const path = pathService.resolve(cwd, options.path)
+        const imageType = Image.mediaTypeFromPath(path)
+        if (Option.isSome(imageType)) {
+          return yield* readImage(path, imageType.value, options)
+        }
+        let stream = pipe(fs.stream(path), Stream.decodeText, Stream.splitLines)
         if (options.startLine) {
           stream = Stream.drop(stream, options.startLine - 1)
         }

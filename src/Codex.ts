@@ -67,7 +67,11 @@ const layerModel = (
   OpenAiLanguageModel.layer({
     model,
     config: {
-      ...Struct.omit(options ?? {}, ["reasoning", "systemPromptTransform"]),
+      ...Struct.omit(options ?? {}, [
+        "reasoning",
+        "systemPromptTransform",
+        "supportsImages",
+      ]),
       store: false,
       reasoning: {
         effort: "medium",
@@ -82,6 +86,7 @@ const layerModel = (
           OpenAiLanguageModel.withConfigOverride(effect, {
             instructions: system,
           }),
+        supportsImages: options?.supportsImages,
       }),
       // No Compaction.SummarizerTransform: Codex rejects max_output_tokens,
       // so compaction summaries have no configured output-token cap.

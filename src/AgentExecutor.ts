@@ -11,9 +11,12 @@ import {
   AgentToolsWithSearch,
   CurrentDirectory,
   DirectoryChanger,
+  ImageAttacher,
+  type ImageAttachment,
   SubagentExecutor,
   TaskCompleter,
 } from "./AgentTools.ts"
+import * as Image from "./Image.ts"
 import { ToolkitRenderer } from "./ToolkitRenderer.ts"
 import * as AgentSkills from "./AgentSkills.ts"
 import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
@@ -56,6 +59,10 @@ export class AgentExecutor extends Context.Service<
       readonly script: string
       readonly onTaskComplete: (summary: string) => Effect.Effect<void>
       readonly onSubagent: (message: string) => Effect.Effect<string>
+      /**
+       * Receives every image `readFile` attached while the script ran.
+       */
+      readonly onImage: (image: ImageAttachment) => Effect.Effect<void>
     }): Stream.Stream<string>
     executeUnsafe<Tool extends keyof typeof AgentTools.tools>(options: {
       readonly tool: Tool
@@ -101,7 +108,11 @@ export const makeLocal = Effect.fnUntraced(function* <
       Toolkit extends Toolkit.Toolkit<infer T>
         ? Tool.HandlersFor<T> | Tool.HandlerServices<T[keyof T]>
         : never,
-      CurrentDirectory | DirectoryChanger | SubagentExecutor | TaskCompleter
+      | CurrentDirectory
+      | DirectoryChanger
+      | SubagentExecutor
+      | TaskCompleter
+      | ImageAttacher
     >
 > {
   const fs = yield* FileSystem.FileSystem
@@ -145,6 +156,7 @@ export const makeLocal = Effect.fnUntraced(function* <
     readonly script: string
     readonly onTaskComplete: (summary: string) => Effect.Effect<void>
     readonly onSubagent: (message: string) => Effect.Effect<string>
+    readonly onImage: (image: ImageAttachment) => Effect.Effect<void>
   }) {
     const output = yield* Queue.unbounded<string, Cause.Done>()
     const console = yield* makeConsole(output)
@@ -155,6 +167,7 @@ export const makeLocal = Effect.fnUntraced(function* <
       Context.add(TaskCompleter, opts.onTaskComplete),
       Context.add(DirectoryChanger, changeDirectory),
       Context.add(SubagentExecutor, opts.onSubagent),
+      Context.add(ImageAttacher, opts.onImage),
       Context.add(Console.Console, console),
       Context.add(References.CurrentLogAnnotations, {}),
       Option.isSome(search)
@@ -254,6 +267,8 @@ export const makeLocal = Effect.fnUntraced(function* <
           Context.add(CurrentDirectory, currentDirectory),
           Context.add(DirectoryChanger, changeDirectory),
           Context.add(SubagentExecutor, () => Effect.succeed("")),
+          // Direct tool calls have no model turn to attach images to.
+          Context.add(ImageAttacher, () => Effect.void),
           Context.add(References.CurrentLogAnnotations, {}),
           Option.isSome(search)
             ? Context.add(SemanticSearch, search.value)
@@ -305,6 +320,13 @@ export const makeRpc = Effect.gen(function* () {
                   Effect.forkIn(scope),
                 )
               }
+              case "Image": {
+                return opts.onImage({
+                  fileName: part.fileName,
+                  mediaType: part.mediaType,
+                  data: part.data,
+                })
+              }
             }
           }),
           Stream.orDie,
@@ -337,7 +359,11 @@ export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
       Toolkit extends Toolkit.Toolkit<infer T>
         ? Tool.HandlersFor<T> | Tool.HandlerServices<T[keyof T]>
         : never,
-      CurrentDirectory | DirectoryChanger | SubagentExecutor | TaskCompleter
+      | CurrentDirectory
+      | DirectoryChanger
+      | SubagentExecutor
+      | TaskCompleter
+      | ImageAttacher
     >
 > =>
   Layer.effect(AgentExecutor, makeLocal(options)).pipe(
@@ -377,7 +403,11 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
       Toolkit extends Toolkit.Toolkit<infer T>
         ? Tool.HandlersFor<T> | Tool.HandlerServices<T[keyof T]>
         : never,
-      CurrentDirectory | DirectoryChanger | SubagentExecutor | TaskCompleter
+      | CurrentDirectory
+      | DirectoryChanger
+      | SubagentExecutor
+      | TaskCompleter
+      | ImageAttacher
     >
 > =>
   RpcServer.layer(Rpcs, {
@@ -433,6 +463,14 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
                       })
                     })
                   },
+                  onImage(image) {
+                    return Queue.offer(queue, {
+                      _tag: "Image",
+                      fileName: image.fileName,
+                      mediaType: image.mediaType,
+                      data: image.data,
+                    })
+                  },
                 }),
                 Stream.runForEachArray((parts) => {
                   for (const part of parts) {
@@ -443,6 +481,11 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
                   }
                   return Effect.void
                 }),
+                Effect.onExit((exit) =>
+                  Exit.isSuccess(exit)
+                    ? Queue.end(queue)
+                    : Queue.failCause(queue, exit.cause),
+                ),
                 Effect.forkScoped,
               )
 
@@ -466,6 +509,11 @@ export const ExecuteOutput = Schema.TaggedUnion({
   Text: { text: Schema.String },
   TaskComplete: { summary: Schema.String },
   Subagent: { id: Schema.Finite, prompt: Schema.String },
+  Image: {
+    fileName: Schema.String,
+    mediaType: Image.ImageMediaType,
+    data: Schema.Uint8Array,
+  },
 })
 
 /**

@@ -62,6 +62,76 @@ const discover = (roots: { readonly project: string; readonly home: string }) =>
   })
 
 describe("AgentSkills", () => {
+  for (const type of ["FIFO", "Socket", "Directory"] as const) {
+    it.effect(`skips a ${type} SKILL.md without attempting to read it`, () =>
+      withRoots(
+        Effect.fnUntraced(function* (roots) {
+          const fs = yield* FileSystem.FileSystem
+          const nonRegular = yield* writeSkill(
+            roots.project,
+            "a-special",
+            skillFile("special", "Must not be read"),
+          )
+          const regular = yield* writeSkill(
+            roots.project,
+            "b-regular",
+            skillFile("regular", "A real skill"),
+          )
+          const info = yield* fs.stat(nonRegular)
+          const reads: Array<string> = []
+          // Model a special file without creating a FIFO or blocking a worker.
+          // An unsafe read returns immediately and is caught by the read log.
+          const controlledFs = FileSystem.FileSystem.of({
+            ...fs,
+            stat: (path) =>
+              path === nonRegular
+                ? Effect.succeed({ ...info, type })
+                : fs.stat(path),
+            readFileString: (path, encoding) =>
+              Effect.suspend(() => {
+                reads.push(path)
+                return path === nonRegular
+                  ? Effect.succeed(skillFile("special", "Must not be read"))
+                  : fs.readFileString(path, encoding)
+              }),
+          })
+          const skills = yield* discover(roots).pipe(
+            Effect.provideService(FileSystem.FileSystem, controlledFs),
+          )
+          assert.deepStrictEqual(reads, [regular])
+          assert.deepStrictEqual(
+            skills.map((skill) => [skill.name, skill.location]),
+            [["regular", regular]],
+          )
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    )
+  }
+
+  for (const [label, name] of [
+    ["missing", ""],
+    ["whitespace-only", 'name: "  "\n'],
+    ["non-string", "name: 123\n"],
+  ] as const) {
+    it.effect(
+      `normalizes a newline directory fallback for a ${label} name`,
+      () =>
+        withRoots(
+          Effect.fnUntraced(function* (roots) {
+            const location = yield* writeSkill(
+              roots.project,
+              "we\nird",
+              `---\n${name}description: Deploy it\n---\nbody`,
+            )
+            const skills = yield* discover(roots)
+            assert.strictEqual(skills.length, 1)
+            assert.strictEqual(skills[0]!.location, location)
+            assert.strictEqual(skills[0]!.name, "we ird")
+          }),
+        ).pipe(Effect.provide(NodeServices.layer)),
+    )
+  }
+
   for (const [label, frontmatter, description] of [
     [
       "an allowed-tools sequence",
@@ -128,29 +198,35 @@ describe("AgentSkills", () => {
     ["an unmatched top-level line", "this is not a mapping entry"],
     ["an unterminated flow sequence", "allowed-tools: [Read, Bash"],
   ] as const) {
-    it.effect(
-      `skips malformed YAML with ${label} despite a valid description`,
-      () =>
-        withRoots(
-          Effect.fnUntraced(function* (roots) {
-            yield* writeSkill(
-              roots.project,
-              "broken",
-              `---\nname: broken\ndescription: Otherwise valid description\n${malformed}\n---\nbody`,
-            )
-            yield* writeSkill(
-              roots.project,
-              "valid",
-              skillFile("valid", "Valid skill"),
-            )
-            const skills = yield* discover(roots)
-            assert.deepStrictEqual(
-              skills.map((skill) => [skill.name, skill.description]),
-              [["valid", "Valid skill"]],
-            )
-          }),
-        ).pipe(Effect.provide(NodeServices.layer)),
-    )
+    for (const position of ["before", "after"] as const) {
+      it.effect(
+        `skips malformed YAML with ${label} ${position} a valid description`,
+        () =>
+          withRoots(
+            Effect.fnUntraced(function* (roots) {
+              const frontmatter =
+                position === "before"
+                  ? `${malformed}\ndescription: Otherwise valid description`
+                  : `description: Otherwise valid description\n${malformed}`
+              yield* writeSkill(
+                roots.project,
+                "broken",
+                `---\nname: broken\n${frontmatter}\n---\nbody`,
+              )
+              yield* writeSkill(
+                roots.project,
+                "valid",
+                skillFile("valid", "Valid skill"),
+              )
+              const skills = yield* discover(roots)
+              assert.deepStrictEqual(
+                skills.map((skill) => [skill.name, skill.description]),
+                [["valid", "Valid skill"]],
+              )
+            }),
+          ).pipe(Effect.provide(NodeServices.layer)),
+      )
+    }
   }
 
   it("defaults skills when constructing capabilities without the new field", () => {
@@ -496,6 +572,33 @@ const systemPromptFor = (skills: ReadonlyArray<AgentSkills.Skill>) =>
   )
 
 describe("Agent skills catalog", () => {
+  it.effect(
+    "escapes a newline in a catalog location without changing the filesystem path",
+    () =>
+      withRoots(
+        Effect.fnUntraced(function* (roots) {
+          const fs = yield* FileSystem.FileSystem
+          const content = skillFile("notes", "Take notes")
+          const location = yield* writeSkill(
+            roots.project,
+            'we\nird "quoted"',
+            content,
+          )
+          const skills = yield* discover(roots)
+          assert.strictEqual(skills.length, 1)
+          assert.strictEqual(skills[0]!.location, location)
+          const system = yield* systemPromptFor(skills)
+          const renderedLocation = /^  location: (.+)$/m.exec(system)?.[1]
+          assert.strictEqual(renderedLocation, JSON.stringify(location))
+          const decodedLocation = JSON.parse(renderedLocation!) as string
+          assert.strictEqual(decodedLocation, location)
+          assert.strictEqual(yield* fs.readFileString(decodedLocation), content)
+          assert.notInclude(system, location)
+          assert.include(system, "- notes: Take notes")
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+  )
+
   it.effect("keeps literal block descriptions inside their catalog entry", () =>
     withRoots(
       Effect.fnUntraced(function* (roots) {

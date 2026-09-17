@@ -1,5 +1,11 @@
 # clanka
 
+## 0.5.1
+
+### Patch Changes
+
+- [#176](https://github.com/Effectful-Tech/clanka/pull/176) [`7d0bf83`](https://github.com/Effectful-Tech/clanka/commit/7d0bf837a0405af6f88c95d664037dbf9143af66) Thanks [@tim-smart](https://github.com/tim-smart)! - Discover host-bound skills from explicitly configured HERMES_HOME/skills, with project skills taking precedence over host skills and host skills over user skills. Unset or empty HERMES_HOME preserves existing discovery.
+
 ## 0.5.0
 
 ### Minor Changes

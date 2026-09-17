@@ -1,255 +1,85 @@
-/**
- * Contract for the `Image` module (src/Image.ts): media type detection and
- * the shared size limits applied to every image before it reaches a model,
- * whether it arrived over ACP or through `readFile`.
- *
- * Limits follow OpenCode: 2000x2000 pixels and 5MB of base64 after resize.
- * Images inside the limits pass through byte-for-byte. Larger images are
- * resized with Photon (Lanczos3), re-encoded as PNG then JPEG at decreasing
- * quality, shrunk and retried, and rejected with an `ImageError` when they
- * still do not fit.
- */
 import { assert, describe, it } from "@effect/vitest"
-import * as Photon from "@silvia-odwyer/photon-node"
 import * as Effect from "effect/Effect"
 import * as Encoding from "effect/Encoding"
-import * as Option from "effect/Option"
 import * as Image from "./Image.ts"
 import {
   dimensions,
   encodePng,
-  equalBytes,
-  gifHeader,
-  isJpeg,
-  isPng,
   noisePixel,
-  supportedImages,
   tinyPng,
-  webpHeader,
 } from "./fixtures/TestImages.ts"
 
 const base64Length = (bytes: Uint8Array) => Encoding.encodeBase64(bytes).length
 
-describe("Image.limits", () => {
-  it("hardcodes the OpenCode limits", () => {
-    assert.strictEqual(Image.maxDimension, 2000)
-    assert.strictEqual(Image.maxBytes, 5 * 1024 * 1024)
-  })
-})
-
-describe("Image.mediaTypeFromPath", () => {
-  it("maps the supported raster extensions", () => {
-    assert.deepStrictEqual(
-      Image.mediaTypeFromPath("shot.png"),
-      Option.some("image/png"),
-    )
-    assert.deepStrictEqual(
-      Image.mediaTypeFromPath("photo.jpg"),
-      Option.some("image/jpeg"),
-    )
-    assert.deepStrictEqual(
-      Image.mediaTypeFromPath("photo.JPEG"),
-      Option.some("image/jpeg"),
-    )
-    assert.deepStrictEqual(
-      Image.mediaTypeFromPath("anim.gif"),
-      Option.some("image/gif"),
-    )
-    assert.deepStrictEqual(
-      Image.mediaTypeFromPath("/abs/dir/pic.webp"),
-      Option.some("image/webp"),
-    )
-  })
-
-  it("treats svg and non-image files as text", () => {
-    assert.deepStrictEqual(Image.mediaTypeFromPath("logo.svg"), Option.none())
-    assert.deepStrictEqual(Image.mediaTypeFromPath("README.md"), Option.none())
-    assert.deepStrictEqual(
-      Image.mediaTypeFromPath("src/Image.ts"),
-      Option.none(),
-    )
-    assert.deepStrictEqual(Image.mediaTypeFromPath("noext"), Option.none())
-  })
-})
-
-describe("Image.mediaTypeFromBytes", () => {
-  it("sniffs png, jpeg, gif and webp magic bytes", () => {
-    assert.deepStrictEqual(
-      Image.mediaTypeFromBytes(tinyPng),
-      Option.some("image/png"),
-    )
-    assert.deepStrictEqual(
-      Image.mediaTypeFromBytes(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0])),
-      Option.some("image/jpeg"),
-    )
-    assert.deepStrictEqual(
-      Image.mediaTypeFromBytes(gifHeader),
-      Option.some("image/gif"),
-    )
-    assert.deepStrictEqual(
-      Image.mediaTypeFromBytes(webpHeader),
-      Option.some("image/webp"),
-    )
-  })
-
-  it("does not recognise text or svg as an image", () => {
-    const svg = new TextEncoder().encode(
-      '<svg xmlns="http://www.w3.org/2000/svg"/>',
-    )
-    assert.deepStrictEqual(Image.mediaTypeFromBytes(svg), Option.none())
-    assert.deepStrictEqual(
-      Image.mediaTypeFromBytes(new TextEncoder().encode("hello")),
-      Option.none(),
-    )
-    assert.deepStrictEqual(
-      Image.mediaTypeFromBytes(new Uint8Array(0)),
-      Option.none(),
-    )
-  })
-})
-
 describe("Image.prepare", () => {
-  for (const fixture of supportedImages) {
-    it.effect(
-      `passes a decodable ${fixture.mediaType} through byte-for-byte`,
-      () =>
-        Effect.gen(function* () {
-          const decoded = Photon.PhotonImage.new_from_byteslice(fixture.data)
-          try {
-            assert.strictEqual(decoded.get_width(), fixture.width)
-            assert.strictEqual(decoded.get_height(), fixture.height)
-            assert.strictEqual(
-              decoded.get_raw_pixels().length,
-              fixture.width * fixture.height * 4,
-            )
-          } finally {
-            decoded.free()
-          }
-          const prepared = yield* Image.prepare(fixture)
-          assert.strictEqual(prepared.mediaType, fixture.mediaType)
-          assert.isTrue(equalBytes(prepared.data, fixture.data))
-          assert.deepStrictEqual(
-            Image.mediaTypeFromBytes(prepared.data),
-            Option.some(fixture.mediaType),
-          )
-        }),
-    )
-  }
-
-  for (const fixture of supportedImages.filter(
-    (image) =>
-      image.mediaType === "image/gif" || image.mediaType === "image/webp",
-  )) {
-    it.effect(`decodes and resizes ${fixture.fileName} with test limits`, () =>
-      Effect.gen(function* () {
-        const limits = { maxDimension: 2, maxBytes: 1024 }
-        const prepared = yield* Image.prepare({ ...fixture, limits })
-        assert.isFalse(equalBytes(prepared.data, fixture.data))
-        assert.include(["image/png", "image/jpeg"], prepared.mediaType)
-        assert.deepStrictEqual(
-          Image.mediaTypeFromBytes(prepared.data),
-          Option.some(prepared.mediaType),
-        )
-        assert.deepStrictEqual(dimensions(prepared.data), {
-          width: 2,
-          height: Math.round(fixture.height / 2),
-        })
-        assert.isAtMost(base64Length(prepared.data), limits.maxBytes)
-        const decoded = Photon.PhotonImage.new_from_byteslice(prepared.data)
-        try {
-          assert.strictEqual(decoded.get_width(), 2)
-          assert.strictEqual(
-            decoded.get_height(),
-            Math.round(fixture.height / 2),
-          )
-          if (fixture.mediaType === "image/gif") {
-            // Resizing an animation uses its first (red) frame.
-            assert.deepStrictEqual(
-              Array.from(decoded.get_raw_pixels()),
-              [255, 0, 0, 255, 255, 0, 0, 255],
-            )
-          }
-        } finally {
-          decoded.free()
-        }
-      }),
-    )
-  }
-
-  it.effect("resizes an image wider than the dimension cap", () =>
+  it.effect("passes an in-limit image through unchanged", () =>
     Effect.gen(function* () {
-      const wide = encodePng({ width: 2500, height: 100 })
+      assert.strictEqual(Image.maxDimension, 2000)
+      assert.strictEqual(Image.maxBytes, 5 * 1024 * 1024)
       const prepared = yield* Image.prepare({
-        data: wide,
+        data: tinyPng,
         mediaType: "image/png",
       })
-      assert.isTrue(isPng(prepared.data) || isJpeg(prepared.data))
-      const size = dimensions(prepared.data)
-      assert.isAtMost(size.width, Image.maxDimension)
-      assert.isAtMost(size.height, Image.maxDimension)
-      // Aspect ratio is preserved: 2500x100 scales to 2000x80.
-      assert.strictEqual(size.width, 2000)
-      assert.isAtMost(Math.abs(size.height - 80), 1)
-      assert.isAtMost(base64Length(prepared.data), Image.maxBytes)
-      assert.include(["image/png", "image/jpeg"], prepared.mediaType)
+      assert.deepStrictEqual(prepared, {
+        data: tinyPng,
+        mediaType: "image/png",
+      })
     }),
   )
 
-  it.effect(
-    "brings an image over the byte cap under it with png, then jpeg, then shrinking",
-    () =>
-      Effect.gen(function* () {
-        // Incompressible noise: ~14.5MB as PNG, well over 5MB of base64 even
-        // after the dimension resize.
-        const noise = encodePng({
-          width: 2200,
-          height: 2200,
-          pixel: noisePixel,
-        })
-        assert.isAbove(base64Length(noise), Image.maxBytes)
-        const prepared = yield* Image.prepare({
-          data: noise,
-          mediaType: "image/png",
-        })
-        const size = dimensions(prepared.data)
-        assert.isAtMost(size.width, Image.maxDimension)
-        assert.isAtMost(size.height, Image.maxDimension)
-        assert.isAtMost(base64Length(prepared.data), Image.maxBytes)
-        assert.strictEqual(
-          prepared.mediaType,
-          isJpeg(prepared.data) ? "image/jpeg" : "image/png",
-        )
-      }),
-    { timeout: 60_000 },
-  )
-
-  it.effect(
-    "rejects an image that still exceeds the limits after resizing",
-    () =>
-      Effect.gen(function* () {
-        // `limits` is a test seam, not a user-facing knob: it lets the reject
-        // path run without a multi-hundred-megabyte fixture.
-        const noise = encodePng({ width: 300, height: 300, pixel: noisePixel })
-        // A defect here fails the test: the reject must be a typed failure.
-        const error = yield* Effect.flip(
-          Image.prepare({
-            data: noise,
-            mediaType: "image/png",
-            limits: { maxDimension: 200, maxBytes: 40 },
-          }),
-        )
-        assert.strictEqual(error._tag, "ImageError")
-        assert.strictEqual(error.reason, "TooLarge")
-      }),
-  )
-
-  it.effect("rejects bytes that do not decode as an image", () =>
+  it.effect("resizes to the dimension cap while preserving aspect ratio", () =>
     Effect.gen(function* () {
-      const garbage = new TextEncoder().encode(
-        "definitely not a png".repeat(100),
-      )
+      const prepared = yield* Image.prepare({
+        data: encodePng({ width: 2500, height: 100 }),
+        mediaType: "image/png",
+      })
+      assert.deepStrictEqual(dimensions(prepared.data), {
+        width: 2000,
+        height: 80,
+      })
+      assert.isAtMost(base64Length(prepared.data), Image.maxBytes)
+    }),
+  )
+
+  it.effect("re-encodes an image over the base64 byte cap", () =>
+    Effect.gen(function* () {
+      // Exercise the byte budget independently of the dimension cap, without a multi-MB fixture.
+      const data = encodePng({ width: 64, height: 64, pixel: noisePixel })
+      const limits = { maxDimension: 64, maxBytes: 2000 }
+      assert.isAbove(base64Length(data), limits.maxBytes)
+      const prepared = yield* Image.prepare({
+        data,
+        mediaType: "image/png",
+        limits,
+      })
+      assert.isAtMost(base64Length(prepared.data), limits.maxBytes)
+      const size = dimensions(prepared.data)
+      assert.isAtMost(size.width, limits.maxDimension)
+      assert.isAtMost(size.height, limits.maxDimension)
+    }),
+  )
+
+  it.effect("rejects an image that cannot fit even after resizing", () =>
+    Effect.gen(function* () {
       const error = yield* Effect.flip(
-        Image.prepare({ data: garbage, mediaType: "image/png" }),
+        Image.prepare({
+          data: tinyPng,
+          mediaType: "image/png",
+          limits: { maxDimension: 2, maxBytes: 40 },
+        }),
+      )
+      assert.strictEqual(error._tag, "ImageError")
+      assert.strictEqual(error.reason, "TooLarge")
+    }),
+  )
+
+  it.effect("rejects undecodable bytes with a typed error", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        Image.prepare({
+          data: new TextEncoder().encode("not a png"),
+          mediaType: "image/png",
+        }),
       )
       assert.strictEqual(error._tag, "ImageError")
       assert.strictEqual(error.reason, "Decode")

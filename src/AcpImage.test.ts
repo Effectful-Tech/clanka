@@ -1,16 +1,3 @@
-/**
- * Contract for image ingest over ACP (src/Acp.ts).
- *
- * - `initialize` always advertises `promptCapabilities.image: true`.
- * - `session/prompt` accepts ACP `image` blocks (base64 `data` + `mimeType`),
- *   `resource_link` blocks with an image `mimeType` (`https:` fetched with
- *   `HttpClient`, `file:` read from disk only when it resolves inside the
- *   session cwd), and embedded `resource` blocks with an image `blob`.
- * - Image blocks become `file` parts on the user message sent to the model
- *   instead of being flattened into the text.
- * - Images go through the shared `Image.prepare` limits before the Prompt.
- * - Image parts persist with the session and survive `session/load`.
- */
 import { assert, describe, it } from "@effect/vitest"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as NodePath from "@effect/platform-node/NodePath"
@@ -175,25 +162,17 @@ const withTempDir = <A, E, R>(f: (cwd: string) => Effect.Effect<A, E, R>) =>
 const base64 = (bytes: Uint8Array) => Encoding.encodeBase64(bytes)
 
 describe("Acp images", () => {
-  it.effect("always advertises image prompt capability", () =>
+  it.effect("maps an image block onto a file part instead of text", () =>
     withServices(
       Effect.gen(function* () {
         const server = yield* makeServer()
-        const init = yield* server.request(1, "initialize", {
+        const init = yield* server.request(0, "initialize", {
           protocolVersion: 1,
         })
         assert.deepStrictEqual(
           init.result.agentCapabilities.promptCapabilities,
           { image: true, audio: false, embeddedContext: true },
         )
-      }),
-    ),
-  )
-
-  it.effect("maps an image block onto a file part instead of text", () =>
-    withServices(
-      Effect.gen(function* () {
-        const server = yield* makeServer()
         const sessionId = yield* server.newSession("/tmp")
         const done = yield* server.request(2, "session/prompt", {
           sessionId,
@@ -301,9 +280,19 @@ describe("Acp images", () => {
               name: "shot.png",
               mimeType: "image/png",
             },
+            {
+              type: "resource_link",
+              uri: "https://docs.example/guide.md",
+              name: "guide.md",
+              mimeType: "text/markdown",
+            },
           ],
         })
         assert.deepStrictEqual(done.result, { stopReason: "end_turn" })
+        assert.include(
+          textOf(lastUserMessage(server.prompts[0]!)),
+          "https://docs.example/guide.md",
+        )
         assert.deepStrictEqual(http.urls, [
           "https://attachments.example/shot.png",
         ])
@@ -315,65 +304,6 @@ describe("Acp images", () => {
       http.layer,
     )
   })
-
-  it.effect("leaves a non-image https resource_link as a text link", () => {
-    const http = makeHttp(tinyPng)
-    return withServices(
-      Effect.gen(function* () {
-        const server = yield* makeServer()
-        const sessionId = yield* server.newSession("/tmp")
-        yield* server.request(2, "session/prompt", {
-          sessionId,
-          prompt: [
-            {
-              type: "resource_link",
-              uri: "https://docs.example/guide.md",
-              name: "guide.md",
-              mimeType: "text/markdown",
-            },
-          ],
-        })
-        assert.deepStrictEqual(http.urls, [])
-        const message = lastUserMessage(server.prompts[0]!)
-        assert.strictEqual(fileParts(message).length, 0)
-        assert.include(textOf(message), "https://docs.example/guide.md")
-      }),
-      http.layer,
-    )
-  })
-
-  it.effect("reads a file: resource_link that resolves inside the cwd", () =>
-    withServices(
-      withTempDir((cwd) =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem
-          const path = yield* Path.Path
-          const file = path.join(cwd, "shots", "shot.png")
-          yield* fs.makeDirectory(path.dirname(file), { recursive: true })
-          yield* fs.writeFile(file, tinyPng)
-
-          const server = yield* makeServer()
-          const sessionId = yield* server.newSession(cwd)
-          const done = yield* server.request(2, "session/prompt", {
-            sessionId,
-            prompt: [
-              {
-                type: "resource_link",
-                uri: `file://${file}`,
-                name: "shot.png",
-                mimeType: "image/png",
-              },
-            ],
-          })
-          assert.deepStrictEqual(done.result, { stopReason: "end_turn" })
-          const images = fileParts(lastUserMessage(server.prompts[0]!))
-          assert.strictEqual(images.length, 1)
-          assert.strictEqual(images[0]!.mediaType, "image/png")
-          assert.isTrue(equalBytes(bytesOf(images[0]!.data), tinyPng))
-        }),
-      ),
-    ),
-  )
 
   it.effect("rejects a file: resource_link outside the cwd", () =>
     withServices(

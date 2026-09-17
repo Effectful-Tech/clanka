@@ -3,7 +3,6 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as Effect from "effect/Effect"
 import * as Encoding from "effect/Encoding"
-import * as Exit from "effect/Exit"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
 import * as Path from "effect/Path"
@@ -14,13 +13,7 @@ import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization"
 import * as RpcServer from "effect/unstable/rpc/RpcServer"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import type { ImageAttachment } from "./AgentTools.ts"
-import {
-  equalBytes,
-  tinyPng,
-  tinyJpeg,
-  tinyWebp,
-  animatedGif,
-} from "./fixtures/TestImages.ts"
+import { equalBytes, supportedImages } from "./fixtures/TestImages.ts"
 
 // Real HTTP transport and NDJSON serialization, not RpcTest's no-codec path.
 const withRpc = <A, E, R>(
@@ -64,16 +57,13 @@ const withRpc = <A, E, R>(
     Effect.scoped,
   )
 
-const fixtures = [
-  ["shot.png", tinyPng, "image/png"],
-  ["photo.jpeg", tinyJpeg, "image/jpeg"],
-  ["animation.gif", animatedGif, "image/gif"],
-  ["picture.webp", tinyWebp, "image/webp"],
-] as const
+const fixtures = supportedImages.map(
+  ({ fileName, data, mediaType }) => [fileName, data, mediaType] as const,
+)
 
 describe("RPC image executor", () => {
   it.live(
-    "delivers every image byte and marker through the HTTP client/server",
+    "delivers supported images and markers, then completes the RPC stream",
     () =>
       withRpc((executor) =>
         Effect.gen(function* () {
@@ -95,14 +85,7 @@ describe("RPC image executor", () => {
               onTaskComplete: () => Effect.void,
               onSubagent: () => Effect.succeed(""),
             })
-            .pipe(
-              // Separate byte delivery from stream completion, checked below.
-              Stream.takeUntil((text) =>
-                text.includes("Image attached: picture.webp"),
-              ),
-              Stream.runCollect,
-              Effect.timeout("5 seconds"),
-            )
+            .pipe(Stream.runCollect, Effect.timeout("5 seconds"))
           assert.strictEqual(images.length, fixtures.length)
           for (const [index, [name, bytes, mediaType]] of fixtures.entries()) {
             const image = images[index]!
@@ -114,42 +97,6 @@ describe("RPC image executor", () => {
             assert.notInclude(output.join(""), Encoding.encodeBase64(bytes))
           }
           assert.notInclude(output.join(""), "data:image/")
-        }),
-      ),
-  )
-
-  it.live(
-    "finishes the RPC execute stream after the image script returns",
-    () =>
-      withRpc((executor) =>
-        Effect.gen(function* () {
-          const images: Array<ImageAttachment> = []
-          const chunks: Array<string> = []
-          const exit = yield* executor
-            .execute({
-              script: 'console.log(await readFile({ path: "shot.png" }))',
-              onImage: (image) =>
-                Effect.sync(() => {
-                  images.push(image)
-                }),
-              onTaskComplete: () => Effect.void,
-              onSubagent: () => Effect.succeed(""),
-            })
-            .pipe(
-              Stream.runForEach((chunk) =>
-                Effect.sync(() => {
-                  chunks.push(chunk)
-                }),
-              ),
-              Effect.timeout("2 seconds"),
-              Effect.exit,
-            )
-          assert.strictEqual(images.length, 1)
-          assert.include(chunks.join(""), "Image attached: shot.png")
-          assert.isTrue(
-            Exit.isSuccess(exit),
-            "RPC execute must end after delivering the image and marker",
-          )
         }),
       ),
   )

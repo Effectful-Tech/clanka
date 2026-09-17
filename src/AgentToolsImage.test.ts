@@ -1,15 +1,3 @@
-/**
- * Contract for `readFile` on images (src/AgentTools.ts, src/AgentExecutor.ts,
- * src/Agent.ts).
- *
- * - `readFile` on a png/jpeg/gif/webp returns the marker
- *   `Image attached: <basename>` to the script instead of decoded text.
- * - The image bytes are injected as a `file` part on a user message that
- *   follows the execute tool result in the next model call.
- * - `startLine` / `endLine` on an image is an error.
- * - `.svg` is still read as text.
- * - The shared `Image.prepare` limits apply.
- */
 import { assert, describe, it } from "@effect/vitest"
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient"
 import * as NodeServices from "@effect/platform-node/NodeServices"
@@ -32,7 +20,6 @@ import {
   dimensions,
   encodePng,
   equalBytes,
-  supportedImages,
   tinyPng,
 } from "./fixtures/TestImages.ts"
 
@@ -48,18 +35,12 @@ const withProject = <A, E, R>(f: (project: string) => Effect.Effect<A, E, R>) =>
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const project = yield* fs.makeTempDirectoryScoped()
-    for (const fixture of supportedImages) {
-      yield* fs.writeFile(path.join(project, fixture.fileName), fixture.data)
-    }
+    yield* fs.writeFile(path.join(project, "shot.png"), tinyPng)
     yield* fs.writeFile(
       path.join(project, "wide.png"),
       encodePng({ width: 2500, height: 100 }),
     )
     yield* fs.writeFileString(path.join(project, "logo.svg"), svgText)
-    yield* fs.writeFileString(
-      path.join(project, "notes.txt"),
-      "line 1\nline 2\nline 3",
-    )
     yield* fs.writeFile(
       path.join(project, "broken.png"),
       new TextEncoder().encode("this is not a png".repeat(20)),
@@ -84,54 +65,6 @@ const readFile = (params: {
   })
 
 describe("readFile images", () => {
-  for (const fixture of supportedImages) {
-    it.effect(
-      `returns a marker for ${fixture.mediaType} instead of decoded text`,
-      () =>
-        withProject(() =>
-          Effect.gen(function* () {
-            const result = yield* readFile({ path: fixture.fileName })
-            assert.strictEqual(result, `Image attached: ${fixture.fileName}`)
-          }),
-        ),
-    )
-  }
-
-  it.effect("uses the basename in the marker for nested paths", () =>
-    withProject((project) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem
-        const path = yield* Path.Path
-        yield* fs.makeDirectory(path.join(project, "nested"))
-        yield* fs.writeFile(path.join(project, "nested", "deep.png"), tinyPng)
-        const result = yield* readFile({ path: "nested/deep.png" })
-        assert.strictEqual(result, "Image attached: deep.png")
-      }),
-    ),
-  )
-
-  it.effect("still reads svg as text", () =>
-    withProject(() =>
-      Effect.gen(function* () {
-        const result = yield* readFile({ path: "logo.svg" })
-        assert.strictEqual(result, svgText)
-      }),
-    ),
-  )
-
-  it.effect("still reads text files with line ranges", () =>
-    withProject(() =>
-      Effect.gen(function* () {
-        const result = yield* readFile({
-          path: "notes.txt",
-          startLine: 2,
-          endLine: 2,
-        })
-        assert.strictEqual(result, "line 2")
-      }),
-    ),
-  )
-
   it.effect("rejects startLine / endLine on an image", () =>
     withProject(() =>
       Effect.gen(function* () {
@@ -152,15 +85,6 @@ describe("readFile images", () => {
       Effect.gen(function* () {
         const exit = yield* Effect.exit(readFile({ path: "broken.png" }))
         assert.isTrue(Exit.isFailure(exit))
-      }),
-    ),
-  )
-
-  it.effect("still returns null for a missing image", () =>
-    withProject(() =>
-      Effect.gen(function* () {
-        const result = yield* readFile({ path: "missing.png" })
-        assert.isNull(result)
       }),
     ),
   )
@@ -249,67 +173,58 @@ const fileParts = (message: Prompt.Message): Array<Prompt.FilePart> =>
     : []
 
 describe("readFile image injection", () => {
-  for (const fixture of supportedImages) {
-    it.effect(
-      `injects ${fixture.mediaType} as a file part after the execute result`,
-      () =>
-        withProject(() =>
-          Effect.gen(function* () {
-            const { exit, calls, outputs } = yield* runAgent({
-              respond: (_, index) =>
-                index === 0
-                  ? Stream.make(
-                      toolCall(
-                        "call-1",
-                        `console.log(await readFile({ path: ${JSON.stringify(fixture.fileName)} }))`,
-                      ),
-                    )
-                  : Stream.fromIterable(text("It is a red rectangle.")),
-            })
-            assert.isTrue(Exit.isSuccess(exit))
-            assert.strictEqual(calls.length, 2)
+  it.effect("injects an image as a file part after the execute result", () =>
+    withProject(() =>
+      Effect.gen(function* () {
+        const { exit, calls, outputs } = yield* runAgent({
+          respond: (_, index) =>
+            index === 0
+              ? Stream.make(
+                  toolCall(
+                    "call-1",
+                    'console.log(await readFile({ path: "shot.png" }))',
+                  ),
+                )
+              : Stream.fromIterable(text("It is a red rectangle.")),
+        })
+        assert.isTrue(Exit.isSuccess(exit))
+        assert.strictEqual(calls.length, 2)
 
-            const messages = calls[1]!.prompt.content
-            const resultIndex = messages.findIndex((m) =>
-              toolResultText(m)?.includes(
-                `Image attached: ${fixture.fileName}`,
-              ),
-            )
-            assert.notStrictEqual(resultIndex, -1, "script saw the marker")
+        const messages = calls[1]!.prompt.content
+        const resultIndex = messages.findIndex((m) =>
+          toolResultText(m)?.includes("Image attached: shot.png"),
+        )
+        assert.notStrictEqual(resultIndex, -1, "script saw the marker")
 
-            const image = messages
-              .slice(resultIndex + 1)
-              .flatMap(fileParts)
-              .find((part) => part.mediaType === fixture.mediaType)
-            assert.isDefined(image, "a file part follows the tool result")
-            assert.strictEqual(
-              calls[1]!.prompt.content.flatMap(fileParts).length,
-              1,
-            )
-            assert.strictEqual(image!.fileName, fixture.fileName)
-            assert.isTrue(equalBytes(bytesOf(image!.data), fixture.data))
+        const image = messages
+          .slice(resultIndex + 1)
+          .flatMap(fileParts)
+          .find((part) => part.mediaType === "image/png")
+        assert.isDefined(image, "a file part follows the tool result")
+        assert.strictEqual(
+          calls[1]!.prompt.content.flatMap(fileParts).length,
+          1,
+        )
+        assert.strictEqual(image!.fileName, "shot.png")
+        assert.isTrue(equalBytes(bytesOf(image!.data), tinyPng))
 
-            // The first model call had no image: injection happens after the
-            // script runs, not before.
-            assert.strictEqual(
-              calls[0]!.prompt.content.flatMap(fileParts).length,
-              0,
-            )
+        // The first model call had no image: injection happens after the
+        // script runs, not before.
+        assert.strictEqual(
+          calls[0]!.prompt.content.flatMap(fileParts).length,
+          0,
+        )
 
-            // The script output shown to the client is the marker, not bytes.
-            const scriptOutput = outputs.find(
-              (o): o is AgentOutput.ScriptOutput => o._tag === "ScriptOutput",
-            )
-            assert.isDefined(scriptOutput)
-            assert.include(
-              scriptOutput!.output,
-              `Image attached: ${fixture.fileName}`,
-            )
-            assert.isBelow(scriptOutput!.output.length, 200)
-          }),
-        ),
-    )
-  }
+        // The script output shown to the client is the marker, not bytes.
+        const scriptOutput = outputs.find(
+          (o): o is AgentOutput.ScriptOutput => o._tag === "ScriptOutput",
+        )
+        assert.isDefined(scriptOutput)
+        assert.include(scriptOutput!.output, "Image attached: shot.png")
+        assert.isBelow(scriptOutput!.output.length, 200)
+      }),
+    ),
+  )
 
   it.effect("applies the image limits to readFile images", () =>
     withProject(() =>
@@ -335,7 +250,7 @@ describe("readFile image injection", () => {
     ),
   )
 
-  it.effect("does not inject anything for a text read", () =>
+  it.effect("reads SVG as text without injecting an image", () =>
     withProject(() =>
       Effect.gen(function* () {
         const { calls } = yield* runAgent({

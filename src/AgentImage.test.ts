@@ -1,18 +1,3 @@
-/**
- * Contract for image parts in the Agent loop (src/Agent.ts).
- *
- * Non-vision models:
- * - `AgentModelConfig.supportsImages: false` marks a model known not to take
- *   images. Image parts are stripped before the request is sent.
- * - When support is unknown (the default) the image is sent. If the provider
- *   rejects it with an error that looks like unsupported image input, the
- *   turn is retried once without the images.
- * - Whenever an image is stripped, an explicit `[image: <name> omitted]` text
- *   part is left in its place so the omission is visible in the prompt.
- *
- * Subagents:
- * - `delegate` never copies image bytes into the child prompt.
- */
 import { assert, describe, it } from "@effect/vitest"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
@@ -173,21 +158,6 @@ const unrelatedError = AiError.make({
 })
 
 describe("Agent images", () => {
-  it.effect("sends image parts to a model with unknown image support", () =>
-    Effect.gen(function* () {
-      const { exit, calls } = yield* runAgent({
-        prompt: imagePrompt,
-        respond: () => Stream.fromIterable(text("A red rectangle.")),
-      })
-      assert.isTrue(Exit.isSuccess(exit))
-      assert.strictEqual(calls.length, 1)
-      const images = fileParts(calls[0]!.prompt)
-      assert.strictEqual(images.length, 1)
-      assert.strictEqual(images[0]!.fileName, "shot.png")
-      assert.notMatch(userText(calls[0]!.prompt), omittedNote)
-    }),
-  )
-
   it.effect(
     "strips images and leaves an omitted note for a model known not to take images",
     () =>

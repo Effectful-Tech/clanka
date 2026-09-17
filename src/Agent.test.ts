@@ -999,6 +999,51 @@ describe("Agent overflow compaction", () => {
       }),
   )
 
+  it.live(
+    "compacts a retryable context-length error before retrying the original prompt",
+    () =>
+      Effect.gen(function* () {
+        const error = AiError.make({
+          module: "OpenAiLanguageModel",
+          method: "streamText",
+          reason: new AiError.InternalProviderError({
+            description: "maximum context length is 236000 tokens",
+          }),
+        })
+        assert.isTrue(error.isRetryable)
+        const { exit, calls, outputs } = yield* runAgentCollect({
+          history: fatHistory,
+          compaction: bigWindow,
+          respond: (_call, index) => {
+            switch (index) {
+              case 0:
+                return Stream.fail(error)
+              case 1:
+                return Stream.fromIterable(text("RETRYABLE-SUMMARY"))
+              case 2:
+                return Stream.fromIterable(text("recovered"))
+              default:
+                return Stream.die(`unexpected model call #${index}`)
+            }
+          },
+        })
+        assert.deepStrictEqual(
+          calls.map((call) => call.isSummarizer),
+          [false, true, false],
+          "overflow compaction must precede any retry of the original prompt",
+        )
+        assert.deepStrictEqual(exit, Exit.succeed("recovered"))
+        assert.include(promptJson(calls[0]!.prompt), "SENTINEL-ONE")
+        assertCompactedShape(calls[2]!.prompt, "RETRYABLE-SUMMARY")
+        assert.notInclude(promptJson(calls[2]!.prompt), "SENTINEL-ONE")
+        assert.strictEqual(outputsOfTag(outputs, "ErrorRetry").length, 0)
+        assert.strictEqual(
+          outputsOfTag(outputs, "CompactionStarted")[0]?.reason,
+          "overflow",
+        )
+      }),
+  )
+
   it.live("fails the turn when the overflow compaction itself fails", () =>
     Effect.gen(function* () {
       const { exit, calls } = yield* runAgentCollect({

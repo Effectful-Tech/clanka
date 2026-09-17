@@ -200,13 +200,20 @@ const toRpcError = (cause: Cause.Cause<unknown>) => {
 const renderLink = (uri: string, name?: string) => `[${name ?? uri}](${uri})`
 
 // Bound remote input before decoding/resizing; the prepared image has its own cap.
-const maxRemoteImageBytes = 20 * 1024 * 1024
+const maxRemoteImageBytes = Image.maxInputBytes
 const remoteImageTimeout = "30 seconds"
 
 const invalidParams = (message: string) =>
   new RpcError({ code: -32602, message })
 
 const decodeBase64 = (data: string, what: string) => {
+  if (data.length > Math.ceil(Image.maxInputBytes / 3) * 4) {
+    return Effect.fail(
+      invalidParams(
+        `Image data in ${what} exceeds the ${Image.maxInputBytes} byte input limit`,
+      ),
+    )
+  }
   const decoded = Encoding.decodeBase64(data)
   return decoded._tag === "Success"
     ? Effect.succeed(decoded.success)
@@ -452,13 +459,11 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
               `Image file is outside the session directory: ${uri}`,
             )
           }
-          return yield* fs
-            .readFile(real)
-            .pipe(
-              Effect.mapError((error) =>
-                invalidParams(`Failed to read image ${uri}: ${error.message}`),
-              ),
-            )
+          return yield* Image.readFile(fs, real).pipe(
+            Effect.mapError((error) =>
+              invalidParams(`Failed to read image ${uri}: ${error.message}`),
+            ),
+          )
         }),
     })
 

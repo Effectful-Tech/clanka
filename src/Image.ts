@@ -15,8 +15,10 @@
 import * as Photon from "@silvia-odwyer/photon-node"
 import * as Effect from "effect/Effect"
 import * as Encoding from "effect/Encoding"
+import type * as FileSystem from "effect/FileSystem"
 import * as Option from "effect/Option"
 import * as Schema from "effect/Schema"
+import * as Stream from "effect/Stream"
 import type * as AiError from "effect/unstable/ai/AiError"
 import * as Prompt from "effect/unstable/ai/Prompt"
 
@@ -83,6 +85,60 @@ export const maxDimension = 2000
  * @category Limits
  */
 export const maxBytes = 5 * 1024 * 1024
+
+/**
+ * Maximum encoded input size before decoding.
+ * @since 1.0.0
+ * @category Limits
+ */
+export const maxInputBytes = 20 * 1024 * 1024
+
+/**
+ * Maximum declared canvas area before allocating decoder buffers.
+ * @since 1.0.0
+ * @category Limits
+ */
+export const maxInputPixels = 50_000_000
+
+/**
+ * Stat first, then bound the actual read independently of file growth.
+ * @since 1.0.0
+ * @category Input
+ */
+export const readFile = Effect.fnUntraced(function* (
+  fs: FileSystem.FileSystem,
+  path: string,
+) {
+  const tooLarge = () =>
+    new ImageError({
+      reason: "TooLarge",
+      message: `Image ${path} exceeds the ${maxInputBytes} byte input limit`,
+    })
+  const stat = yield* fs.stat(path)
+  if (stat.size > maxInputBytes) return yield* tooLarge()
+  const chunks: Array<Uint8Array> = []
+  let size = 0
+  // The extra byte detects growth past the ceiling without reading the rest.
+  yield* Stream.runForEach(
+    fs.stream(path, {
+      chunkSize: 64 * 1024,
+      bytesToRead: maxInputBytes + 1,
+    }),
+    (chunk) => {
+      if (chunk.length > maxInputBytes - size) return Effect.fail(tooLarge())
+      size += chunk.length
+      chunks.push(chunk)
+      return Effect.void
+    },
+  )
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.length
+  }
+  return bytes
+})
 
 const defaultLimits: Limits = { maxDimension, maxBytes }
 
@@ -163,6 +219,127 @@ export const mediaTypeFromBytes = (
   return Option.none()
 }
 
+const validDimensions = (width: number, height: number) =>
+  width > 0 && height > 0 ? Option.some({ width, height }) : Option.none()
+
+/**
+ * Read dimensions without decoding pixels. Truncated or malformed headers
+ * are rejected before they can reach Photon.
+ * @since 1.0.0
+ * @category Detection
+ */
+export const dimensions = (
+  bytes: Uint8Array,
+): Option.Option<{ width: number; height: number }> => {
+  const type = mediaTypeFromBytes(bytes)
+  if (Option.isNone(type)) return Option.none()
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  switch (type.value) {
+    case "image/png":
+      if (
+        bytes.length < 33 ||
+        view.getUint32(8) !== 13 ||
+        !startsWith(bytes, ascii("IHDR"), 12)
+      )
+        return Option.none()
+      return validDimensions(view.getUint32(16), view.getUint32(20))
+    case "image/gif":
+      if (bytes.length < 13) return Option.none()
+      return validDimensions(view.getUint16(6, true), view.getUint16(8, true))
+    case "image/jpeg": {
+      let offset = 2
+      while (offset < bytes.length) {
+        if (view.getUint8(offset++) !== 0xff) return Option.none()
+        // JPEG permits padding FF bytes before a marker.
+        while (offset < bytes.length && view.getUint8(offset) === 0xff) offset++
+        if (offset >= bytes.length) return Option.none()
+        const marker = view.getUint8(offset++)
+        if (
+          marker === 0xda ||
+          marker === 0xd9 ||
+          marker === 0 ||
+          marker === 0xd8
+        ) {
+          return Option.none()
+        }
+        if (marker === 1 || (marker >= 0xd0 && marker <= 0xd7)) continue
+        if (offset + 2 > bytes.length) return Option.none()
+        const length = view.getUint16(offset)
+        if (length < 2 || length > bytes.length - offset) return Option.none()
+        if (
+          marker >= 0xc0 &&
+          marker <= 0xcf &&
+          marker !== 0xc4 &&
+          marker !== 0xc8 &&
+          marker !== 0xcc
+        ) {
+          if (
+            length < 8 ||
+            view.getUint8(offset + 7) === 0 ||
+            length !== 8 + 3 * view.getUint8(offset + 7)
+          )
+            return Option.none()
+          return validDimensions(
+            view.getUint16(offset + 5),
+            view.getUint16(offset + 3),
+          )
+        }
+        offset += length
+      }
+      return Option.none()
+    }
+    case "image/webp": {
+      if (bytes.length < 20) return Option.none()
+      const end = view.getUint32(4, true) + 8
+      const length = view.getUint32(16, true)
+      if (
+        end < 20 ||
+        end > bytes.length ||
+        length > end - 20 ||
+        length + (length & 1) > end - 20
+      )
+        return Option.none()
+      const u24 = (offset: number) =>
+        view.getUint8(offset) |
+        (view.getUint8(offset + 1) << 8) |
+        (view.getUint8(offset + 2) << 16)
+      if (startsWith(bytes, ascii("VP8X"), 12)) {
+        if (length !== 10) return Option.none()
+        return validDimensions(u24(24) + 1, u24(27) + 1)
+      }
+      if (startsWith(bytes, ascii("VP8L"), 12)) {
+        if (
+          length < 5 ||
+          view.getUint8(20) !== 0x2f ||
+          view.getUint8(24) >> 5 !== 0
+        ) {
+          return Option.none()
+        }
+        return validDimensions(
+          (view.getUint8(21) | ((view.getUint8(22) & 0x3f) << 8)) + 1,
+          ((view.getUint8(22) >> 6) |
+            (view.getUint8(23) << 2) |
+            ((view.getUint8(24) & 0x0f) << 10)) +
+            1,
+        )
+      }
+      if (startsWith(bytes, ascii("VP8 "), 12)) {
+        if (
+          length < 10 ||
+          (view.getUint8(20) & 1) !== 0 ||
+          !startsWith(bytes, [0x9d, 0x01, 0x2a], 23)
+        )
+          return Option.none()
+        return validDimensions(
+          view.getUint16(26, true) & 0x3fff,
+          view.getUint16(28, true) & 0x3fff,
+        )
+      }
+      return Option.none()
+    }
+  }
+}
+
 /**
  * Whether a declared mime type is one of the supported image types.
  *
@@ -241,6 +418,25 @@ export const prepare = (options: {
 }): Effect.Effect<ImageData, ImageError> =>
   Effect.gen(function* () {
     const limits = options.limits ?? defaultLimits
+    if (options.data.length > maxInputBytes) {
+      return yield* new ImageError({
+        reason: "TooLarge",
+        message: `Image exceeds the ${maxInputBytes} byte input limit`,
+      })
+    }
+    const size = dimensions(options.data)
+    if (Option.isNone(size)) {
+      return yield* new ImageError({
+        reason: "Decode",
+        message: "Invalid or truncated image header",
+      })
+    }
+    if (size.value.width * size.value.height > maxInputPixels) {
+      return yield* new ImageError({
+        reason: "TooLarge",
+        message: `Image exceeds the ${maxInputPixels} pixel input limit`,
+      })
+    }
     const image = yield* decode(options.data)
     try {
       let width = image.get_width()

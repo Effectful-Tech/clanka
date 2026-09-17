@@ -344,7 +344,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           ),
         )
       }
-      const bytes = yield* fs.readFile(path).pipe(
+      const bytes = yield* Image.readFile(fs, path).pipe(
         Effect.catchReason("PlatformError", "NotFound", () =>
           Effect.succeed(null),
         ),

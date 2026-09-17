@@ -32,6 +32,7 @@ import {
   dimensions,
   encodePng,
   equalBytes,
+  supportedImages,
   tinyPng,
 } from "./fixtures/TestImages.ts"
 
@@ -47,7 +48,9 @@ const withProject = <A, E, R>(f: (project: string) => Effect.Effect<A, E, R>) =>
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const project = yield* fs.makeTempDirectoryScoped()
-    yield* fs.writeFile(path.join(project, "shot.png"), tinyPng)
+    for (const fixture of supportedImages) {
+      yield* fs.writeFile(path.join(project, fixture.fileName), fixture.data)
+    }
     yield* fs.writeFile(
       path.join(project, "wide.png"),
       encodePng({ width: 2500, height: 100 }),
@@ -81,14 +84,18 @@ const readFile = (params: {
   })
 
 describe("readFile images", () => {
-  it.effect("returns a marker for a png instead of decoded text", () =>
-    withProject(() =>
-      Effect.gen(function* () {
-        const result = yield* readFile({ path: "shot.png" })
-        assert.strictEqual(result, "Image attached: shot.png")
-      }),
-    ),
-  )
+  for (const fixture of supportedImages) {
+    it.effect(
+      `returns a marker for ${fixture.mediaType} instead of decoded text`,
+      () =>
+        withProject(() =>
+          Effect.gen(function* () {
+            const result = yield* readFile({ path: fixture.fileName })
+            assert.strictEqual(result, `Image attached: ${fixture.fileName}`)
+          }),
+        ),
+    )
+  }
 
   it.effect("uses the basename in the marker for nested paths", () =>
     withProject((project) =>
@@ -242,54 +249,67 @@ const fileParts = (message: Prompt.Message): Array<Prompt.FilePart> =>
     : []
 
 describe("readFile image injection", () => {
-  it.effect("injects the image as a file part after the execute result", () =>
-    withProject(() =>
-      Effect.gen(function* () {
-        const { exit, calls, outputs } = yield* runAgent({
-          respond: (_, index) =>
-            index === 0
-              ? Stream.make(
-                  toolCall(
-                    "call-1",
-                    'console.log(await readFile({ path: "shot.png" }))',
-                  ),
-                )
-              : Stream.fromIterable(text("It is a red rectangle.")),
-        })
-        assert.isTrue(Exit.isSuccess(exit))
-        assert.strictEqual(calls.length, 2)
+  for (const fixture of supportedImages) {
+    it.effect(
+      `injects ${fixture.mediaType} as a file part after the execute result`,
+      () =>
+        withProject(() =>
+          Effect.gen(function* () {
+            const { exit, calls, outputs } = yield* runAgent({
+              respond: (_, index) =>
+                index === 0
+                  ? Stream.make(
+                      toolCall(
+                        "call-1",
+                        `console.log(await readFile({ path: ${JSON.stringify(fixture.fileName)} }))`,
+                      ),
+                    )
+                  : Stream.fromIterable(text("It is a red rectangle.")),
+            })
+            assert.isTrue(Exit.isSuccess(exit))
+            assert.strictEqual(calls.length, 2)
 
-        const messages = calls[1]!.prompt.content
-        const resultIndex = messages.findIndex((m) =>
-          toolResultText(m)?.includes("Image attached: shot.png"),
-        )
-        assert.notStrictEqual(resultIndex, -1, "script saw the marker")
+            const messages = calls[1]!.prompt.content
+            const resultIndex = messages.findIndex((m) =>
+              toolResultText(m)?.includes(
+                `Image attached: ${fixture.fileName}`,
+              ),
+            )
+            assert.notStrictEqual(resultIndex, -1, "script saw the marker")
 
-        const image = messages
-          .slice(resultIndex + 1)
-          .flatMap(fileParts)
-          .find((part) => part.mediaType === "image/png")
-        assert.isDefined(image, "a file part follows the tool result")
-        assert.strictEqual(image!.fileName, "shot.png")
-        assert.isTrue(equalBytes(bytesOf(image!.data), tinyPng))
+            const image = messages
+              .slice(resultIndex + 1)
+              .flatMap(fileParts)
+              .find((part) => part.mediaType === fixture.mediaType)
+            assert.isDefined(image, "a file part follows the tool result")
+            assert.strictEqual(
+              calls[1]!.prompt.content.flatMap(fileParts).length,
+              1,
+            )
+            assert.strictEqual(image!.fileName, fixture.fileName)
+            assert.isTrue(equalBytes(bytesOf(image!.data), fixture.data))
 
-        // The first model call had no image: injection happens after the
-        // script runs, not before.
-        assert.strictEqual(
-          calls[0]!.prompt.content.flatMap(fileParts).length,
-          0,
-        )
+            // The first model call had no image: injection happens after the
+            // script runs, not before.
+            assert.strictEqual(
+              calls[0]!.prompt.content.flatMap(fileParts).length,
+              0,
+            )
 
-        // The script output shown to the client is the marker, not bytes.
-        const scriptOutput = outputs.find(
-          (o): o is AgentOutput.ScriptOutput => o._tag === "ScriptOutput",
-        )
-        assert.isDefined(scriptOutput)
-        assert.include(scriptOutput!.output, "Image attached: shot.png")
-        assert.isBelow(scriptOutput!.output.length, 200)
-      }),
-    ),
-  )
+            // The script output shown to the client is the marker, not bytes.
+            const scriptOutput = outputs.find(
+              (o): o is AgentOutput.ScriptOutput => o._tag === "ScriptOutput",
+            )
+            assert.isDefined(scriptOutput)
+            assert.include(
+              scriptOutput!.output,
+              `Image attached: ${fixture.fileName}`,
+            )
+            assert.isBelow(scriptOutput!.output.length, 200)
+          }),
+        ),
+    )
+  }
 
   it.effect("applies the image limits to readFile images", () =>
     withProject(() =>

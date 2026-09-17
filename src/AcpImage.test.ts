@@ -13,6 +13,7 @@
  */
 import { assert, describe, it } from "@effect/vitest"
 import * as NodeServices from "@effect/platform-node/NodeServices"
+import * as NodePath from "@effect/platform-node/NodePath"
 import * as Effect from "effect/Effect"
 import * as Encoding from "effect/Encoding"
 import * as FileSystem from "effect/FileSystem"
@@ -139,7 +140,9 @@ const makeHttp = (bytes: Uint8Array) => {
       urls.push(url.toString())
       return HttpClientResponse.fromWeb(
         request,
-        new Response(new Uint8Array(bytes), { headers: { "content-type": "image/png" } }),
+        new Response(new Uint8Array(bytes), {
+          headers: { "content-type": "image/png" },
+        }),
       )
     }),
   )
@@ -250,6 +253,24 @@ describe("Acp images", () => {
           cwd: "/tmp",
         })
         assert.isUndefined(loaded.error)
+        const replay = second.sent.filter(
+          (message) =>
+            message.method === "session/update" &&
+            message.params.sessionId === sessionId &&
+            message.params.update.sessionUpdate === "user_message_chunk",
+        )
+        assert.deepStrictEqual(
+          replay.map((message) => message.params.update.content),
+          [
+            { type: "text", text: "remember this" },
+            { type: "image", data: base64(tinyPng), mimeType: "image/png" },
+          ],
+        )
+        assert.strictEqual(
+          second.prompts.length,
+          0,
+          "load must not call the model",
+        )
         yield* second.request(2, "session/prompt", {
           sessionId,
           prompt: [{ type: "text", text: "what did I show you?" }],
@@ -435,4 +456,116 @@ describe("Acp images", () => {
       }),
     ),
   )
+
+  it.effect("fetches the uri when an image block has empty data", () => {
+    const http = makeHttp(tinyPng)
+    return withServices(
+      Effect.gen(function* () {
+        const server = yield* makeServer()
+        const sessionId = yield* server.newSession("/tmp")
+        const uri = "https://attachments.example/shot.png"
+        const done = yield* server.request(2, "session/prompt", {
+          sessionId,
+          prompt: [{ type: "image", data: "", uri, mimeType: "image/png" }],
+        })
+        assert.deepStrictEqual(done.result, { stopReason: "end_turn" })
+        assert.deepStrictEqual(http.urls, [uri])
+        const images = fileParts(lastUserMessage(server.prompts[0]!))
+        assert.strictEqual(images.length, 1)
+        assert.strictEqual(images[0]!.mediaType, "image/png")
+        assert.isTrue(equalBytes(bytesOf(images[0]!.data), tinyPng))
+      }),
+      http.layer,
+    )
+  })
+
+  for (const outside of [false, true]) {
+    it.effect(
+      outside
+        ? "rejects a symlink to an image outside the cwd"
+        : "accepts an image symlink inside a symlinked cwd",
+      () =>
+        withServices(
+          withTempDir((base) =>
+            Effect.gen(function* () {
+              const fs = yield* FileSystem.FileSystem
+              const path = yield* Path.Path
+              const realCwd = path.join(base, "project")
+              const cwd = path.join(base, "project-link")
+              yield* fs.makeDirectory(realCwd)
+              yield* fs.symlink(realCwd, cwd)
+              const target = path.join(outside ? base : realCwd, "target.png")
+              yield* fs.writeFile(target, tinyPng)
+              const link = path.join(cwd, "shot.png")
+              yield* fs.symlink(target, link)
+
+              const server = yield* makeServer()
+              const sessionId = yield* server.newSession(cwd)
+              const done = yield* server.request(2, "session/prompt", {
+                sessionId,
+                prompt: [
+                  {
+                    type: "resource_link",
+                    uri: "file://" + link,
+                    name: "shot.png",
+                    mimeType: "image/png",
+                  },
+                ],
+              })
+              if (outside) {
+                assert.isDefined(done.error, "prompt must be rejected")
+                assert.strictEqual(done.error!.code, -32602)
+                assert.include(
+                  done.error!.message,
+                  "outside the session directory",
+                )
+                assert.strictEqual(server.prompts.length, 0, "no model call")
+              } else {
+                assert.deepStrictEqual(done.result, { stopReason: "end_turn" })
+                const images = fileParts(lastUserMessage(server.prompts[0]!))
+                assert.strictEqual(images.length, 1)
+                assert.strictEqual(images[0]!.mediaType, "image/png")
+                assert.isTrue(equalBytes(bytesOf(images[0]!.data), tinyPng))
+              }
+            }),
+          ),
+        ),
+    )
+  }
+
+  for (const [uri, missing] of [
+    ["https://attachments.example/shot.png", "HttpClient"],
+    ["file:///tmp/shot.png", "FileSystem"],
+  ] as const) {
+    it.effect("rejects an image URI without a " + missing + " service", () =>
+      Effect.gen(function* () {
+        const server = yield* makeServer()
+        const sessionId = yield* server.newSession("/tmp")
+        const done = yield* server.request(2, "session/prompt", {
+          sessionId,
+          prompt: [
+            {
+              type: "resource_link",
+              uri,
+              name: "shot.png",
+              mimeType: "image/png",
+            },
+          ],
+        })
+        assert.isDefined(done.error, "prompt must be rejected")
+        assert.strictEqual(done.error!.code, -32602)
+        assert.include(done.error!.message, "no " + missing + " available")
+        assert.strictEqual(server.prompts.length, 0, "no model call")
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            KeyValueStore.layerMemory,
+            Agent.ConversationMode.layer(true),
+            NodePath.layer,
+          ),
+        ),
+        Effect.scoped,
+      ),
+    )
+  }
 })

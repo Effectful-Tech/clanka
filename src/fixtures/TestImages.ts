@@ -1,9 +1,9 @@
 /**
- * Test-only image helpers: a minimal PNG encoder plus header parsers, so the
- * vision tests can build images of arbitrary size without an image library
- * and inspect what the resizer produced.
+ * Test-only image helpers: a minimal PNG encoder, real supported-format
+ * fixtures, and header parsers for inspecting what the resizer produced.
  */
 import * as Zlib from "node:zlib"
+import * as Photon from "@silvia-odwyer/photon-node"
 import * as Encoding from "effect/Encoding"
 
 const PNG_SIGNATURE = new Uint8Array([
@@ -89,6 +89,64 @@ export const noisePixel = (
 
 /** A tiny valid PNG for tests that only care about the bytes round-tripping. */
 export const tinyPng: Uint8Array = encodePng({ width: 4, height: 3 })
+
+const encodeOtherFormats = () => {
+  const image = Photon.PhotonImage.new_from_byteslice(tinyPng)
+  try {
+    return { jpeg: image.get_bytes_jpeg(85), webp: image.get_bytes_webp() }
+  } finally {
+    image.free()
+  }
+}
+
+const encoded = encodeOtherFormats()
+export const tinyJpeg = encoded.jpeg
+export const tinyWebp = encoded.webp
+
+/** Two 4x2 frames (red, then blue), each displayed for 100ms, looping forever. */
+export const animatedGif = new Uint8Array([
+  // GIF89a, logical screen, and a two-colour global palette.
+  71, 73, 70, 56, 57, 97, 4, 0, 2, 0, 128, 0, 0, 255, 0, 0, 0, 0, 255,
+  // NETSCAPE2.0 loop extension.
+  33, 255, 11, 78, 69, 84, 83, 67, 65, 80, 69, 50, 46, 48, 3, 1, 0, 0, 0,
+  // Frame 1: graphics control, image descriptor, and LZW pixels.
+  33, 249, 4, 0, 10, 0, 0, 0, 44, 0, 0, 0, 0, 4, 0, 2, 0, 0, 2, 7, 4, 65, 16, 4,
+  65, 16, 5, 0,
+  // Frame 2 uses the blue palette entry.
+  33, 249, 4, 0, 10, 0, 0, 0, 44, 0, 0, 0, 0, 4, 0, 2, 0, 0, 2, 7, 12, 195, 48,
+  12, 195, 48, 5, 0, 59,
+])
+
+export const supportedImages = [
+  {
+    fileName: "shot.png",
+    mediaType: "image/png",
+    data: tinyPng,
+    width: 4,
+    height: 3,
+  },
+  {
+    fileName: "photo.jpeg",
+    mediaType: "image/jpeg",
+    data: tinyJpeg,
+    width: 4,
+    height: 3,
+  },
+  {
+    fileName: "animated.gif",
+    mediaType: "image/gif",
+    data: animatedGif,
+    width: 4,
+    height: 2,
+  },
+  {
+    fileName: "picture.webp",
+    mediaType: "image/webp",
+    data: tinyWebp,
+    width: 4,
+    height: 3,
+  },
+] as const
 
 export const isPng = (bytes: Uint8Array): boolean =>
   PNG_SIGNATURE.every((byte, i) => bytes[i] === byte)

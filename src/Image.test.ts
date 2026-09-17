@@ -10,6 +10,7 @@
  * still do not fit.
  */
 import { assert, describe, it } from "@effect/vitest"
+import * as Photon from "@silvia-odwyer/photon-node"
 import * as Effect from "effect/Effect"
 import * as Encoding from "effect/Encoding"
 import * as Option from "effect/Option"
@@ -22,6 +23,7 @@ import {
   isJpeg,
   isPng,
   noisePixel,
+  supportedImages,
   tinyPng,
   webpHeader,
 } from "./fixtures/TestImages.ts"
@@ -107,16 +109,72 @@ describe("Image.mediaTypeFromBytes", () => {
 })
 
 describe("Image.prepare", () => {
-  it.effect("passes an in-limit image through unchanged", () =>
-    Effect.gen(function* () {
-      const prepared = yield* Image.prepare({
-        data: tinyPng,
-        mediaType: "image/png",
-      })
-      assert.strictEqual(prepared.mediaType, "image/png")
-      assert.isTrue(equalBytes(prepared.data, tinyPng))
-    }),
-  )
+  for (const fixture of supportedImages) {
+    it.effect(
+      `passes a decodable ${fixture.mediaType} through byte-for-byte`,
+      () =>
+        Effect.gen(function* () {
+          const decoded = Photon.PhotonImage.new_from_byteslice(fixture.data)
+          try {
+            assert.strictEqual(decoded.get_width(), fixture.width)
+            assert.strictEqual(decoded.get_height(), fixture.height)
+            assert.strictEqual(
+              decoded.get_raw_pixels().length,
+              fixture.width * fixture.height * 4,
+            )
+          } finally {
+            decoded.free()
+          }
+          const prepared = yield* Image.prepare(fixture)
+          assert.strictEqual(prepared.mediaType, fixture.mediaType)
+          assert.isTrue(equalBytes(prepared.data, fixture.data))
+          assert.deepStrictEqual(
+            Image.mediaTypeFromBytes(prepared.data),
+            Option.some(fixture.mediaType),
+          )
+        }),
+    )
+  }
+
+  for (const fixture of supportedImages.filter(
+    (image) =>
+      image.mediaType === "image/gif" || image.mediaType === "image/webp",
+  )) {
+    it.effect(`decodes and resizes ${fixture.fileName} with test limits`, () =>
+      Effect.gen(function* () {
+        const limits = { maxDimension: 2, maxBytes: 1024 }
+        const prepared = yield* Image.prepare({ ...fixture, limits })
+        assert.isFalse(equalBytes(prepared.data, fixture.data))
+        assert.include(["image/png", "image/jpeg"], prepared.mediaType)
+        assert.deepStrictEqual(
+          Image.mediaTypeFromBytes(prepared.data),
+          Option.some(prepared.mediaType),
+        )
+        assert.deepStrictEqual(dimensions(prepared.data), {
+          width: 2,
+          height: Math.round(fixture.height / 2),
+        })
+        assert.isAtMost(base64Length(prepared.data), limits.maxBytes)
+        const decoded = Photon.PhotonImage.new_from_byteslice(prepared.data)
+        try {
+          assert.strictEqual(decoded.get_width(), 2)
+          assert.strictEqual(
+            decoded.get_height(),
+            Math.round(fixture.height / 2),
+          )
+          if (fixture.mediaType === "image/gif") {
+            // Resizing an animation uses its first (red) frame.
+            assert.deepStrictEqual(
+              Array.from(decoded.get_raw_pixels()),
+              [255, 0, 0, 255, 255, 0, 0, 255],
+            )
+          }
+        } finally {
+          decoded.free()
+        }
+      }),
+    )
+  }
 
   it.effect("resizes an image wider than the dimension cap", () =>
     Effect.gen(function* () {

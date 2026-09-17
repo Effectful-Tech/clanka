@@ -30,7 +30,6 @@ const makeExecutor = (
     Stream.empty,
 ) =>
   AgentExecutor.AgentExecutor.of({
-    currentDirectory: Effect.succeed("/"),
     capabilities: Effect.succeed(capabilities),
     execute,
     executeUnsafe: () => Effect.die("executeUnsafe not implemented"),

@@ -457,96 +457,86 @@ ${content}
         let reasoningStarted = false
         let hadReasoningDelta = false
         let hadToolCall = false
-        const runModel = Effect.gen(function* () {
-          // Refresh outside history on every request, including retries after
-          // compaction, so navigation never depends on the retained summary.
-          const currentDirectory = yield* executor.currentDirectory
-          const turnSystem = `${system}\n\nCurrent executor working directory: ${JSON.stringify(currentDirectory)}\nRelative tool paths resolve from this directory. Delegates share it and may change it.`
-          const turnPrompt = modelConfig.systemPromptTransform
-            ? prompt.current
-            : Prompt.setSystem(prompt.current, turnSystem)
-          return yield* pipe(
-            Stream.suspend(() =>
-              ai.streamText({ prompt: turnPrompt, toolkit: singleTool }),
-            ),
-            Stream.takeUntil((part) => {
-              if (
-                (part.type === "text-end" || part.type === "reasoning-end") &&
-                pendingMessages.size > 0
-              ) {
-                return true
-              }
-              return false
-            }),
-            Stream.runForEachArray((parts) => {
-              response.push(...parts)
-              turnTimeoutReset()
+        const runModel = pipe(
+          Stream.suspend(() =>
+            ai.streamText({ prompt: prompt.current, toolkit: singleTool }),
+          ),
+          Stream.takeUntil((part) => {
+            if (
+              (part.type === "text-end" || part.type === "reasoning-end") &&
+              pendingMessages.size > 0
+            ) {
+              return true
+            }
+            return false
+          }),
+          Stream.runForEachArray((parts) => {
+            response.push(...parts)
+            turnTimeoutReset()
 
-              for (const part of parts) {
-                switch (part.type) {
-                  case "text-start":
-                  case "reasoning-start":
-                    reasoningStarted = true
-                    break
-                  case "text-delta":
-                  case "reasoning-delta":
-                    hadReasoningDelta = true
-                    if (reasoningStarted) {
-                      reasoningStarted = false
-                      maybeSend({
-                        agentId,
-                        part: new ReasoningStart(),
-                        acquire: true,
-                      })
-                    }
+            for (const part of parts) {
+              switch (part.type) {
+                case "text-start":
+                case "reasoning-start":
+                  reasoningStarted = true
+                  break
+                case "text-delta":
+                case "reasoning-delta":
+                  hadReasoningDelta = true
+                  if (reasoningStarted) {
+                    reasoningStarted = false
                     maybeSend({
                       agentId,
-                      part: new ReasoningDelta({ delta: part.delta }),
+                      part: new ReasoningStart(),
+                      acquire: true,
                     })
-                    break
-                  case "text-end":
-                  case "reasoning-end":
-                    reasoningStarted = false
-                    if (hadReasoningDelta) {
-                      hadReasoningDelta = false
-                      maybeSend({
-                        agentId,
-                        part: new ReasoningEnd(),
-                        release: true,
-                      })
-                    }
-                    break
-                  case "finish":
-                    const usage = part.usage
-                    if (usage.outputTokens.total !== undefined) {
-                      outputTokens += usage.outputTokens.total
-                    }
-                    if (usage.inputTokens.total !== undefined) {
-                      lastContextTokens = usage.inputTokens.total
-                      inputTokens += usage.inputTokens.total
-                      maybeSend({
-                        agentId,
-                        part: new Usage({
-                          contextTokens: usage.inputTokens.total,
-                          inputTokens,
-                          outputTokens,
-                        }),
-                      })
-                    }
-                    break
-                  case "tool-call":
-                    hadToolCall = true
-                    break
-                }
+                  }
+                  maybeSend({
+                    agentId,
+                    part: new ReasoningDelta({ delta: part.delta }),
+                  })
+                  break
+                case "text-end":
+                case "reasoning-end":
+                  reasoningStarted = false
+                  if (hadReasoningDelta) {
+                    hadReasoningDelta = false
+                    maybeSend({
+                      agentId,
+                      part: new ReasoningEnd(),
+                      release: true,
+                    })
+                  }
+                  break
+                case "finish":
+                  const usage = part.usage
+                  if (usage.outputTokens.total !== undefined) {
+                    outputTokens += usage.outputTokens.total
+                  }
+                  if (usage.inputTokens.total !== undefined) {
+                    lastContextTokens = usage.inputTokens.total
+                    inputTokens += usage.inputTokens.total
+                    maybeSend({
+                      agentId,
+                      part: new Usage({
+                        contextTokens: usage.inputTokens.total,
+                        inputTokens,
+                        outputTokens,
+                      }),
+                    })
+                  }
+                  break
+                case "tool-call":
+                  hadToolCall = true
+                  break
               }
-              return Effect.void
-            }),
-            modelConfig.systemPromptTransform
-              ? (effect) =>
-                  modelConfig.systemPromptTransform!(turnSystem, effect)
-              : identity,
-          )
-        })
+            }
+            return Effect.void
+          }),
+          modelConfig.systemPromptTransform
+            ? (effect) => modelConfig.systemPromptTransform!(system, effect)
+            : identity,
+        )
         const attempt = pipe(
           runModel,
           Effect.raceFirst(turnTimeoutEffect),

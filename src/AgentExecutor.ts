@@ -52,7 +52,6 @@ export class AgentExecutor extends Context.Service<
   AgentExecutor,
   {
     readonly capabilities: Effect.Effect<Capabilities>
-    readonly currentDirectory: Effect.Effect<string>
     execute(options: {
       readonly script: string
       readonly onTaskComplete: (summary: string) => Effect.Effect<void>
@@ -219,7 +218,6 @@ export const makeLocal = Effect.fnUntraced(function* <
   }, Stream.unwrap)
 
   return AgentExecutor.of({
-    currentDirectory: Effect.sync(() => currentDirectory),
     capabilities: Effect.gen(function* () {
       const agentsMd = yield* Effect.option(
         fs.readFileString(pathService.join(options.directory, "AGENTS.md")),
@@ -284,9 +282,6 @@ export const makeRpc = Effect.gen(function* () {
   })
 
   return AgentExecutor.of({
-    currentDirectory: Effect.suspend(() => client.currentDirectory()).pipe(
-      Effect.orDie,
-    ),
     capabilities: Effect.orDie(client.capabilities()),
     execute: (opts) =>
       Scope.Scope.useSync((scope) =>
@@ -398,7 +393,6 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
           >()
 
           return Rpcs.of({
-            currentDirectory: () => local.currentDirectory,
             capabilities: () => local.capabilities,
             subagentOutput: ({ id, output }) => {
               const resume = subagentResumes.get(id)
@@ -478,9 +472,6 @@ export const ExecuteOutput = Schema.TaggedUnion({
  * @category Rpcs
  */
 export class Rpcs extends RpcGroup.make(
-  Rpc.make("currentDirectory", {
-    success: Schema.String,
-  }),
   Rpc.make("capabilities", {
     success: Capabilities,
   }),

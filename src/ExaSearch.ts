@@ -55,7 +55,9 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const client = yield* McpClient.McpClient
 
-    yield* client.connect({ url: "https://mcp.exa.ai/mcp" }).pipe(Effect.orDie)
+    const connect = yield* Effect.cached(
+      client.connect({ url: "https://mcp.exa.ai/mcp" }),
+    )
 
     const decode = Schema.decodeUnknownEffect(
       Schema.NonEmptyArray(ExaSearchResult),
@@ -64,6 +66,7 @@ export const layer = Layer.effect(
     return ExaSearch.of({
       search: Effect.fn("ExaSearch.search")(
         function* (options) {
+          yield* connect
           const results = yield* pipe(
             client.toolCall({
               name: "web_search_exa",

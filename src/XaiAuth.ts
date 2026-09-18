@@ -6,6 +6,7 @@ import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
+import * as Schedule from "effect/Schedule"
 import * as Schema from "effect/Schema"
 import * as Semaphore from "effect/Semaphore"
 import * as HttpClient from "effect/unstable/http/HttpClient"
@@ -17,6 +18,8 @@ import { DeviceCodeHandler } from "./DeviceCodeHandler.ts"
 const CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
 const ISSUER = "https://auth.x.ai"
 const TOKEN_URL = ISSUER + "/oauth2/token"
+const DEFAULT_TOKEN_EXPIRY_SECONDS = 3600
+const DEFAULT_DEVICE_EXPIRY_SECONDS = 600
 
 export class TokenData extends Schema.Class<TokenData>(
   "clanka/XaiAuth/TokenData",
@@ -48,19 +51,20 @@ const DeviceCodeResponse = Schema.Struct({
 })
 const TokenResponse = Schema.Struct({
   access_token: Schema.String,
-  refresh_token: Schema.String,
-  expires_in: Schema.Number,
+  refresh_token: Schema.optional(Schema.String),
+  expires_in: Schema.optional(Schema.Number),
 })
 const TokenError = Schema.Struct({
   error: Schema.String,
   interval: Schema.optional(Schema.Number),
 })
 const PollResponse = Schema.Union([TokenResponse, TokenError])
-const toTokenData = (token: typeof TokenResponse.Type) =>
+const toTokenData = (token: typeof TokenResponse.Type, refresh = "") =>
   new TokenData({
     access: token.access_token,
-    refresh: token.refresh_token,
-    expires: Date.now() + token.expires_in * 1000,
+    refresh: token.refresh_token || refresh,
+    expires:
+      Date.now() + (token.expires_in ?? DEFAULT_TOKEN_EXPIRY_SECONDS) * 1000,
   })
 
 export const toTokenStore = (store: KeyValueStore.KeyValueStore) =>
@@ -84,6 +88,14 @@ export class XaiAuth extends Context.Service<
       HttpClient.mapRequest(
         HttpClientRequest.setHeader("User-Agent", "clanka"),
       ),
+      HttpClient.retryTransient({
+        retryOn: "errors-and-responses",
+        times: 5,
+        schedule: Schedule.min([
+          Schedule.exponential(150),
+          Schedule.spaced(5000),
+        ]),
+      }),
     )
     const semaphore = Semaphore.makeUnsafe(1)
     let currentToken = yield* tokenStore.get("token").pipe(
@@ -161,7 +173,10 @@ export class XaiAuth extends Context.Service<
       })
       return yield* poll.pipe(
         Effect.timeoutOrElse({
-          duration: device.expires_in * 1000,
+          duration:
+            (device.expires_in > 0
+              ? device.expires_in
+              : DEFAULT_DEVICE_EXPIRY_SECONDS) * 1000,
           orElse: () =>
             Effect.fail(
               new XaiAuthError({
@@ -196,6 +211,7 @@ export class XaiAuth extends Context.Service<
         )
         return toTokenData(
           yield* HttpClientResponse.schemaBodyJson(TokenResponse)(response),
+          refresh,
         )
       },
       Effect.mapError(

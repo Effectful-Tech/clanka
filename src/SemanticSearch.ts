@@ -37,7 +37,7 @@ const resolveChunkConfig = (options: {
 }) => ({
   chunkSize: 30,
   chunkOverlap: 0,
-  chunkMaxCharacters: options.chunkMaxCharacters ?? 10_000,
+  chunkMaxCharacters: options.chunkMaxCharacters ?? 15_000,
 })
 
 export const makeEmbeddingResolver = (
@@ -51,7 +51,7 @@ export const makeEmbeddingResolver = (
     RequestResolver.setDelay(
       options.embeddingRequestDelay ?? Duration.millis(50),
     ),
-    RequestResolver.batchN(options.embeddingBatchSize ?? 300),
+    RequestResolver.batchN(options.embeddingBatchSize ?? 32),
   )
 
 export const chunkEmbeddingInput = (chunk: CodeChunker.CodeChunk): string => {

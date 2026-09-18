@@ -821,6 +821,31 @@ const chunkWithLineWindows = (
   return out
 }
 
+const splitOversizedChunks = (
+  chunks: ReadonlyArray<CodeChunk>,
+  maxCharacters: number,
+): ReadonlyArray<CodeChunk> =>
+  chunks.flatMap((chunk) => {
+    if (chunk.content.length <= maxCharacters) {
+      return [chunk]
+    }
+
+    // Line-based splitting can only exceed the limit for a single long line.
+    // Each piece retains that line number and the original AST metadata.
+    const pieces = [] as Array<CodeChunk>
+    for (
+      let offset = 0;
+      offset < chunk.content.length;
+      offset += maxCharacters
+    ) {
+      pieces.push({
+        ...chunk,
+        content: chunk.content.slice(offset, offset + maxCharacters),
+      })
+    }
+    return pieces
+  })
+
 /**
  * @since 1.0.0
  * @category Constructors
@@ -858,11 +883,14 @@ export const chunkFileContent = (
       settings,
     )
     if (astChunks.length > 0) {
-      return astChunks
+      return splitOversizedChunks(astChunks, settings.chunkMaxCharacters)
     }
   }
 
-  return chunkWithLineWindows(normalizedPath, lines, settings)
+  return splitOversizedChunks(
+    chunkWithLineWindows(normalizedPath, lines, settings),
+    settings.chunkMaxCharacters,
+  )
 }
 
 /**

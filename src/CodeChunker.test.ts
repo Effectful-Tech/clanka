@@ -177,14 +177,22 @@ describe("chunkFileContent", () => {
       chunkMaxCharacters: 21,
     })
 
-    expect(chunks).toHaveLength(4)
+    expect(chunks.every((chunk) => chunk.content.length <= 21)).toBe(true)
+    expect(chunks).toHaveLength(5)
     expect(chunks).toMatchObject([
       {
         startLine: 1,
         endLine: 1,
         name: "demo",
         type: "function",
-        content: "export function demo() {",
+        content: "export function demo(",
+      },
+      {
+        startLine: 1,
+        endLine: 1,
+        name: "demo",
+        type: "function",
+        content: ") {",
       },
       {
         startLine: 2,
@@ -236,6 +244,58 @@ describe("chunkFileContent", () => {
         endLine: 4,
         content: ["ccccc", "ddddd"].join("\n"),
       },
+    ])
+  })
+
+  it.each(["src/long.ts", "docs/long.txt"])(
+    "splits oversized lines in %s without losing content or line metadata",
+    (path) => {
+      const longLine = `  const value = "${"x".repeat(25_000)}"`
+      const content = [
+        "function demo() {",
+        longLine,
+        "  return value",
+        "}",
+      ].join("\n")
+      const chunks = chunkFileContent(path, content, {
+        chunkSize: 30,
+        chunkOverlap: 1,
+        chunkMaxCharacters: 10_000,
+      })
+
+      expect(chunks.length).toBeGreaterThan(0)
+      expect(chunks.every((chunk) => chunk.content.length <= 10_000)).toBe(true)
+      const pieces = chunks.filter((chunk) => chunk.startLine === 2)
+      expect(pieces).toHaveLength(3)
+      expect(pieces.map((chunk) => chunk.content).join("")).toBe(longLine)
+      for (const piece of pieces) {
+        expect(piece).toMatchObject({ path, startLine: 2, endLine: 2 })
+        if (path.endsWith(".ts")) {
+          expect(piece).toMatchObject({ name: "demo", type: "function" })
+        }
+      }
+      expect(
+        chunks.some((chunk) => chunk.content.includes("return value")),
+      ).toBe(true)
+    },
+  )
+
+  it("preserves a line exactly at the character limit", () => {
+    const line = "x".repeat(10_000)
+    const chunks = chunkFileContent(
+      "docs/limit.txt",
+      `before\n${line}\nafter`,
+      {
+        chunkSize: 30,
+        chunkOverlap: 0,
+        chunkMaxCharacters: 10_000,
+      },
+    )
+
+    expect(chunks.map((chunk) => chunk.content)).toEqual([
+      "before",
+      line,
+      "after",
     ])
   })
 

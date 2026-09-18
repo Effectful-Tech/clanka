@@ -208,7 +208,7 @@ const acp = Command.make("acp", { model: acpModel, compaction }).pipe(
   ),
   Command.provide(({ compaction }) =>
     Layer.mergeAll(
-      Agent.ConversationMode.layer(true),
+      Agent.ConversationMode.layer(false),
       Layer.succeed(Logger.LogToStderr, true),
       DeviceCodeHandler.layerLog,
       Compaction.CompactionConfig.layer({ enabled: compaction }),

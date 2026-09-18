@@ -194,7 +194,11 @@ ${content}
     const ai = yield* LanguageModel.LanguageModel
     const subagentModel = yield* SubagentModel
     const modelConfig = yield* AgentModelConfig
-    const conversationMode = yield* ConversationMode
+    const conversationMode =
+      (yield* ConversationMode) ||
+      Option.exists(capabilities.agentsMd, (content) =>
+        content.includes("**You are in chat mode.**"),
+      )
     const turnTimeout = yield* TurnTimeout
     let finalSummary = Option.none<string>()
     // `inputTokens.total` from the most recent finish part; undefined until

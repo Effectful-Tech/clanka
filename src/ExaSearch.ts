@@ -1,7 +1,9 @@
 /**
  * @since 1.0.0
  */
+import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
+import * as Exit from "effect/Exit"
 import { pipe } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
@@ -55,7 +57,10 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const client = yield* McpClient.McpClient
 
-    yield* client.connect({ url: "https://mcp.exa.ai/mcp" }).pipe(Effect.orDie)
+    const connect = yield* Effect.cachedWithTTL(
+      client.connect({ url: "https://mcp.exa.ai/mcp" }),
+      (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
+    )
 
     const decode = Schema.decodeUnknownEffect(
       Schema.NonEmptyArray(ExaSearchResult),
@@ -64,6 +69,7 @@ export const layer = Layer.effect(
     return ExaSearch.of({
       search: Effect.fn("ExaSearch.search")(
         function* (options) {
+          yield* connect
           const results = yield* pipe(
             client.toolCall({
               name: "web_search_exa",

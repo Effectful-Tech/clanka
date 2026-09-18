@@ -11,6 +11,7 @@ import * as Acp from "./Acp.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as Codex from "./Codex.ts"
 import * as Copilot from "./Copilot.ts"
+import * as Xai from "./Xai.ts"
 import * as Agent from "./Agent.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Stream from "effect/Stream"
@@ -32,9 +33,9 @@ import packageJson from "../package.json" with { type: "json" }
 
 const version = packageJson.version
 
-type Provider = "openai" | "copilot"
+type Provider = "openai" | "copilot" | "xai"
 
-const providers: ReadonlyArray<Provider> = ["openai", "copilot"]
+const providers: ReadonlyArray<Provider> = ["openai", "copilot", "xai"]
 
 const withSubagentModel = <E, R>(
   model: Layer.Layer<
@@ -49,9 +50,13 @@ const modelLayer = (provider: Provider, model: string, effort: string) =>
     ? withSubagentModel(
         Codex.modelWebSocket(model, { reasoning: { effort: effort as any } }),
       ).pipe(Layer.provide(Codex.layerClient))
-    : withSubagentModel(Copilot.model(model, { reasoning: { effort } })).pipe(
-        Layer.provide(Copilot.layerClient),
-      )
+    : provider === "xai"
+      ? withSubagentModel(
+          Xai.model(model, { reasoning: { effort: effort as any } }),
+        ).pipe(Layer.provide(Xai.layerClient))
+      : withSubagentModel(Copilot.model(model, { reasoning: { effort } })).pipe(
+          Layer.provide(Copilot.layerClient),
+        )
 
 const parseModelId = (modelId: string) => {
   const [provider, model, effort, ...rest] = modelId.split("/")
@@ -89,27 +94,16 @@ const provider = Flag.Literals("provider", providers).pipe(
           title: "copilot",
           value: "copilot",
         },
+        {
+          title: "xai",
+          value: "xai",
+        },
       ],
     }),
   ),
 )
 
-const model = Flag.String("model").pipe(
-  Flag.withAlias("m"),
-  Flag.withFallbackPrompt(
-    Prompt.String({
-      message: "Enter a model",
-      default: "gpt-6-astra/medium",
-      validate(value) {
-        const parts = value.split("/")
-        if (parts.length !== 2) {
-          return Effect.fail("Invalid model")
-        }
-        return Effect.succeed(value)
-      },
-    }),
-  ),
-)
+const model = Flag.String("model").pipe(Flag.withAlias("m"), Flag.optional)
 
 const semantic = Flag.Directory("search").pipe(
   Flag.withDescription(
@@ -237,7 +231,21 @@ Command.make("clanka", {
       prompt: nonInteractivePrompt,
     }) {
       const stdio = yield* Stdio.Stdio
-      const [model, reasoning] = modelRaw.split("/") as [string, string]
+      const selectedModel = yield* Option.match(modelRaw, {
+        onSome: Effect.succeed,
+        onNone: () =>
+          Prompt.String({
+            message: "Enter a model",
+            default:
+              provider === "xai" ? "grok-4.6/high" : "gpt-6-astra/medium",
+            validate(value) {
+              return value.split("/").length === 2
+                ? Effect.succeed(value)
+                : Effect.fail("Invalid model")
+            },
+          }),
+      })
+      const [model, reasoning] = selectedModel.split("/") as [string, string]
       const Model = modelLayer(provider, model, reasoning)
 
       return yield* Effect.gen(function* () {

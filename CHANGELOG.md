@@ -1,5 +1,11 @@
 # clanka
 
+## 0.6.2
+
+### Patch Changes
+
+- [#184](https://github.com/Effectful-Tech/clanka/pull/184) [`6494323`](https://github.com/Effectful-Tech/clanka/commit/6494323e25306962b4fef44dcaf4b77c39c81637) Thanks [@tim-smart](https://github.com/tim-smart)! - Connect to Exa on the first web search instead of during startup, reusing the connection for subsequent searches.
+
 ## 0.6.1
 
 ### Patch Changes

@@ -494,3 +494,98 @@ describe("Acp", () => {
     ),
   )
 })
+
+describe("Acp Multica conversation mode", () => {
+  for (const scenario of [
+    {
+      name: "chat marker ends a text-only turn",
+      agentsMd: Option.some("# Runtime\n**You are in chat mode.**"),
+      override: false,
+      chat: true,
+    },
+    {
+      name: "task session continues until taskComplete",
+      agentsMd: Option.some("Complete the assigned issue."),
+      override: false,
+      chat: false,
+    },
+    {
+      name: "session without AGENTS.md continues until taskComplete",
+      agentsMd: Option.none<string>(),
+      override: false,
+      chat: false,
+    },
+    {
+      name: "explicit conversation override wins without a marker",
+      agentsMd: Option.none<string>(),
+      override: true,
+      chat: true,
+    },
+  ]) {
+    it.effect(scenario.name, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let calls = 0
+          let completions = 0
+          const server = yield* makeServer(
+            () => {
+              const index = calls++
+              if (index === 0) return assistantSays("text-only reply")
+              if (index === 1)
+                return parts({
+                  type: "tool-call",
+                  id: "complete",
+                  name: "execute",
+                  params: { script: 'await taskComplete("task finished")' },
+                })
+              return Stream.die("unexpected extra model call")
+            },
+            {
+              ...executor,
+              capabilities: Effect.succeed(
+                new AgentExecutor.Capabilities({
+                  ...capabilities,
+                  agentsMd: scenario.agentsMd,
+                }),
+              ),
+              execute: ({ onTaskComplete }) => {
+                completions++
+                return Stream.fromEffect(
+                  onTaskComplete("task finished").pipe(Effect.as("")),
+                )
+              },
+            },
+          )
+          // Identical cwd for chats and tasks: only AGENTS.md selects the mode.
+          const created = yield* server.request(1, "session/new", {
+            cwd: "/workspace",
+            mcpServers: [],
+          })
+          assert.isUndefined(created.error)
+          const sessionId: string = created.result.sessionId
+          const done = yield* server.request(2, "session/prompt", {
+            sessionId,
+            prompt: [{ type: "text", text: "hello" }],
+          })
+          assert.deepStrictEqual(done.result, { stopReason: "end_turn" })
+          assert.strictEqual(calls, scenario.chat ? 1 : 2)
+          assert.strictEqual(completions, scenario.chat ? 0 : 1)
+          assert.deepStrictEqual(server.updates(sessionId).at(-1), {
+            sessionUpdate: "agent_message_chunk",
+            content: {
+              type: "text",
+              text: scenario.chat ? "text-only reply" : "task finished",
+            },
+          })
+        }),
+      ).pipe(
+        Effect.provide(
+          Layer.merge(
+            KeyValueStore.layerMemory,
+            Agent.ConversationMode.layer(scenario.override),
+          ),
+        ),
+      ),
+    )
+  }
+})

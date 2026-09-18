@@ -28,9 +28,12 @@ const capabilities = new AgentExecutor.Capabilities({
 const makeExecutor = (
   execute: AgentExecutor.AgentExecutor["Service"]["execute"] = () =>
     Stream.empty,
+  agentsMd: Option.Option<string> = Option.none(),
 ) =>
   AgentExecutor.AgentExecutor.of({
-    capabilities: Effect.succeed(capabilities),
+    capabilities: Effect.succeed(
+      new AgentExecutor.Capabilities({ ...capabilities, agentsMd }),
+    ),
     execute,
     executeUnsafe: () => Effect.die("executeUnsafe not implemented"),
   })
@@ -1114,4 +1117,84 @@ describe("Agent overflow compaction", () => {
       assert.strictEqual(outputsOfTag(outputs, "CompactionStarted").length, 0)
     }),
   )
+})
+
+describe("Agent Multica conversation mode", () => {
+  for (const scenario of [
+    {
+      name: "chat marker",
+      agentsMd: Option.some(
+        "# Runtime\n\n**You are in chat mode.**\nReply to the user.",
+      ),
+      override: false,
+      chat: true,
+    },
+    {
+      name: "task instructions",
+      agentsMd: Option.some("# Runtime\nComplete the assigned issue."),
+      override: false,
+      chat: false,
+    },
+    {
+      name: "missing AGENTS.md",
+      agentsMd: Option.none<string>(),
+      override: false,
+      chat: false,
+    },
+    {
+      name: "similar but non-contract wording",
+      agentsMd: Option.some("You are in chat mode."),
+      override: false,
+      chat: false,
+    },
+    {
+      name: "explicit override without marker",
+      agentsMd: Option.some("Complete the assigned issue."),
+      override: true,
+      chat: true,
+    },
+    {
+      name: "explicit override without AGENTS.md",
+      agentsMd: Option.none<string>(),
+      override: true,
+      chat: true,
+    },
+  ]) {
+    it.effect(scenario.name, () =>
+      Effect.gen(function* () {
+        let completions = 0
+        const { exit, calls } = yield* runAgentCollect({
+          conversationMode: scenario.override,
+          executor: makeExecutor(({ onTaskComplete }) => {
+            completions++
+            return Stream.fromEffect(
+              onTaskComplete("task finished").pipe(Effect.as("")),
+            )
+          }, scenario.agentsMd),
+          respond: (_call, index) => {
+            if (index === 0) return Stream.fromIterable(text("text-only reply"))
+            if (index === 1)
+              return Stream.succeed(
+                toolCall("complete", 'await taskComplete("task finished")'),
+              )
+            return Stream.die("unexpected extra model call")
+          },
+        })
+        assert.deepStrictEqual(
+          exit,
+          Exit.succeed(scenario.chat ? "text-only reply" : "task finished"),
+        )
+        assert.strictEqual(calls.length, scenario.chat ? 1 : 2)
+        assert.strictEqual(completions, scenario.chat ? 0 : 1)
+        const system = calls[0]!.prompt.content
+          .filter((message) => message.role === "system")
+          .map((message) => message.content)
+          .join("\n")
+        assert.strictEqual(
+          system.includes('call the "taskComplete" function'),
+          !scenario.chat,
+        )
+      }),
+    )
+  }
 })

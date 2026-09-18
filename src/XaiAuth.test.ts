@@ -6,6 +6,7 @@ import * as Option from "effect/Option"
 import * as TestClock from "effect/testing/TestClock"
 import {
   HttpClient,
+  HttpClientError,
   type HttpClientRequest,
   HttpClientResponse,
 } from "effect/unstable/http"
@@ -44,7 +45,7 @@ const body = (request: HttpClientRequest.HttpClientRequest) => {
 const setup = Effect.fn(function* (
   respond: (
     request: HttpClientRequest.HttpClientRequest,
-  ) => Effect.Effect<Response>,
+  ) => Effect.Effect<Response, HttpClientError.HttpClientError>,
 ) {
   const requests: Array<HttpClientRequest.HttpClientRequest> = []
   const codes: Array<{ verifyUrl: string; deviceCode: string }> = []
@@ -76,6 +77,193 @@ const seed = Effect.fn(function* (expires: number) {
 })
 
 describe("XaiAuth", () => {
+  for (const refresh of [false, true]) {
+    it.effect(
+      "defaults omitted token expiry to one hour during " +
+        (refresh ? "refresh" : "login"),
+      () =>
+        Effect.gen(function* () {
+          if (refresh) yield* seed(1)
+          const { auth, requests, codes } = yield* setup((request) =>
+            Effect.succeed(
+              json(
+                request.url === deviceUrl
+                  ? device
+                  : {
+                      access_token: tokens.access_token,
+                      refresh_token: tokens.refresh_token,
+                    },
+              ),
+            ),
+          )
+          const before = Date.now()
+          const token = yield* auth.get
+          assert.strictEqual(token.access, "access")
+          assert.strictEqual(token.refresh, "refresh")
+          assert.isAtLeast(token.expires, before + 3600000)
+          assert.isAtMost(token.expires, Date.now() + 3600000)
+          const stored = yield* toTokenStore(yield* KeyValueStore.KeyValueStore)
+            .get("token")
+            .pipe(Effect.orDie)
+          assert.deepStrictEqual(Option.getOrThrow(stored), token)
+          yield* auth.get
+          assert.lengthOf(requests, refresh ? 1 : 2)
+          assert.lengthOf(codes, refresh ? 0 : 1)
+        }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+    )
+  }
+
+  it.effect(
+    "preserves and persists the existing refresh token when rotation is omitted",
+    () =>
+      Effect.gen(function* () {
+        yield* seed(1)
+        const { auth, requests, codes } = yield* setup((request) =>
+          Effect.succeed(
+            json(
+              request.url === deviceUrl
+                ? device
+                : {
+                    access_token: "access",
+                    expires_in: 3600,
+                  },
+            ),
+          ),
+        )
+        const token = yield* auth.get
+        assert.strictEqual(token.access, "access")
+        assert.strictEqual(token.refresh, "old-refresh")
+        assert.lengthOf(requests, 1)
+        assert.strictEqual(body(requests[0]!).refresh_token, "old-refresh")
+        assert.lengthOf(codes, 0)
+        const stored = yield* toTokenStore(yield* KeyValueStore.KeyValueStore)
+          .get("token")
+          .pipe(Effect.orDie)
+        assert.deepStrictEqual(Option.getOrThrow(stored), token)
+        yield* auth.get
+        assert.lengthOf(requests, 1)
+      }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  )
+
+  it.effect(
+    "accepts an initial login without a refresh token and persists an empty fallback",
+    () =>
+      Effect.gen(function* () {
+        const { auth, requests } = yield* setup((request) =>
+          Effect.succeed(
+            json(
+              request.url === deviceUrl
+                ? device
+                : {
+                    access_token: "access",
+                    expires_in: 3600,
+                  },
+            ),
+          ),
+        )
+        const token = yield* auth.get
+        assert.strictEqual(token.access, "access")
+        assert.strictEqual(token.refresh, "")
+        assert.isFalse(token.isExpired())
+        const stored = yield* toTokenStore(yield* KeyValueStore.KeyValueStore)
+          .get("token")
+          .pipe(Effect.orDie)
+        assert.deepStrictEqual(Option.getOrThrow(stored), token)
+        yield* auth.get
+        assert.lengthOf(requests, 2)
+      }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  )
+
+  for (const expires of [0, -1]) {
+    it.effect("uses a fallback lifetime for device expiry " + expires, () =>
+      Effect.gen(function* () {
+        let polls = 0
+        const { auth, requests } = yield* setup((request) =>
+          Effect.sync(() => {
+            if (request.url === deviceUrl)
+              return json({ ...device, expires_in: expires })
+            return ++polls === 1
+              ? json({ error: "authorization_pending" }, 400)
+              : json(tokens)
+          }),
+        )
+        const fiber = yield* auth.get.pipe(
+          Effect.forkChild({ startImmediately: true }),
+        )
+        yield* TestClock.adjust(4000)
+        assert.strictEqual((yield* Fiber.join(fiber)).access, "access")
+        assert.strictEqual(polls, 2)
+        assert.lengthOf(requests, 3)
+      }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+    )
+  }
+
+  for (const refresh of [false, true]) {
+    for (const transient of ["transport", "502"] as const) {
+      it.effect(
+        "recovers from transient " +
+          transient +
+          " during " +
+          (refresh ? "refresh" : "polling"),
+        () =>
+          Effect.gen(function* () {
+            if (refresh) yield* seed(1)
+            let attempts = 0
+            const { auth, requests, codes } = yield* setup((request) =>
+              Effect.gen(function* () {
+                if (request.url === deviceUrl) return json(device)
+                attempts++
+                if (attempts === 1) {
+                  if (transient === "502")
+                    return new Response("Bad Gateway", { status: 502 })
+                  return yield* new HttpClientError.HttpClientError({
+                    reason: new HttpClientError.TransportError({
+                      request,
+                      cause: new Error("Connection reset"),
+                    }),
+                  })
+                }
+                // An OAuth 400 after recovery must still reach the polling state machine.
+                if (!refresh && attempts === 2)
+                  return json({ error: "authorization_pending" }, 400)
+                return json(tokens)
+              }),
+            )
+            const fiber = yield* auth.get.pipe(
+              Effect.forkChild({ startImmediately: true }),
+            )
+            yield* TestClock.adjust("1 minute")
+            const token = yield* Fiber.join(fiber)
+            assert.strictEqual(token.access, "access")
+            assert.strictEqual(attempts, refresh ? 2 : 3)
+            assert.lengthOf(codes, refresh ? 0 : 1)
+            assert.deepStrictEqual(
+              requests.map((request) => request.url),
+              refresh
+                ? [tokenUrl, tokenUrl]
+                : [deviceUrl, tokenUrl, tokenUrl, tokenUrl],
+            )
+            for (const request of requests.filter(
+              (request) => request.url === tokenUrl,
+            )) {
+              assert.strictEqual(
+                body(request).grant_type,
+                refresh
+                  ? "refresh_token"
+                  : "urn:ietf:params:oauth:grant-type:device_code",
+              )
+            }
+            const stored = yield* toTokenStore(
+              yield* KeyValueStore.KeyValueStore,
+            )
+              .get("token")
+              .pipe(Effect.orDie)
+            assert.deepStrictEqual(Option.getOrThrow(stored), token)
+          }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+      )
+    }
+  }
+
   it("treats zero and near-expiry tokens as expired, unlike Copilot", () => {
     for (const expires of [0, Date.now() - 1000, Date.now() + 1000]) {
       assert.isTrue(

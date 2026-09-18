@@ -1,5 +1,11 @@
 # clanka
 
+## 0.7.1
+
+### Patch Changes
+
+- [`36bc096`](https://github.com/Effectful-Tech/clanka/commit/36bc096da08232958b39f73539a8237f4c25bfe9) Thanks [@tim-smart](https://github.com/tim-smart)! - Enforce the configured chunk character limit for oversized individual lines in both AST and fallback chunking. Split long lines without discarding content, retaining their source line numbers and metadata.
+
 ## 0.7.0
 
 ### Minor Changes

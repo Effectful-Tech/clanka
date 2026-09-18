@@ -1,5 +1,11 @@
 # clanka
 
+## 0.7.0
+
+### Minor Changes
+
+- [#186](https://github.com/Effectful-Tech/clanka/pull/186) [`08b1c6b`](https://github.com/Effectful-Tech/clanka/commit/08b1c6b9ac90bf504ea74f9c56e812e344caf6e9) Thanks [@tim-smart](https://github.com/tim-smart)! - Add the xAI provider with lazy SuperGrok device login, token refresh, and HTTP Responses support. Expose Xai to library users and support xai model selection in the interactive CLI and ACP.
+
 ## 0.6.2
 
 ### Patch Changes

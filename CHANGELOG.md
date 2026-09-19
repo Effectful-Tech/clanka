@@ -1,5 +1,11 @@
 # clanka
 
+## 0.7.3
+
+### Patch Changes
+
+- [#194](https://github.com/Effectful-Tech/clanka/pull/194) [`d0d7bba`](https://github.com/Effectful-Tech/clanka/commit/d0d7bbafd9560c3161fe8dc98e1710a18ff2df84) Thanks [@tim-smart](https://github.com/tim-smart)! - Reject non-string taskComplete arguments with a recoverable tool error instead of crashing the session.
+
 ## 0.7.2
 
 ### Patch Changes

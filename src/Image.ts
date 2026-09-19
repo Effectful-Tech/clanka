@@ -12,7 +12,7 @@
  *
  * @since 1.0.0
  */
-import * as Photon from "@silvia-odwyer/photon-node"
+import type * as Photon from "@silvia-odwyer/photon-node"
 import * as Effect from "effect/Effect"
 import * as Encoding from "effect/Encoding"
 import type * as FileSystem from "effect/FileSystem"
@@ -451,11 +451,12 @@ const fits = (bytes: Uint8Array, limits: Limits) =>
   base64Length(bytes.length) <= limits.maxBytes
 
 const decode = (
+  photon: typeof Photon,
   data: Uint8Array,
 ): Effect.Effect<Photon.PhotonImage, ImageError> =>
   Effect.try({
     try: () => {
-      const image = Photon.PhotonImage.new_from_byteslice(data)
+      const image = photon.PhotonImage.new_from_byteslice(data)
       // Photon returns an empty image rather than throwing for some inputs.
       if (image.get_width() === 0 || image.get_height() === 0) {
         image.free()
@@ -527,7 +528,15 @@ export const prepare = Effect.fnUntraced(function* (options: {
       message: `Image exceeds the ${maxInputPixels} pixel input limit`,
     })
   }
-  const image = yield* decode(options.data)
+  const Photon = yield* Effect.tryPromise({
+    try: () => import("@silvia-odwyer/photon-node"),
+    catch: (cause) =>
+      new ImageError({
+        reason: "Decode",
+        message: `Could not load image decoder: ${cause instanceof Error ? cause.message : String(cause)}`,
+      }),
+  })
+  const image = yield* decode(Photon, options.data)
   let current = image
   try {
     const width = image.get_width()

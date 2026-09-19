@@ -65,6 +65,44 @@ const mcpModules = (loaded: Array<string>) =>
 const photonModules = (loaded: Array<string>) =>
   loaded.filter((url) => url.includes("/@silvia-odwyer/photon-node/"))
 
+// Promise gates synchronize module evaluation and connection without timing sleeps.
+const mcpSetup = ({
+  failures = 0,
+  pauseImport = false,
+  pauseConnect = false,
+} = {}) => `
+  const state = globalThis.__mcpTest = {
+    clients: 0, connects: 0, calls: [], closes: 0,
+    importStarted: Promise.withResolvers(), importReleased: Promise.withResolvers(),
+    connectStarted: Promise.withResolvers(), connectReleased: Promise.withResolvers()
+  }
+  mocks.set(import.meta.resolve("@modelcontextprotocol/sdk/client"), ${JSON.stringify(`
+    const state = globalThis.__mcpTest
+    state.importStarted.resolve()
+    if (${pauseImport}) await state.importReleased.promise
+    export class Client {
+      constructor() { state.clients++ }
+      async connect(transport) {
+        state.connects++
+        state.connectStarted.resolve()
+        if (transport.url.href !== "https://mcp.exa.ai/mcp") throw new Error("wrong endpoint")
+        if (${pauseConnect}) await state.connectReleased.promise
+        if (state.connects <= ${failures}) throw new Error("temporary failure")
+      }
+      async callTool(options) {
+        state.calls.push(options)
+        return { content: [{ type: "text", text: "Search results" }] }
+      }
+      async close() { state.closes++ }
+    }
+  `)})
+  mocks.set(import.meta.resolve("@modelcontextprotocol/sdk/client/streamableHttp.js"), ${JSON.stringify(`
+    export class StreamableHTTPClientTransport {
+      constructor(url) { this.url = url }
+    }
+  `)})
+`
+
 const imageSetup = `
   const Image = await import("./src/Image.ts")
   const Effect = await import("effect/Effect")
@@ -160,6 +198,85 @@ describe("baseline imports (isolated processes)", () => {
     expect(photonModules(loaded).length).toBeGreaterThan(0)
   })
 
+  it("recovers after interruption during the first MCP import", () => {
+    probe(
+      `
+      const ExaSearch = await import("./src/ExaSearch.ts")
+      const Effect = await import("effect/Effect")
+      const Fiber = await import("effect/Fiber")
+      const Exit = await import("effect/Exit")
+      await Effect.runPromise(Effect.gen(function* () {
+        const exa = yield* ExaSearch.ExaSearch
+        const first = yield* Effect.forkChild(exa.search({ query: "cancelled" }))
+        // The SDK is evaluating but cannot finish until this test releases it.
+        yield* Effect.promise(() => state.importStarted.promise)
+        assert.equal(state.clients, 0)
+        yield* Fiber.interrupt(first)
+        assert.equal(Exit.hasInterrupts(yield* Fiber.await(first)), true)
+        assert.equal(state.connects, 0)
+        assert.equal(state.calls.length, 0)
+        assert.equal(state.closes, 0)
+        state.importReleased.resolve()
+        // Wait for the original import to settle; no delay or racing timer.
+        yield* Effect.promise(() => import("./src/McpClient.ts"))
+        const recovered = yield* Effect.exit(exa.search({ query: "recovered" }))
+        assert.equal(Exit.isSuccess(recovered), true, "first-load interruption must not poison later searches")
+        assert.equal(recovered.value, "Search results")
+        assert.equal(yield* exa.search({ query: "reused" }), "Search results")
+        assert.equal(state.clients, 1)
+        assert.equal(state.connects, 1)
+        assert.deepEqual(state.calls.map(call => call.arguments.query), ["recovered", "reused"])
+        assert.equal(state.closes, 0)
+      }).pipe(Effect.provide(ExaSearch.layer)))
+      assert.equal(state.clients, 1)
+      assert.equal(state.closes, 1)
+      `,
+      mcpSetup({ pauseImport: true }),
+    )
+  })
+
+  it("shares the first client and in-flight connection across concurrent searches", () => {
+    probe(
+      `
+      const ExaSearch = await import("./src/ExaSearch.ts")
+      const Effect = await import("effect/Effect")
+      const Fiber = await import("effect/Fiber")
+      await Effect.runPromise(Effect.gen(function* () {
+        const exa = yield* ExaSearch.ExaSearch
+        const first = yield* Effect.forkChild(exa.search({ query: "first" }), { startImmediately: true })
+        yield* Effect.promise(() => state.importStarted.promise)
+        const second = yield* Effect.forkChild(exa.search({ query: "second" }), { startImmediately: true })
+        assert.equal(state.clients, 0)
+        state.importReleased.resolve()
+        yield* Effect.promise(() => state.connectStarted.promise)
+        // Another caller arrives while the shared connect is still blocked.
+        const third = yield* Effect.forkChild(exa.search({ query: "third" }), { startImmediately: true })
+        assert.equal(state.clients, 1)
+        assert.equal(state.connects, 1)
+        assert.equal(state.calls.length, 0)
+        assert.equal(state.closes, 0)
+        state.connectReleased.resolve()
+        assert.deepEqual(yield* Fiber.joinAll([first, second, third]), [
+          "Search results", "Search results", "Search results"
+        ])
+        assert.equal(state.clients, 1)
+        assert.equal(state.connects, 1)
+        assert.deepEqual(state.calls.map(call => call.arguments.query).sort(), ["first", "second", "third"])
+        // Completing individual search fibers must not close the layer-owned client.
+        assert.equal(state.closes, 0)
+        assert.equal(yield* exa.search({ query: "later" }), "Search results")
+        assert.equal(state.calls.length, 4)
+        assert.equal(state.clients, 1)
+        assert.equal(state.connects, 1)
+        assert.equal(state.closes, 0)
+      }).pipe(Effect.provide(ExaSearch.layer)))
+      assert.equal(state.clients, 1)
+      assert.equal(state.closes, 1)
+      `,
+      mcpSetup({ pauseImport: true, pauseConnect: true }),
+    )
+  })
+
   it.each([false, true])(
     "preserves first search, reuse and cleanup (retry=%s)",
     (retry) => {
@@ -174,48 +291,29 @@ describe("baseline imports (isolated processes)", () => {
         assert.equal(state.connects, 0)
         assert.equal(state.calls.length, 0)
         if (${retry}) {
-          const failure = yield* Effect.flip(exa.search({ query: "fails" }))
-          assert.equal(failure._tag, "ExaError")
-          assert.equal(state.calls.length, 0)
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            const failure = yield* Effect.flip(exa.search({ query: "fails" }))
+            assert.equal(failure._tag, "ExaError")
+            assert.equal(state.connects, attempt)
+            assert.equal(state.clients, 1)
+            assert.equal(state.calls.length, 0)
+            assert.equal(state.closes, 0)
+          }
         }
         assert.equal(yield* exa.search({ query: "first" }), "Search results")
         assert.equal(yield* exa.search({ query: "second", numResults: 5 }), "Search results")
-        assert.equal(state.connects, ${retry ? 2 : 1})
+        assert.equal(state.connects, ${retry ? 3 : 1})
+        assert.equal(state.clients, 1)
         assert.deepEqual(state.calls, [
           { name: "web_search_exa", arguments: { query: "first", num_results: 3 } },
           { name: "web_search_exa", arguments: { query: "second", num_results: 5 } }
         ])
         assert.equal(state.closes, 0)
       }).pipe(Effect.provide(ExaSearch.layer)))
-      assert.equal(state.closes, state.clients)
-      assert.ok(state.clients > 0)
+      assert.equal(state.clients, 1)
+      assert.equal(state.closes, 1)
     `,
-        `
-      const state = globalThis.__mcpTest = {
-        clients: 0, connects: 0, calls: [], closes: 0
-      }
-      mocks.set(import.meta.resolve("@modelcontextprotocol/sdk/client"), ${JSON.stringify(`
-        export class Client {
-          constructor() { globalThis.__mcpTest.clients++ }
-          async connect(transport) {
-            const state = globalThis.__mcpTest
-            state.connects++
-            if (transport.url.href !== "https://mcp.exa.ai/mcp") throw new Error("wrong endpoint")
-            if (${retry} && state.connects === 1) throw new Error("temporary failure")
-          }
-          async callTool(options) {
-            globalThis.__mcpTest.calls.push(options)
-            return { content: [{ type: "text", text: "Search results" }] }
-          }
-          async close() { globalThis.__mcpTest.closes++ }
-        }
-      `)})
-      mocks.set(import.meta.resolve("@modelcontextprotocol/sdk/client/streamableHttp.js"), ${JSON.stringify(`
-        export class StreamableHTTPClientTransport {
-          constructor(url) { this.url = url }
-        }
-      `)})
-    `,
+        mcpSetup({ failures: retry ? 2 : 0 }),
       )
       expect(mcpModules(loaded).length).toBeGreaterThan(0)
     },

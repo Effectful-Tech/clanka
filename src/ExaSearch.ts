@@ -8,7 +8,6 @@ import { pipe } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
 import * as Context from "effect/Context"
-import * as McpClient from "./McpClient.ts"
 
 /**
  * @since 1.0.0
@@ -55,10 +54,23 @@ export class ExaError extends Schema.TaggedError<ExaError>()("ExaError", {
 export const layer = Layer.effect(
   ExaSearch,
   Effect.gen(function* () {
-    const client = yield* McpClient.McpClient
+    const scope = yield* Effect.scope
+    const getClient = yield* Effect.cached(
+      Effect.gen(function* () {
+        const McpClient = yield* Effect.tryPromise(
+          () => import("./McpClient.ts"),
+        )
+        const context = yield* Layer.buildWithScope(McpClient.layer, scope)
+        return Context.get(context, McpClient.McpClient)
+      }),
+    )
 
     const connect = yield* Effect.cachedWithTTL(
-      client.connect({ url: "https://mcp.exa.ai/mcp" }),
+      Effect.gen(function* () {
+        const client = yield* getClient
+        yield* client.connect({ url: "https://mcp.exa.ai/mcp" })
+        return client
+      }),
       (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
     )
 
@@ -69,7 +81,7 @@ export const layer = Layer.effect(
     return ExaSearch.of({
       search: Effect.fn("ExaSearch.search")(
         function* (options) {
-          yield* connect
+          const client = yield* connect
           const results = yield* pipe(
             client.toolCall({
               name: "web_search_exa",
@@ -86,4 +98,4 @@ export const layer = Layer.effect(
       ),
     })
   }),
-).pipe(Layer.provide(McpClient.layer))
+)

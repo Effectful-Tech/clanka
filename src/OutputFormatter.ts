@@ -12,7 +12,7 @@ import chalk from "chalk"
 import type * as Prompt from "effect/unstable/ai/Prompt"
 import * as Cause from "effect/Cause"
 import { identity } from "effect/Function"
-import { Predicate } from "effect"
+import * as Predicate from "effect/Predicate"
 
 /**
  * @since 1.0.0

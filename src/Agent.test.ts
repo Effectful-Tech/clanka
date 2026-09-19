@@ -407,21 +407,13 @@ const assertCompactedShape = (
   return prompt.content.slice(2)
 }
 
-const withLocalExecutor = <A, E, R>(
-  f: (
-    executor: AgentExecutor.AgentExecutor["Service"],
-  ) => Effect.Effect<A, E, R>,
-) =>
+const localExecutorLayer = Layer.unwrap(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const directory = yield* fs.makeTempDirectoryScoped()
-    return yield* AgentExecutor.AgentExecutor.use(f).pipe(
-      Effect.provide(AgentExecutor.layerLocal({ directory })),
-    )
-  }).pipe(
-    Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
-    Effect.scoped,
-  )
+    return AgentExecutor.layerLocal({ directory })
+  }),
+).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)))
 
 const invalidCompletions = [
   'taskComplete({ output: "done" })',
@@ -434,96 +426,101 @@ const invalidCompletions = [
   'taskComplete({ summary: "done" })',
 ]
 
-describe("taskComplete through the real VM executor", () => {
-  for (const summary of ["done", "", "First line\nSecond line"]) {
-    it.live(`finishes with string summary ${JSON.stringify(summary)}`, () =>
-      withLocalExecutor((executor) =>
-        runAgentCollect({
-          conversationMode: false,
-          executor,
-          respond: (_call, index) =>
-            index === 0
-              ? Stream.fromIterable([
-                  toolCall(
-                    "complete",
-                    `await taskComplete(${JSON.stringify(summary)})`,
-                  ),
-                ])
-              : Stream.die("completion must not require another model call"),
-        }).pipe(
-          Effect.map(({ exit, calls }) => {
-            assert.deepStrictEqual(exit, Exit.succeed(summary))
-            assert.strictEqual(calls.length, 1)
-          }),
+it.layer(localExecutorLayer, { excludeTestServices: true })(
+  "taskComplete through the real VM executor",
+  (it) => {
+    for (const summary of ["done", "", "First line\nSecond line"]) {
+      it.effect(`finishes with string summary ${JSON.stringify(summary)}`, () =>
+        AgentExecutor.AgentExecutor.use((executor) =>
+          runAgentCollect({
+            conversationMode: false,
+            executor,
+            respond: (_call, index) =>
+              index === 0
+                ? Stream.fromIterable([
+                    toolCall(
+                      "complete",
+                      `await taskComplete(${JSON.stringify(summary)})`,
+                    ),
+                  ])
+                : Stream.die("completion must not require another model call"),
+          }).pipe(
+            Effect.map(({ exit, calls }) => {
+              assert.deepStrictEqual(exit, Exit.succeed(summary))
+              assert.strictEqual(calls.length, 1)
+            }),
+          ),
         ),
-      ),
-    )
-  }
+      )
+    }
 
-  for (const invocation of invalidCompletions) {
-    it.live(`rejects ${invocation} without completing`, () =>
-      withLocalExecutor((executor) =>
-        Effect.gen(function* () {
-          const summaries: Array<string> = []
-          const output = yield* executor
-            .execute({
-              script: `try { await ${invocation}; console.log("ACCEPTED") } catch (error) { console.log("REJECTED:", String(error)) } console.log("SCRIPT_SURVIVED")`,
-              onTaskComplete: (summary) =>
-                Effect.sync(() => {
-                  summaries.push(summary)
-                }),
-              onSubagent: () => Effect.succeed(""),
-              onImage: () => Effect.void,
-            })
-            .pipe(Stream.mkString)
-          assert.deepStrictEqual(
-            summaries,
-            [],
-            "invalid input must not reach TaskCompleter",
-          )
-          assert.include(output, "REJECTED:")
-          assert.match(output, /string/i)
-          assert.include(output, "SCRIPT_SURVIVED")
-          assert.notInclude(output, "ACCEPTED")
-        }),
-      ),
-    )
-
-    it.live(`survives ${invocation} and completes on the next model call`, () =>
-      withLocalExecutor((executor) =>
-        runAgentCollect({
-          conversationMode: false,
-          executor,
-          respond: (_call, index) => {
-            switch (index) {
-              case 0:
-                return Stream.fromIterable([
-                  toolCall("invalid", `await ${invocation}`),
-                ])
-              case 1:
-                return Stream.fromIterable([
-                  toolCall("retry", 'await taskComplete("recovered")'),
-                ])
-              default:
-                return Stream.die("unexpected model call after completion")
-            }
-          },
-        }).pipe(
-          Effect.map(({ exit, calls }) => {
-            assert.deepStrictEqual(exit, Exit.succeed("recovered"))
-            assert.strictEqual(calls.length, 2)
-            const [result] = toolResults(calls[1]!.prompt)
-            assert.isDefined(
-              result,
-              "the model must receive the recoverable tool error",
+    for (const invocation of invalidCompletions) {
+      it.effect(`rejects ${invocation} without completing`, () =>
+        AgentExecutor.AgentExecutor.use((executor) =>
+          Effect.gen(function* () {
+            const summaries: Array<string> = []
+            const output = yield* executor
+              .execute({
+                script: `try { await ${invocation}; console.log("ACCEPTED") } catch (error) { console.log("REJECTED:", String(error)) } console.log("SCRIPT_SURVIVED")`,
+                onTaskComplete: (summary) =>
+                  Effect.sync(() => {
+                    summaries.push(summary)
+                  }),
+                onSubagent: () => Effect.succeed(""),
+                onImage: () => Effect.void,
+              })
+              .pipe(Stream.mkString)
+            assert.deepStrictEqual(
+              summaries,
+              [],
+              "invalid input must not reach TaskCompleter",
             )
-            assert.match(String(result!.result), /string/i)
+            assert.include(output, "REJECTED:")
+            assert.match(output, /string/i)
+            assert.include(output, "SCRIPT_SURVIVED")
+            assert.notInclude(output, "ACCEPTED")
           }),
         ),
-      ),
-    )
-  }
-})
+      )
+
+      it.effect(
+        `survives ${invocation} and completes on the next model call`,
+        () =>
+          AgentExecutor.AgentExecutor.use((executor) =>
+            runAgentCollect({
+              conversationMode: false,
+              executor,
+              respond: (_call, index) => {
+                switch (index) {
+                  case 0:
+                    return Stream.fromIterable([
+                      toolCall("invalid", `await ${invocation}`),
+                    ])
+                  case 1:
+                    return Stream.fromIterable([
+                      toolCall("retry", 'await taskComplete("recovered")'),
+                    ])
+                  default:
+                    return Stream.die("unexpected model call after completion")
+                }
+              },
+            }).pipe(
+              Effect.map(({ exit, calls }) => {
+                assert.deepStrictEqual(exit, Exit.succeed("recovered"))
+                assert.strictEqual(calls.length, 2)
+                const [result] = toolResults(calls[1]!.prompt)
+                assert.isDefined(
+                  result,
+                  "the model must receive the recoverable tool error",
+                )
+                assert.match(String(result!.result), /string/i)
+              }),
+            ),
+          ),
+      )
+    }
+  },
+)
 
 // --- tests -------------------------------------------------------------------
 

@@ -8,6 +8,7 @@ const sdk = vi.hoisted(() => ({
   loading: Promise.withResolvers<void>(),
   release: Promise.withResolvers<void>(),
   pauseLoad: false,
+  paused: false,
   clients: 0,
   connect: vi.fn<() => Promise<void>>(),
   close: vi.fn<() => Promise<void>>(),
@@ -16,7 +17,10 @@ const sdk = vi.hoisted(() => ({
 
 vi.mock("@modelcontextprotocol/sdk/client", async () => {
   sdk.loading.resolve()
-  if (sdk.pauseLoad) await sdk.release.promise
+  if (sdk.pauseLoad) {
+    sdk.paused = true
+    await sdk.release.promise
+  }
   return {
     Client: class {
       constructor() {
@@ -57,6 +61,10 @@ it("recovers from interrupted initialization and cleans up the reused client", a
           exa.search({ query: "cancelled" }),
         )
         yield* Effect.promise(() => sdk.loading.promise)
+        expect(
+          sdk.paused,
+          "initialization must pause before interruption",
+        ).toBe(true)
         yield* Fiber.interrupt(first)
         expect(Exit.hasInterrupts(yield* Fiber.await(first))).toBe(true)
         sdk.release.resolve()

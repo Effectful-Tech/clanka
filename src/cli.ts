@@ -28,7 +28,7 @@ import * as Config from "effect/Config"
 import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
 import * as Option from "effect/Option"
 import { OpenAiClient, OpenAiEmbeddingModel } from "@effect/ai-openai"
-import { DeviceCodeHandler } from "./index.ts"
+import * as DeviceCodeHandler from "./DeviceCodeHandler.ts"
 import packageJson from "../package.json" with { type: "json" }
 
 const version = packageJson.version

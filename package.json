@@ -6,7 +6,7 @@
     "access": "public"
   },
   "bin": {
-    "clanka": "dist/cli.js"
+    "clanka": "dist/bin/cli.mjs"
   },
   "exports": {
     ".": "./dist/index.js",
@@ -17,7 +17,7 @@
     "prepare": "husky && effect-tsgo patch",
     "check": "oxlint -c .oxlintrc.json --fix && pnpm tsc -b tsconfig.json",
     "test": "vitest run",
-    "build": "tsc -b tsconfig.json",
+    "build": "tsc -b tsconfig.json && tsdown",
     "prepublishOnly": "pnpm build"
   },
   "files": [
@@ -42,7 +42,9 @@
     "tree-sitter": "^0.21.1",
     "tree-sitter-javascript": "^0.23.1",
     "tree-sitter-typescript": "^0.23.2",
-    "turndown": "^7.2.4"
+    "turndown": "^7.2.4",
+    "undici": "^8.10.2",
+    "ws": "^8.21.3"
   },
   "peerDependencies": {
     "@effect/ai-openai": ">=4.0.0-rc.115 <4.0.1",
@@ -67,6 +69,7 @@
     "lint-staged": "^17.5.1",
     "oxlint": "^1.83.0",
     "prettier": "^3.9.7",
+    "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.1"
   },

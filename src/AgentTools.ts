@@ -726,16 +726,13 @@ ${prompt}`)
       taskComplete: Effect.fn("AgentTools.taskComplete")(function* (
         message: unknown,
       ) {
-        const summary = yield* Schema.decodeUnknownEffect(Schema.String)(
-          message,
-        ).pipe(
-          Effect.mapError(
-            () =>
-              'taskComplete requires a string argument. Pass your final output directly, for example: taskComplete("done").',
-          ),
-        )
+        if (typeof message !== "string") {
+          return yield* Effect.fail(
+            'taskComplete requires a string argument. Pass your final output directly, for example: taskComplete("done").',
+          )
+        }
         const deferred = yield* TaskCompleter
-        yield* deferred(summary)
+        yield* deferred(message)
       }),
     })
   }),

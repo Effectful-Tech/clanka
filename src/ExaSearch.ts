@@ -55,7 +55,7 @@ export const layer = Layer.effect(
   ExaSearch,
   Effect.gen(function* () {
     const scope = yield* Effect.scope
-    const getClient = yield* Effect.cached(
+    const getClient = yield* Effect.cachedWithTTL(
       Effect.gen(function* () {
         const McpClient = yield* Effect.tryPromise(
           () => import("./McpClient.ts"),
@@ -63,6 +63,7 @@ export const layer = Layer.effect(
         const context = yield* Layer.buildWithScope(McpClient.layer, scope)
         return Context.get(context, McpClient.McpClient)
       }),
+      (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
     )
 
     const connect = yield* Effect.cachedWithTTL(

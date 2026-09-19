@@ -1,5 +1,15 @@
 # clanka
 
+## 0.7.2
+
+### Patch Changes
+
+- [#191](https://github.com/Effectful-Tech/clanka/pull/191) [`733973a`](https://github.com/Effectful-Tech/clanka/commit/733973a8a466e71170222ea1c04f85d988c49cc4) Thanks [@tim-smart](https://github.com/tim-smart)! - Reduce startup memory by loading MCP on the first web search and Photon on the first image preparation, and avoid root barrel imports in the CLI and output formatter.
+
+- [#191](https://github.com/Effectful-Tech/clanka/pull/191) [`733973a`](https://github.com/Effectful-Tech/clanka/commit/733973a8a466e71170222ea1c04f85d988c49cc4) Thanks [@tim-smart](https://github.com/tim-smart)! - Bundle the CLI to reduce startup memory and time while preserving lazy feature loading, sourcemaps, and existing library outputs.
+
+- [#190](https://github.com/Effectful-Tech/clanka/pull/190) [`fdb6ca9`](https://github.com/Effectful-Tech/clanka/commit/fdb6ca95d2d760b72bff1365e3e11d05dc3fe28d) Thanks [@tim-smart](https://github.com/tim-smart)! - Estimate image tokens without serializing image payloads, preventing binary and reloaded base64 images from triggering unnecessary context compaction or tail trimming.
+
 ## 0.7.1
 
 ### Patch Changes

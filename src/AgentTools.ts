@@ -273,6 +273,7 @@ export const AgentTools = Toolkit.make(
       identifier: "output",
     }),
     dependencies: [TaskCompleter],
+    failure: Schema.String,
   }),
 )
 
@@ -722,9 +723,19 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
 
 ${prompt}`)
       }, Effect.orDie),
-      taskComplete: Effect.fn("AgentTools.taskComplete")(function* (message) {
+      taskComplete: Effect.fn("AgentTools.taskComplete")(function* (
+        message: unknown,
+      ) {
+        const summary = yield* Schema.decodeUnknownEffect(Schema.String)(
+          message,
+        ).pipe(
+          Effect.mapError(
+            () =>
+              'taskComplete requires a string argument. Pass your final output directly, for example: taskComplete("done").',
+          ),
+        )
         const deferred = yield* TaskCompleter
-        yield* deferred(message)
+        yield* deferred(summary)
       }),
     })
   }),

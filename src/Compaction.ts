@@ -205,16 +205,44 @@ export const capOutput = (
 // Token accounting
 // =============================================================================
 
+// Provider image costs vary with dimensions and detail settings. Use a fixed
+// fallback until real usage arrives, never the encoded payload size.
+const imageTokenEstimate = 1_500
+
+const estimateMessageChars = (message: Prompt.Message): number => {
+  if (message.role !== "user" && message.role !== "assistant") {
+    return JSON.stringify(message).length
+  }
+  let imageTokens = 0
+  const content = message.content.map((part) => {
+    if (part.type !== "file" || !part.mediaType.startsWith("image/")) {
+      return part
+    }
+    imageTokens += imageTokenEstimate
+    // Replace the part before stringifying so binary data, base64 and URLs
+    // are all opaque, and the original prompt stays untouched.
+    return { type: part.type, mediaType: part.mediaType }
+  })
+  return JSON.stringify({ ...message, content }).length + imageTokens * 4
+}
+
 /**
- * Cheap token estimate for a Prompt: JSON length / 4. Used when no
+ * Cheap token estimate: JSON length / 4, with a fixed cost per image instead
+ * of serializing image payloads. Used when no
  * `contextTokens` usage has been observed yet (first turn, ACP session load)
  * and for sizing the kept tail.
  *
  * @since 1.0.0
  * @category Tokens
  */
-export const estimateTokens = (prompt: Prompt.Prompt): number =>
-  Math.ceil(JSON.stringify(prompt.content).length / 4)
+export const estimateTokens = (prompt: Prompt.Prompt): number => {
+  // Include the array brackets and commas, rounding only once as before.
+  let chars = 2 + Math.max(0, prompt.content.length - 1)
+  for (const message of prompt.content) {
+    chars += estimateMessageChars(message)
+  }
+  return Math.ceil(chars / 4)
+}
 
 /**
  * Token estimate for a single message. Same measure as `estimateTokens`.
@@ -223,7 +251,7 @@ export const estimateTokens = (prompt: Prompt.Prompt): number =>
  * @category Tokens
  */
 export const estimateMessageTokens = (message: Prompt.Message): number =>
-  Math.ceil(JSON.stringify(message).length / 4)
+  Math.ceil(estimateMessageChars(message) / 4)
 
 /**
  * Whether the threshold trigger fires for the next model call.

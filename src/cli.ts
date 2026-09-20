@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --optimize-for-size
 import * as Effect from "effect/Effect"
 import * as Prompt from "effect/unstable/cli/Prompt"
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient"

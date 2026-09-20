@@ -1,5 +1,11 @@
 # clanka
 
+## 0.7.6
+
+### Patch Changes
+
+- [#200](https://github.com/Effectful-Tech/clanka/pull/200) [`da54155`](https://github.com/Effectful-Tech/clanka/commit/da541551f1080ed98c1f024ebc9667530c415a3f) Thanks [@tim-smart](https://github.com/tim-smart)! - Remove the todo list tools from the agent toolkit.
+
 ## 0.7.5
 
 ### Patch Changes

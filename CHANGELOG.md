@@ -1,5 +1,11 @@
 # clanka
 
+## 0.7.4
+
+### Patch Changes
+
+- [#196](https://github.com/Effectful-Tech/clanka/pull/196) [`78e0444`](https://github.com/Effectful-Tech/clanka/commit/78e04440ecf1bc36e3b3c03c1659299cabaa4b79) Thanks [@tim-smart](https://github.com/tim-smart)! - Reduce resident memory by using Node's http client and global WebSocket instead of undici and ws, loading turndown, glob and the output formatter on first use, and emitting a comment-free ASCII-only CLI bundle.
+
 ## 0.7.3
 
 ### Patch Changes

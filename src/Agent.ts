@@ -744,8 +744,7 @@ const generateSystemTools = (
 - You can add / update / remove multiple files in one go with "applyPatch".
 - Avoid passing scripts into the "bash" function, and instead write javascript.
 - Variables are not shared between executions.
-- Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.
-- Make use of the todo functions to keep track of your progress.${
+- Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.${
   conversationMode
     ? ""
     : `

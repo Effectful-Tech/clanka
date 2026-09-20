@@ -1,5 +1,11 @@
 # clanka
 
+## 0.7.5
+
+### Patch Changes
+
+- [#198](https://github.com/Effectful-Tech/clanka/pull/198) [`284d181`](https://github.com/Effectful-Tech/clanka/commit/284d181612435e583989c8856b2f96e94354d827) Thanks [@tim-smart](https://github.com/tim-smart)! - Start the CLI with V8's `--optimize-for-size`, which favours a smaller heap over compiler throughput and cuts idle resident memory by roughly 8 to 15 MB.
+
 ## 0.7.4
 
 ### Patch Changes

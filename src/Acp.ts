@@ -8,7 +8,6 @@
  *
  * @since 1.0.0
  */
-import { randomUUID } from "node:crypto"
 import * as Cause from "effect/Cause"
 import * as Effect from "effect/Effect"
 import * as Encoding from "effect/Encoding"
@@ -661,7 +660,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     const modelId = model ?? options.defaultModel
     yield* requireModel(modelId)
     const session = yield* openSession(
-      randomUUID(),
+      crypto.randomUUID(),
       new SessionRecord({ cwd, model: modelId, history: Prompt.empty }),
     )
     yield* persist(session)

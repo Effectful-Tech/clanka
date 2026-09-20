@@ -2,7 +2,6 @@
  * @since 1.0.0
  */
 /** @effect-diagnostics schemaNumber:off */
-import * as Glob from "glob"
 import { parsePatch, patchChunks } from "./ApplyPatch.ts"
 import * as ExaSearch from "./ExaSearch.ts"
 import * as WebToMarkdown from "./WebToMarkdown.ts"
@@ -499,7 +498,9 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           Effect.annotateLogs({ pattern }),
         )
         const cwd = yield* CurrentDirectory
-        return yield* Effect.promise(() => Glob.glob(pattern, { cwd }))
+        return yield* Effect.promise(() =>
+          import("glob").then((Glob) => Glob.glob(pattern, { cwd })),
+        )
       }),
       listTodos: Effect.fn("AgentTools.listTodos")(function* () {
         yield* Effect.logInfo(`Calling "listTodos"`)

@@ -6,7 +6,6 @@ import * as Layer from "effect/Layer"
 import * as Context from "effect/Context"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import type * as HttpClientError from "effect/unstable/http/HttpClientError"
-import TurndownService from "turndown"
 
 /**
  * @since 1.0.0
@@ -71,20 +70,31 @@ export const layer = Layer.effect(
       "progress",
       "meter",
     ])
-    const turndown = new TurndownService().remove((node) =>
-      toRemove.has(node.nodeName.toLowerCase()),
+    // Turndown pulls in a full DOM implementation, so load it on first use.
+    const turndown = yield* Effect.cached(
+      Effect.map(
+        Effect.promise(() => import("turndown")),
+        ({ default: TurndownService }) =>
+          new TurndownService().remove((node) =>
+            toRemove.has(node.nodeName.toLowerCase()),
+          ),
+      ),
     )
 
-    const convertHtml = Effect.fn("WebToMarkdown.convertHtml")((html: string) =>
-      Effect.sync(() => turndown.turndown(html)),
-    )
+    const convertHtml = Effect.fn("WebToMarkdown.convertHtml")(function* (
+      html: string,
+    ) {
+      const service = yield* turndown
+      return service.turndown(html)
+    })
 
     return WebToMarkdown.of({
       convertHtml,
       convertUrl: Effect.fn("WebToMarkdown.convertUrl")(function* (url) {
         const response = yield* client.get(url)
         const html = yield* response.text
-        return turndown.turndown(html)
+        const service = yield* turndown
+        return service.turndown(html)
       }),
     })
   }),

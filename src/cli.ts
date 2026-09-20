@@ -6,7 +6,7 @@ import * as Command from "effect/unstable/cli/Command"
 import * as Flag from "effect/unstable/cli/Flag"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
-import * as NodeSocket from "@effect/platform-node/NodeSocket"
+import * as GlobalWebSocket from "./GlobalWebSocket.ts"
 import * as Acp from "./Acp.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as Codex from "./Codex.ts"
@@ -15,7 +15,6 @@ import * as Xai from "./Xai.ts"
 import * as Agent from "./Agent.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Stream from "effect/Stream"
-import * as OutputFormatter from "./OutputFormatter.ts"
 import * as Stdio from "effect/Stdio"
 import { pipe } from "effect/Function"
 import * as Layer from "effect/Layer"
@@ -32,6 +31,13 @@ import * as DeviceCodeHandler from "./DeviceCodeHandler.ts"
 import packageJson from "../package.json" with { type: "json" }
 
 const version = packageJson.version
+
+// node:http instead of undici: the undici package adds ~15 MB of RSS on top of
+// the HTTP stack Node loads anyway, and unlike fetch it imposes no request
+// timeouts on long model calls.
+const HttpClientLive = NodeHttpClient.layerNodeHttpNoAgent.pipe(
+  Layer.provide(NodeHttpClient.layerAgentOptions({ keepAlive: true })),
+)
 
 type Provider = "openai" | "copilot" | "xai"
 
@@ -177,7 +183,7 @@ const Search = (directory: string) =>
         ),
       )
     }),
-  ).pipe(Layer.provide([NodeServices.layer, NodeHttpClient.layerUndici]))
+  ).pipe(Layer.provide([NodeServices.layer, HttpClientLive]))
 
 const acpModel = Flag.String("model").pipe(
   Flag.withAlias("m"),
@@ -231,6 +237,9 @@ Command.make("clanka", {
       prompt: nonInteractivePrompt,
     }) {
       const stdio = yield* Stdio.Stdio
+      const OutputFormatter = yield* Effect.promise(
+        () => import("./OutputFormatter.ts"),
+      )
       const selectedModel = yield* Option.match(modelRaw, {
         onSome: Effect.succeed,
         onNone: () =>
@@ -304,8 +313,8 @@ Command.make("clanka", {
   Effect.provide([
     NodeServices.layer,
     Kvs,
-    NodeHttpClient.layerUndici,
-    NodeSocket.layerWebSocketConstructorWS,
+    HttpClientLive,
+    GlobalWebSocket.layerWebSocketConstructor,
     DeviceCodeHandler.layerConsole,
   ]),
   NodeRuntime.runMain,

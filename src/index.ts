@@ -42,6 +42,11 @@ export * as Compaction from "./Compaction.ts"
 /**
  * @since 1.0.0
  */
+export * as GlobalWebSocket from "./GlobalWebSocket.ts"
+
+/**
+ * @since 1.0.0
+ */
 export * as Image from "./Image.ts"
 
 /**

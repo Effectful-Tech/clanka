@@ -138,6 +138,70 @@ const SetModelParams = Schema.Struct({
   modelId: Schema.String,
 })
 
+const SetConfigOptionParams = Schema.Struct({
+  sessionId: Schema.String,
+  configId: Schema.String,
+  value: Schema.String,
+})
+
+const thoughtLevels = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const
+
+type ThoughtLevel = (typeof thoughtLevels)[number]
+
+interface ParsedModelId {
+  readonly provider: string
+  readonly model: string
+  readonly effort: string
+}
+
+const parseLegacyModelId = (modelId: string): ParsedModelId | undefined => {
+  const [provider, model, effort, ...rest] = modelId.split("/")
+  return provider !== undefined &&
+    provider.length > 0 &&
+    model !== undefined &&
+    model.length > 0 &&
+    effort !== undefined &&
+    effort.length > 0 &&
+    rest.length === 0
+    ? { provider, model, effort }
+    : undefined
+}
+
+const parseCanonicalModelId = (
+  modelId: string,
+): Omit<ParsedModelId, "effort"> | undefined => {
+  const separator = modelId.indexOf(":")
+  if (
+    separator <= 0 ||
+    separator === modelId.length - 1 ||
+    modelId.includes("/")
+  ) {
+    return undefined
+  }
+  return {
+    provider: modelId.slice(0, separator),
+    model: modelId.slice(separator + 1),
+  }
+}
+
+const toCanonicalModelId = (modelId: string) => {
+  const parsed = parseLegacyModelId(modelId)
+  return parsed === undefined ? modelId : `${parsed.provider}:${parsed.model}`
+}
+
+const toLegacyModelId = (
+  model: Omit<ParsedModelId, "effort">,
+  effort: string,
+) => `${model.provider}/${model.model}/${effort}`
+
 const TextBlock = Schema.Struct({
   type: Schema.Literal("text"),
   text: Schema.String,
@@ -305,12 +369,56 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         new RpcError({ code: -32602, message: `Unknown model: ${modelId}` }),
     )
 
+  const resolveModelId = (
+    modelId: string,
+    preferredEfforts: ReadonlyArray<string>,
+  ): Effect.Effect<string, RpcError> => {
+    const canonical = parseCanonicalModelId(modelId)
+    if (canonical === undefined) {
+      return requireModel(modelId).pipe(Effect.as(modelId))
+    }
+
+    const efforts = [
+      ...new Set([
+        ...preferredEfforts.filter((effort): effort is ThoughtLevel =>
+          thoughtLevels.includes(effort as ThoughtLevel),
+        ),
+        ...thoughtLevels,
+      ]),
+    ]
+    for (const effort of efforts) {
+      const internalModelId = toLegacyModelId(canonical, effort)
+      if (Option.isSome(options.makeModel(internalModelId))) {
+        return Effect.succeed(internalModelId)
+      }
+    }
+    return Effect.fail(
+      new RpcError({ code: -32602, message: `Unknown model: ${modelId}` }),
+    )
+  }
+
   const modelsInfo = (session: Session) => ({
-    availableModels: [...new Set([session.model, options.defaultModel])].map(
-      (modelId) => ({ modelId, name: modelId }),
-    ),
-    currentModelId: session.model,
+    availableModels: [...new Set([session.model, options.defaultModel])]
+      .map(toCanonicalModelId)
+      .filter((modelId, index, models) => models.indexOf(modelId) === index)
+      .map((modelId) => ({ modelId, name: modelId })),
+    currentModelId: toCanonicalModelId(session.model),
   })
+
+  const configOptions = (session: Session) => {
+    const model = parseLegacyModelId(session.model)
+    if (model === undefined) return []
+    return [
+      {
+        id: "thought_level",
+        name: "Thought level",
+        category: "thought_level",
+        type: "select",
+        currentValue: model.effort,
+        options: thoughtLevels.map((value) => ({ value, name: value })),
+      },
+    ]
+  }
 
   const persist = (session: Session) =>
     store
@@ -657,14 +765,21 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
 
   const newSession = Effect.fnUntraced(function* (params: unknown) {
     const { cwd, model } = yield* decodeParams(NewSessionParams, params)
-    const modelId = model ?? options.defaultModel
-    yield* requireModel(modelId)
+    const defaultEffort = parseLegacyModelId(options.defaultModel)?.effort
+    const modelId = yield* resolveModelId(
+      model ?? options.defaultModel,
+      defaultEffort === undefined ? [] : [defaultEffort],
+    )
     const session = yield* openSession(
       crypto.randomUUID(),
       new SessionRecord({ cwd, model: modelId, history: Prompt.empty }),
     )
     yield* persist(session)
-    return { sessionId: session.id, models: modelsInfo(session) }
+    return {
+      sessionId: session.id,
+      models: modelsInfo(session),
+      configOptions: configOptions(session),
+    }
   })
 
   const loadSession = Effect.fnUntraced(function* (
@@ -677,7 +792,10 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     )
     const existing = sessions.get(sessionId)
     if (existing !== undefined) {
-      return { models: modelsInfo(existing) }
+      return {
+        models: modelsInfo(existing),
+        configOptions: configOptions(existing),
+      }
     }
     const record = yield* store
       .get(sessionId)
@@ -689,8 +807,14 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     if (Option.isNone(record)) {
       return yield* sessionNotFound(sessionId)
     }
-    const modelId = model ?? record.value.model
-    yield* requireModel(modelId)
+    const recordEffort = parseLegacyModelId(record.value.model)?.effort
+    const defaultEffort = parseLegacyModelId(options.defaultModel)?.effort
+    const modelId = yield* resolveModelId(
+      model ?? record.value.model,
+      [recordEffort, defaultEffort].filter(
+        (effort): effort is string => effort !== undefined,
+      ),
+    )
     const session = yield* openSession(
       sessionId,
       new SessionRecord({
@@ -702,16 +826,54 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     if (replay) {
       yield* replayHistory(session)
     }
-    return { models: modelsInfo(session) }
+    return {
+      models: modelsInfo(session),
+      configOptions: configOptions(session),
+    }
   })
 
   const setModel = Effect.fnUntraced(function* (params: unknown) {
     const { sessionId, modelId } = yield* decodeParams(SetModelParams, params)
     const session = yield* getSession(sessionId)
+    const currentEffort = parseLegacyModelId(session.model)?.effort
+    const defaultEffort = parseLegacyModelId(options.defaultModel)?.effort
+    session.model = yield* resolveModelId(
+      modelId,
+      [currentEffort, defaultEffort].filter(
+        (effort): effort is string => effort !== undefined,
+      ),
+    )
+    yield* persist(session)
+    return {}
+  })
+
+  const setConfigOption = Effect.fnUntraced(function* (params: unknown) {
+    const { sessionId, configId, value } = yield* decodeParams(
+      SetConfigOptionParams,
+      params,
+    )
+    const session = yield* getSession(sessionId)
+    if (
+      configId !== "thought_level" ||
+      !thoughtLevels.includes(value as ThoughtLevel)
+    ) {
+      return yield* invalidParams(
+        configId === "thought_level"
+          ? `Unsupported thought level: ${value}`
+          : `Unknown config option: ${configId}`,
+      )
+    }
+    const model = parseLegacyModelId(session.model)
+    if (model === undefined) {
+      return yield* invalidParams(
+        `Config option ${configId} is unavailable for model ${session.model}`,
+      )
+    }
+    const modelId = toLegacyModelId(model, value)
     yield* requireModel(modelId)
     session.model = modelId
     yield* persist(session)
-    return {}
+    return { configOptions: configOptions(session) }
   })
 
   const prompt = Effect.fnUntraced(function* (params: unknown) {
@@ -757,8 +919,9 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         return initialize
       case "authenticate":
       case "session/set_mode":
-      case "session/set_config_option":
         return Effect.succeed({})
+      case "session/set_config_option":
+        return setConfigOption(params)
       case "session/new":
         return newSession(params)
       case "session/load":

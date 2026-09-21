@@ -91,7 +91,8 @@ export class Usage extends Schema.TaggedClass<Usage>()("Usage", {
   /**
    * Cumulative provider-reported cache reads. This is a provider-specific
    * breakdown of input usage, not additional input to add to `inputTokens`.
-   * Zero means no cache reads were reported, not that none occurred.
+   * Zero is the total of values reported by providers. It does not distinguish
+   * unreported usage from no cache activity.
    */
   cacheRead: Schema.Number.pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(0)),
@@ -100,7 +101,8 @@ export class Usage extends Schema.TaggedClass<Usage>()("Usage", {
   /**
    * Cumulative provider-reported cache writes. This is a provider-specific
    * breakdown of input usage, not additional input to add to `inputTokens`.
-   * Zero means no cache writes were reported, not that none occurred.
+   * Zero is the total of values reported by providers. It does not distinguish
+   * unreported usage from no cache activity.
    */
   cacheWrite: Schema.Number.pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(0)),

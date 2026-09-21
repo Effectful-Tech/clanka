@@ -88,17 +88,11 @@ export class Usage extends Schema.TaggedClass<Usage>()("Usage", {
   inputTokens: Schema.Number,
   outputTokens: Schema.Number,
   /**
-   * Cumulative provider-reported cache reads. This is a provider-specific
-   * breakdown of input usage, not additional input to add to `inputTokens`.
-   * Zero is the total of values reported by providers. It does not distinguish
-   * unreported usage from no cache activity.
+   * Cumulative cache reads included in `inputTokens`. Zero is not proof of no cache activity.
    */
   cacheRead: Schema.Number,
   /**
-   * Cumulative provider-reported cache writes. This is a provider-specific
-   * breakdown of input usage, not additional input to add to `inputTokens`.
-   * Zero is the total of values reported by providers. It does not distinguish
-   * unreported usage from no cache activity.
+   * Cumulative cache writes included in `inputTokens`. Zero is not proof of no cache activity.
    */
   cacheWrite: Schema.Number,
 }) {}

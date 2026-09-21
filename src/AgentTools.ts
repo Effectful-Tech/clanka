@@ -124,7 +124,8 @@ export const AgentTools = Toolkit.make(
     dependencies: [CurrentDirectory, ImageAttacher],
   }),
   Tool.make("rg", {
-    description: "Search for a pattern in files using ripgrep",
+    description:
+      "Search for a pattern in files using ripgrep. Root-relative globs include ignored and hidden files. A wildcard glob that names a directory first respects ignore rules, then retries with ignored and hidden files only when that search is empty. If the first search returns any matches, the fallback is skipped, so results can omit matching files from ignored directories.",
     parameters: Schema.Struct({
       pattern: Schema.String,
       glob: Schema.optional(Schema.String).annotate({
@@ -446,27 +447,38 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         if (options.filesOnly) {
           args.push("--files-with-matches")
         }
+        const searchesIgnoredFiles =
+          options.glob !== undefined && !options.glob.startsWith("*")
         if (options.glob) {
           args.push("--glob", options.glob)
-          if (
-            !options.glob.startsWith("*") ||
-            globNamesDirectory(options.glob)
-          ) {
+          if (searchesIgnoredFiles) {
             args.push("-uu")
           }
         }
         args.push(options.pattern)
-        let stream = spawner.streamLines(
-          ChildProcess.make("rg", args, {
-            cwd,
-            stdin: "ignore",
-          }),
-        )
-        stream = Stream.take(stream, options.maxLines ?? 500)
-        return yield* Stream.runCollect(stream).pipe(
-          Effect.map(Array.join("\n")),
-          Effect.orDie,
-        )
+        const run = Effect.fnUntraced(function* (args: Array<string>) {
+          let stream = spawner.streamLines(
+            ChildProcess.make("rg", args, {
+              cwd,
+              stdin: "ignore",
+            }),
+          )
+          stream = Stream.take(stream, options.maxLines ?? 500)
+          return yield* Stream.runCollect(stream).pipe(
+            Effect.map(Array.join("\n")),
+            Effect.orDie,
+          )
+        })
+        const output = yield* run(args)
+        if (
+          output.length > 0 ||
+          searchesIgnoredFiles ||
+          options.glob === undefined ||
+          !globNamesDirectory(options.glob)
+        ) {
+          return output
+        }
+        return yield* run(args.slice(0, -1).concat("-uu", options.pattern))
       }),
       glob: Effect.fn("AgentTools.glob")(function* (pattern) {
         yield* Effect.logInfo(`Calling "glob"`).pipe(

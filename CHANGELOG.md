@@ -1,5 +1,13 @@
 # clanka
 
+## 0.8.0
+
+### Minor Changes
+
+- [#205](https://github.com/Effectful-Tech/clanka/pull/205) [`0dcf681`](https://github.com/Effectful-Tech/clanka/commit/0dcf6812d250ecb437c75f953ae9250e903978a8) Thanks [@tim-smart](https://github.com/tim-smart)! - Report cumulative cache read and write tokens on usage events and the ACP usage extension. `Usage` now requires both fields.
+
+  Those counts are included in `inputTokens`, not added to them. Zero does not distinguish an unreported value from no cache activity.
+
 ## 0.7.7
 
 ### Patch Changes

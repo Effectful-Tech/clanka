@@ -154,7 +154,7 @@ describe("Acp", () => {
     ),
   )
 
-  it.effect("reports cache usage in the Multica usage payload", () =>
+  it.effect("reports cache usage in the ACP usage extension", () =>
     withStore(
       Effect.scoped(
         Effect.gen(function* () {

@@ -1,5 +1,13 @@
 # clanka
 
+## 0.7.7
+
+### Patch Changes
+
+- [#202](https://github.com/Effectful-Tech/clanka/pull/202) [`4f79755`](https://github.com/Effectful-Tech/clanka/commit/4f79755247f0e41fa84a48d9eb84924e50d2a2d7) Thanks [@tim-smart](https://github.com/tim-smart)! - Report ACP models as canonical `provider:model` IDs and expose reasoning effort through the `thought_level` config option.
+
+- [#203](https://github.com/Effectful-Tech/clanka/pull/203) [`5daae65`](https://github.com/Effectful-Tech/clanka/commit/5daae656cb3d7ca22c835ba32b9fb0734bedb420) Thanks [@tim-smart](https://github.com/tim-smart)! - Allow `rg` wildcard glob searches that name a directory to retry with ignored and hidden files when the normal search returns no matches. The fallback is skipped when the normal search finds any matches, so partial results can omit matching files from ignored directories.
+
 ## 0.7.6
 
 ### Patch Changes

@@ -87,6 +87,8 @@ export class Usage extends Schema.TaggedClass<Usage>()("Usage", {
   contextTokens: Schema.Number,
   inputTokens: Schema.Number,
   outputTokens: Schema.Number,
+  cacheRead: Schema.Number,
+  cacheWrite: Schema.Number,
 }) {}
 
 /**

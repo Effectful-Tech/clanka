@@ -655,6 +655,8 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
             usage: {
               inputTokens: part.inputTokens,
               outputTokens: part.outputTokens,
+              cacheRead: part.cacheRead,
+              cacheWrite: part.cacheWrite,
             },
           })
         case "ErrorRetry":

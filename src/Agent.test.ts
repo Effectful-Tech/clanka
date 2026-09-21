@@ -18,7 +18,7 @@ import type * as Response from "effect/unstable/ai/Response"
 import * as ResponseIdTracker from "effect/unstable/ai/ResponseIdTracker"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
-import type * as AgentOutput from "./AgentOutput.ts"
+import * as AgentOutput from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
 
 const capabilities = new AgentExecutor.Capabilities({
@@ -310,11 +310,19 @@ const toolCall = (id: string, script: string): Response.StreamPartEncoded => ({
 const finish = (
   contextTokens: number,
   reason: "stop" | "tool-calls" = "tool-calls",
+  cache: {
+    readonly read?: number | undefined
+    readonly write?: number | undefined
+  } = {},
 ): Response.StreamPartEncoded => ({
   type: "finish",
   reason,
   usage: {
-    inputTokens: { total: contextTokens },
+    inputTokens: {
+      total: contextTokens,
+      cacheRead: cache.read,
+      cacheWrite: cache.write,
+    },
     outputTokens: { total: 10 },
   },
 })
@@ -523,6 +531,50 @@ it.layer(localExecutorLayer, { excludeTestServices: true })(
 )
 
 // --- tests -------------------------------------------------------------------
+
+describe("Agent usage", () => {
+  it.effect("accumulates provider cache reads and writes", () =>
+    Effect.gen(function* () {
+      const { exit, outputs } = yield* runAgentCollect({
+        executor: makeExecutor(() => Stream.succeed("done")),
+        respond: (_call, index) => {
+          switch (index) {
+            case 0:
+              return Stream.fromIterable([
+                toolCall("call-1", "console.log('done')"),
+                finish(100, "tool-calls", { read: 25, write: 5 }),
+              ])
+            case 1:
+              return Stream.fromIterable([
+                ...text("complete"),
+                finish(60, "stop", { read: 15, write: 3 }),
+              ])
+            default:
+              return Stream.die(`unexpected model call #${index}`)
+          }
+        },
+      })
+
+      assert.deepStrictEqual(exit, Exit.succeed("complete"))
+      assert.deepStrictEqual(outputsOfTag(outputs, "Usage"), [
+        new AgentOutput.Usage({
+          contextTokens: 100,
+          inputTokens: 100,
+          outputTokens: 10,
+          cacheRead: 25,
+          cacheWrite: 5,
+        }),
+        new AgentOutput.Usage({
+          contextTokens: 60,
+          inputTokens: 160,
+          outputTokens: 20,
+          cacheRead: 40,
+          cacheWrite: 8,
+        }),
+      ])
+    }),
+  )
+})
 
 describe("Agent execute output cap", () => {
   const dump = "DUMP-HEAD " + filler("log", 40_000) + " DUMP-TAIL"

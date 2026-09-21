@@ -211,6 +211,8 @@ ${content}
     const output = yield* Queue.make<Output, AgentFinished | AiError.AiError>()
     let inputTokens = 0
     let outputTokens = 0
+    let cacheRead = 0
+    let cacheWrite = 0
     const prompt = opts.disableHistory ? MutableRef.make(Prompt.empty) : history
 
     MutableRef.update(prompt, Prompt.concat(opts.prompt))
@@ -536,6 +538,12 @@ ${content}
                   if (usage.outputTokens.total !== undefined) {
                     outputTokens += usage.outputTokens.total
                   }
+                  if (usage.inputTokens.cacheRead !== undefined) {
+                    cacheRead += usage.inputTokens.cacheRead
+                  }
+                  if (usage.inputTokens.cacheWrite !== undefined) {
+                    cacheWrite += usage.inputTokens.cacheWrite
+                  }
                   if (usage.inputTokens.total !== undefined) {
                     lastContextTokens = usage.inputTokens.total
                     inputTokens += usage.inputTokens.total
@@ -545,6 +553,8 @@ ${content}
                         contextTokens: usage.inputTokens.total,
                         inputTokens,
                         outputTokens,
+                        cacheRead,
+                        cacheWrite,
                       }),
                     })
                   }

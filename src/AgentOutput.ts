@@ -87,6 +87,14 @@ export class Usage extends Schema.TaggedClass<Usage>()("Usage", {
   contextTokens: Schema.Number,
   inputTokens: Schema.Number,
   outputTokens: Schema.Number,
+  /**
+   * Cumulative cache reads included in `inputTokens`. Zero is not proof of no cache activity.
+   */
+  cacheRead: Schema.Number,
+  /**
+   * Cumulative cache writes included in `inputTokens`. Zero is not proof of no cache activity.
+   */
+  cacheWrite: Schema.Number,
 }) {}
 
 /**

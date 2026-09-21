@@ -82,6 +82,12 @@ export class ImageAttacher extends Context.Service<
   (image: ImageAttachment) => Effect.Effect<void>
 >()("clanka/AgentTools/ImageAttacher") {}
 
+const globNamesDirectory = (glob: string) =>
+  glob
+    .split("/")
+    .slice(0, -1)
+    .some((segment) => segment.length > 0 && !/[*?[\]{}]/.test(segment))
+
 /**
  * @since 1.0.0
  * @category Context
@@ -440,24 +446,38 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         if (options.filesOnly) {
           args.push("--files-with-matches")
         }
+        const searchesIgnoredFiles =
+          options.glob !== undefined && !options.glob.startsWith("*")
         if (options.glob) {
           args.push("--glob", options.glob)
-          if (!options.glob.startsWith("*")) {
+          if (searchesIgnoredFiles) {
             args.push("-uu")
           }
         }
         args.push(options.pattern)
-        let stream = spawner.streamLines(
-          ChildProcess.make("rg", args, {
-            cwd,
-            stdin: "ignore",
-          }),
-        )
-        stream = Stream.take(stream, options.maxLines ?? 500)
-        return yield* Stream.runCollect(stream).pipe(
-          Effect.map(Array.join("\n")),
-          Effect.orDie,
-        )
+        const run = Effect.fnUntraced(function* (args: Array<string>) {
+          let stream = spawner.streamLines(
+            ChildProcess.make("rg", args, {
+              cwd,
+              stdin: "ignore",
+            }),
+          )
+          stream = Stream.take(stream, options.maxLines ?? 500)
+          return yield* Stream.runCollect(stream).pipe(
+            Effect.map(Array.join("\n")),
+            Effect.orDie,
+          )
+        })
+        const output = yield* run(args)
+        if (
+          output.length > 0 ||
+          searchesIgnoredFiles ||
+          options.glob === undefined ||
+          !globNamesDirectory(options.glob)
+        ) {
+          return output
+        }
+        return yield* run(args.slice(0, -1).concat("-uu", options.pattern))
       }),
       glob: Effect.fn("AgentTools.glob")(function* (pattern) {
         yield* Effect.logInfo(`Calling "glob"`).pipe(

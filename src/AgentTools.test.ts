@@ -20,9 +20,13 @@ const withProject = <A, E, R>(f: Effect.Effect<A, E, R>) =>
       "node_modules/\n",
     )
     yield* fs.makeDirectory(path.join(project, "src"))
+    yield* fs.makeDirectory(path.join(project, ".git", "src"))
     yield* fs.makeDirectory(path.join(project, "node_modules", "dependency"), {
       recursive: true,
     })
+    yield* fs.makeDirectory(
+      path.join(project, "node_modules", "dependency", "src"),
+    )
     yield* fs.writeFileString(
       path.join(project, "src", "visible.ts"),
       `${match} visible`,
@@ -30,6 +34,14 @@ const withProject = <A, E, R>(f: Effect.Effect<A, E, R>) =>
     yield* fs.writeFileString(
       path.join(project, "node_modules", "dependency", "ignored.ts"),
       `${match} ignored`,
+    )
+    yield* fs.writeFileString(
+      path.join(project, "node_modules", "dependency", "src", "inner.ts"),
+      `${match} ignored dependency source`,
+    )
+    yield* fs.writeFileString(
+      path.join(project, ".git", "src", "hidden.ts"),
+      `${match} hidden git source`,
     )
 
     return yield* f.pipe(
@@ -69,6 +81,17 @@ describe("rg", () => {
         const output = yield* rg("**/*.ts")
         assert.include(output, "src/visible.ts")
         assert.notInclude(output, "node_modules/dependency/ignored.ts")
+      }),
+    ),
+  )
+
+  it.effect("does not search ignored paths for an ordinary scoped glob", () =>
+    withProject(
+      Effect.gen(function* () {
+        const output = yield* rg("**/src/*.ts")
+        assert.include(output, "src/visible.ts")
+        assert.notInclude(output, "node_modules/dependency/src/inner.ts")
+        assert.notInclude(output, ".git/src/hidden.ts")
       }),
     ),
   )

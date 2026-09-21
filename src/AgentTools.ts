@@ -82,6 +82,12 @@ export class ImageAttacher extends Context.Service<
   (image: ImageAttachment) => Effect.Effect<void>
 >()("clanka/AgentTools/ImageAttacher") {}
 
+const globNamesDirectory = (glob: string) =>
+  glob
+    .split("/")
+    .slice(0, -1)
+    .some((segment) => segment.length > 0 && !/[*?[\]{}]/.test(segment))
+
 /**
  * @since 1.0.0
  * @category Context
@@ -442,7 +448,10 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         }
         if (options.glob) {
           args.push("--glob", options.glob)
-          if (!options.glob.startsWith("*")) {
+          if (
+            !options.glob.startsWith("*") ||
+            globNamesDirectory(options.glob)
+          ) {
             args.push("-uu")
           }
         }

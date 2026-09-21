@@ -54,6 +54,7 @@ import {
   ReasoningStart,
   ReasoningDelta,
   ReasoningEnd,
+  Usage,
   ErrorRetry,
   ScriptStart,
   ScriptDelta,
@@ -548,14 +549,13 @@ ${content}
                     inputTokens += usage.inputTokens.total
                     maybeSend({
                       agentId,
-                      part: {
-                        _tag: "Usage",
+                      part: new Usage({
                         contextTokens: usage.inputTokens.total,
                         inputTokens,
                         outputTokens,
                         cacheRead,
                         cacheWrite,
-                      },
+                      }),
                     })
                   }
                   break

@@ -4,6 +4,7 @@
 /** @effect-diagnostics schemaNumber:off */
 import * as Prompt from "effect/unstable/ai/Prompt"
 import * as AiError from "effect/unstable/ai/AiError"
+import * as Effect from "effect/Effect"
 import * as Schema from "effect/Schema"
 
 /**
@@ -87,8 +88,24 @@ export class Usage extends Schema.TaggedClass<Usage>()("Usage", {
   contextTokens: Schema.Number,
   inputTokens: Schema.Number,
   outputTokens: Schema.Number,
-  cacheRead: Schema.Number,
-  cacheWrite: Schema.Number,
+  /**
+   * Cumulative provider-reported cache reads. This is a provider-specific
+   * breakdown of input usage, not additional input to add to `inputTokens`.
+   * Zero means no cache reads were reported, not that none occurred.
+   */
+  cacheRead: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(0)),
+    Schema.withConstructorDefault(Effect.succeed(0)),
+  ),
+  /**
+   * Cumulative provider-reported cache writes. This is a provider-specific
+   * breakdown of input usage, not additional input to add to `inputTokens`.
+   * Zero means no cache writes were reported, not that none occurred.
+   */
+  cacheWrite: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(0)),
+    Schema.withConstructorDefault(Effect.succeed(0)),
+  ),
 }) {}
 
 /**

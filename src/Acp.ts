@@ -56,6 +56,10 @@ export interface Options<RAgent, RModel> {
    */
   readonly defaultModel: string
   /**
+   * Thought level used for new sessions.
+   */
+  readonly defaultThoughtLevel: ThoughtLevel
+  /**
    * Write one JSON-RPC message to the client.
    */
   readonly send: (message: object) => Effect.Effect<void>
@@ -66,10 +70,12 @@ export interface Options<RAgent, RModel> {
     cwd: string,
   ) => Effect.Effect<Agent.Agent, never, Scope.Scope | RAgent>
   /**
-   * Resolve a model id to the services an Agent needs. `None` rejects the id.
+   * Resolve a model id and thought level to the services an Agent needs.
+   * `None` rejects the combination.
    */
   readonly makeModel: (
     modelId: string,
+    thoughtLevel: ThoughtLevel,
   ) => Option.Option<Layer.Layer<ModelServices, never, RModel>>
 }
 
@@ -86,6 +92,29 @@ export interface Server<R = never> {
 }
 
 /**
+ * Reasoning effort levels offered through the ACP `thought_level` config
+ * option.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export const ThoughtLevel = Schema.Literals([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+])
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export type ThoughtLevel = typeof ThoughtLevel.Type
+
+/**
  * @since 1.0.0
  * @category Models
  */
@@ -94,6 +123,7 @@ export class SessionRecord extends Schema.Class<SessionRecord>(
 )({
   cwd: Schema.String,
   model: Schema.String,
+  thoughtLevel: ThoughtLevel,
   history: Prompt.Prompt,
 }) {}
 
@@ -136,6 +166,12 @@ const SessionIdParams = Schema.Struct({
 const SetModelParams = Schema.Struct({
   sessionId: Schema.String,
   modelId: Schema.String,
+})
+
+const SetConfigOptionParams = Schema.Struct({
+  sessionId: Schema.String,
+  configId: Schema.Literal("thought_level"),
+  value: ThoughtLevel,
 })
 
 const TextBlock = Schema.Struct({
@@ -257,6 +293,7 @@ interface Session {
   readonly id: string
   readonly cwd: string
   model: string
+  thoughtLevel: ThoughtLevel
   readonly agent: Agent.Agent
   running: Fiber.Fiber<void, unknown> | undefined
   toolCalls: number
@@ -298,18 +335,32 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       sessionNotFound(sessionId),
     )
 
-  const requireModel = (modelId: string) =>
+  const requireModel = (modelId: string, thoughtLevel: ThoughtLevel) =>
     Effect.fromOption(
-      options.makeModel(modelId),
+      options.makeModel(modelId, thoughtLevel),
       () =>
         new RpcError({ code: -32602, message: `Unknown model: ${modelId}` }),
     )
 
-  const modelsInfo = (session: Session) => ({
-    availableModels: [...new Set([session.model, options.defaultModel])].map(
-      (modelId) => ({ modelId, name: modelId }),
-    ),
-    currentModelId: session.model,
+  const configOptions = (session: Session) => [
+    {
+      id: "thought_level",
+      name: "Thought level",
+      category: "thought_level",
+      type: "select",
+      currentValue: session.thoughtLevel,
+      options: ThoughtLevel.literals.map((value) => ({ value, name: value })),
+    },
+  ]
+
+  const sessionState = (session: Session) => ({
+    models: {
+      availableModels: [...new Set([session.model, options.defaultModel])].map(
+        (modelId) => ({ modelId, name: modelId }),
+      ),
+      currentModelId: session.model,
+    },
+    configOptions: configOptions(session),
   })
 
   const persist = (session: Session) =>
@@ -319,6 +370,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         new SessionRecord({
           cwd: session.cwd,
           model: session.model,
+          thoughtLevel: session.thoughtLevel,
           history: session.agent.history.current,
         }),
       )
@@ -338,6 +390,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       id,
       cwd: record.cwd,
       model: record.model,
+      thoughtLevel: record.thoughtLevel,
       agent,
       running: undefined,
       toolCalls: 0,
@@ -658,13 +711,19 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
   const newSession = Effect.fnUntraced(function* (params: unknown) {
     const { cwd, model } = yield* decodeParams(NewSessionParams, params)
     const modelId = model ?? options.defaultModel
-    yield* requireModel(modelId)
+    const thoughtLevel = options.defaultThoughtLevel
+    yield* requireModel(modelId, thoughtLevel)
     const session = yield* openSession(
       crypto.randomUUID(),
-      new SessionRecord({ cwd, model: modelId, history: Prompt.empty }),
+      new SessionRecord({
+        cwd,
+        model: modelId,
+        thoughtLevel,
+        history: Prompt.empty,
+      }),
     )
     yield* persist(session)
-    return { sessionId: session.id, models: modelsInfo(session) }
+    return { sessionId: session.id, ...sessionState(session) }
   })
 
   const loadSession = Effect.fnUntraced(function* (
@@ -677,7 +736,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     )
     const existing = sessions.get(sessionId)
     if (existing !== undefined) {
-      return { models: modelsInfo(existing) }
+      return sessionState(existing)
     }
     const record = yield* store
       .get(sessionId)
@@ -690,28 +749,41 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       return yield* sessionNotFound(sessionId)
     }
     const modelId = model ?? record.value.model
-    yield* requireModel(modelId)
+    yield* requireModel(modelId, record.value.thoughtLevel)
     const session = yield* openSession(
       sessionId,
       new SessionRecord({
         cwd: cwd ?? record.value.cwd,
         model: modelId,
+        thoughtLevel: record.value.thoughtLevel,
         history: record.value.history,
       }),
     )
     if (replay) {
       yield* replayHistory(session)
     }
-    return { models: modelsInfo(session) }
+    return sessionState(session)
   })
 
   const setModel = Effect.fnUntraced(function* (params: unknown) {
     const { sessionId, modelId } = yield* decodeParams(SetModelParams, params)
     const session = yield* getSession(sessionId)
-    yield* requireModel(modelId)
+    yield* requireModel(modelId, session.thoughtLevel)
     session.model = modelId
     yield* persist(session)
     return {}
+  })
+
+  const setConfigOption = Effect.fnUntraced(function* (params: unknown) {
+    const { sessionId, value } = yield* decodeParams(
+      SetConfigOptionParams,
+      params,
+    )
+    const session = yield* getSession(sessionId)
+    yield* requireModel(session.model, value)
+    session.thoughtLevel = value
+    yield* persist(session)
+    return { configOptions: configOptions(session) }
   })
 
   const prompt = Effect.fnUntraced(function* (params: unknown) {
@@ -723,7 +795,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         message: `Session ${sessionId} already has a prompt in progress`,
       })
     }
-    const model = yield* requireModel(session.model)
+    const model = yield* requireModel(session.model, session.thoughtLevel)
     // Resolve images before the turn starts, so a bad block rejects the
     // request without a model call.
     const input = yield* promptFromBlocks(session.cwd, prompt)
@@ -757,8 +829,9 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         return initialize
       case "authenticate":
       case "session/set_mode":
-      case "session/set_config_option":
         return Effect.succeed({})
+      case "session/set_config_option":
+        return setConfigOption(params)
       case "session/new":
         return newSession(params)
       case "session/load":

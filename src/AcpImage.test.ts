@@ -82,6 +82,7 @@ const makeServer = Effect.fnUntraced(function* () {
   const server = yield* Acp.make({
     version: "test",
     defaultModel: "test/model",
+    defaultThoughtLevel: "medium",
     send: (message) =>
       Effect.sync(() => {
         sent.push(message as Message)

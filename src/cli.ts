@@ -64,14 +64,25 @@ const modelLayer = (provider: Provider, model: string, effort: string) =>
           Layer.provide(Copilot.layerClient),
         )
 
+const isProvider = (provider: string | undefined): provider is Provider =>
+  providers.includes(provider as Provider)
+
+// `<provider>/<model>/<effort>` as accepted by the `acp` --model flag.
 const parseModelId = (modelId: string) => {
   const [provider, model, effort, ...rest] = modelId.split("/")
-  return provider !== undefined &&
-    providers.includes(provider as Provider) &&
+  return isProvider(provider) &&
     model !== undefined &&
-    effort !== undefined &&
+    Schema.is(Acp.ThoughtLevel)(effort) &&
     rest.length === 0
-    ? Option.some({ provider: provider as Provider, model, effort })
+    ? Option.some({ model: `${provider}:${model}`, thoughtLevel: effort })
+    : Option.none()
+}
+
+// `<provider>:<model>` as advertised over ACP.
+const parseAcpModelId = (modelId: string) => {
+  const [provider, model, ...rest] = modelId.split(":")
+  return isProvider(provider) && model !== undefined && rest.length === 0
+    ? Option.some({ provider, model })
     : Option.none()
 }
 
@@ -80,7 +91,7 @@ const ModelId = Schema.String.pipe(
     Schema.makeFilter(
       (modelId: string) =>
         Option.isSome(parseModelId(modelId)) ||
-        `Invalid model "${modelId}", expected <provider>/<model>/<effort>`,
+        `Invalid model "${modelId}", expected <provider>/<model>/<effort> with effort one of ${Acp.ThoughtLevel.literals.join(", ")}`,
     ),
   ),
 )
@@ -192,6 +203,7 @@ const acpModel = Flag.String("model").pipe(
   ),
   Flag.withSchema(ModelId),
   Flag.withDefault("openai/gpt-6-astra/medium"),
+  Flag.map((modelId) => Option.getOrThrow(parseModelId(modelId))),
 )
 
 const acp = Command.make("acp", { model: acpModel, compaction }).pipe(
@@ -201,14 +213,15 @@ const acp = Command.make("acp", { model: acpModel, compaction }).pipe(
   Command.withHandler(({ model }) =>
     Acp.runStdio({
       version,
-      defaultModel: model,
+      defaultModel: model.model,
+      defaultThoughtLevel: model.thoughtLevel,
       makeAgent: (cwd) =>
         Agent.make.pipe(
           Effect.provide(AgentExecutor.layerLocal({ directory: cwd })),
         ),
-      makeModel: (modelId) =>
-        Option.map(parseModelId(modelId), ({ provider, model, effort }) =>
-          modelLayer(provider, model, effort),
+      makeModel: (modelId, thoughtLevel) =>
+        Option.map(parseAcpModelId(modelId), ({ provider, model }) =>
+          modelLayer(provider, model, thoughtLevel),
         ),
     }),
   ),

@@ -38,6 +38,7 @@ const executor = AgentExecutor.AgentExecutor.of({
 const makeServer = (
   streamText: Parameters<typeof LanguageModel.make>[0]["streamText"],
   agentExecutor = executor,
+  onMakeModel?: (modelId: string, thoughtLevel: string) => void,
 ) =>
   Effect.gen(function* () {
     const sent: Array<Message> = []
@@ -52,7 +53,8 @@ const makeServer = (
     )
     const server = yield* Acp.make({
       version: "test",
-      defaultModel: "test/model",
+      defaultModel: "test:model",
+      defaultThoughtLevel: "medium",
       send: (message) =>
         Effect.sync(() => {
           sent.push(message as Message)
@@ -61,12 +63,14 @@ const makeServer = (
         Agent.make.pipe(
           Effect.provideService(AgentExecutor.AgentExecutor, agentExecutor),
         ),
-      makeModel: (modelId) =>
-        modelId === "test/model"
+      makeModel: (modelId, thoughtLevel) => {
+        onMakeModel?.(modelId, thoughtLevel)
+        return modelId === "test:model" || modelId === "other:model"
           ? Option.some(
               Layer.merge(modelLayer, Agent.layerSubagentModel(modelLayer)),
             )
-          : Option.none(),
+          : Option.none()
+      },
     })
     const request = (id: number, method: string, params?: unknown) =>
       server
@@ -123,7 +127,7 @@ describe("Acp", () => {
             mcpServers: [],
           })
           const sessionId: string = created.result.sessionId
-          assert.strictEqual(created.result.models.currentModelId, "test/model")
+          assert.strictEqual(created.result.models.currentModelId, "test:model")
 
           const done = yield* server.request(3, "session/prompt", {
             sessionId,
@@ -145,6 +149,54 @@ describe("Acp", () => {
             sessionUpdate: "agent_message_chunk",
             content: { type: "text", text: "hi there" },
           })
+        }),
+      ),
+    ),
+  )
+
+  it.effect("applies model and thought-level changes to the next turn", () =>
+    withStore(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const resolved: Array<[string, string]> = []
+          const server = yield* makeServer(
+            () => assistantSays("done"),
+            executor,
+            (modelId, thoughtLevel) => resolved.push([modelId, thoughtLevel]),
+          )
+          const created = yield* server.request(1, "session/new", {
+            cwd: "/tmp",
+          })
+          const sessionId: string = created.result.sessionId
+
+          yield* server.request(2, "session/set_model", {
+            sessionId,
+            modelId: "other:model",
+          })
+
+          const configured = yield* server.request(
+            3,
+            "session/set_config_option",
+            { sessionId, configId: "thought_level", value: "high" },
+          )
+          assert.strictEqual(
+            configured.result.configOptions[0].currentValue,
+            "high",
+          )
+
+          const rejected = yield* server.request(
+            4,
+            "session/set_config_option",
+            { sessionId, configId: "thought_level", value: "turbo" },
+          )
+          assert.strictEqual(rejected.error?.code, -32602)
+
+          resolved.length = 0
+          yield* server.request(5, "session/prompt", {
+            sessionId,
+            prompt: [{ type: "text", text: "use the selected model" }],
+          })
+          assert.deepStrictEqual(resolved, [["other:model", "high"]])
         }),
       ),
     ),
@@ -313,7 +365,7 @@ describe("Acp", () => {
     ),
   )
 
-  it.effect("loads a persisted session into a new server", () =>
+  it.effect("reports canonical state for new and loaded sessions", () =>
     withStore(
       Effect.gen(function* () {
         const sessionId = yield* Effect.scoped(
@@ -322,7 +374,27 @@ describe("Acp", () => {
             const created = yield* server.request(1, "session/new", {
               cwd: "/tmp",
             })
-            yield* server.request(2, "session/prompt", {
+            assert.deepStrictEqual(created.result.models, {
+              availableModels: [{ modelId: "test:model", name: "test:model" }],
+              currentModelId: "test:model",
+            })
+            assert.deepInclude(created.result.configOptions[0], {
+              id: "thought_level",
+              currentValue: "medium",
+            })
+
+            const legacy = yield* server.request(2, "session/new", {
+              cwd: "/tmp",
+              model: "test/model/high",
+            })
+            assert.strictEqual(legacy.error?.code, -32602)
+
+            yield* server.request(3, "session/set_config_option", {
+              sessionId: created.result.sessionId,
+              configId: "thought_level",
+              value: "high",
+            })
+            yield* server.request(4, "session/prompt", {
               sessionId: created.result.sessionId,
               prompt: [{ type: "text", text: "hello" }],
             })
@@ -340,7 +412,11 @@ describe("Acp", () => {
             })
             assert.strictEqual(
               loaded.result.models.currentModelId,
-              "test/model",
+              "test:model",
+            )
+            assert.strictEqual(
+              loaded.result.configOptions[0].currentValue,
+              "high",
             )
             assert.deepStrictEqual(
               server.updates(sessionId).map((u) => u.sessionUpdate),
@@ -393,7 +469,8 @@ describe("Acp", () => {
               sessionId,
               new Acp.SessionRecord({
                 cwd: "/tmp",
-                model: "test/model",
+                model: "test:model",
+                thoughtLevel: "medium",
                 history,
               }),
             )

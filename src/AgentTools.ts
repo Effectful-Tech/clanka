@@ -125,7 +125,7 @@ export const AgentTools = Toolkit.make(
   }),
   Tool.make("rg", {
     description:
-      "Search for a pattern in files using ripgrep. Root-relative globs include ignored and hidden files. A wildcard glob that names a directory first respects ignore rules, then retries with ignored and hidden files only when that search is empty. If the first search returns any matches, the fallback is skipped, so results can omit matching files from ignored directories.",
+      "Search for a pattern in files using ripgrep.",
     parameters: Schema.Struct({
       pattern: Schema.String,
       glob: Schema.optional(Schema.String).annotate({

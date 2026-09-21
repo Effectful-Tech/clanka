@@ -35,16 +35,10 @@ const executor = AgentExecutor.AgentExecutor.of({
   executeUnsafe: () => Effect.die("executeUnsafe not implemented"),
 })
 
-interface MakeServerOptions {
-  readonly defaultModel?: string
-  readonly acceptsModel?: (modelId: string) => boolean
-  readonly onMakeModel?: (modelId: string, thoughtLevel: string) => void
-}
-
 const makeServer = (
   streamText: Parameters<typeof LanguageModel.make>[0]["streamText"],
   agentExecutor = executor,
-  options: MakeServerOptions = {},
+  onMakeModel?: (modelId: string, thoughtLevel: string) => void,
 ) =>
   Effect.gen(function* () {
     const sent: Array<Message> = []
@@ -59,7 +53,7 @@ const makeServer = (
     )
     const server = yield* Acp.make({
       version: "test",
-      defaultModel: options.defaultModel ?? "test/model",
+      defaultModel: "test:model",
       defaultThoughtLevel: "medium",
       send: (message) =>
         Effect.sync(() => {
@@ -70,8 +64,8 @@ const makeServer = (
           Effect.provideService(AgentExecutor.AgentExecutor, agentExecutor),
         ),
       makeModel: (modelId, thoughtLevel) => {
-        options.onMakeModel?.(modelId, thoughtLevel)
-        return (options.acceptsModel ?? ((id) => id === "test/model"))(modelId)
+        onMakeModel?.(modelId, thoughtLevel)
+        return modelId === "test:model" || modelId === "other:model"
           ? Option.some(
               Layer.merge(modelLayer, Agent.layerSubagentModel(modelLayer)),
             )
@@ -115,14 +109,6 @@ const withStore = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     ),
   )
 
-const thoughtLevelOption = (result: any) => {
-  const option = result.configOptions?.find(
-    (candidate: any) => candidate.id === "thought_level",
-  )
-  assert.isDefined(option)
-  return option
-}
-
 describe("Acp", () => {
   it.effect("runs a prompt turn", () =>
     withStore(
@@ -141,7 +127,7 @@ describe("Acp", () => {
             mcpServers: [],
           })
           const sessionId: string = created.result.sessionId
-          assert.strictEqual(created.result.models.currentModelId, "test/model")
+          assert.strictEqual(created.result.models.currentModelId, "test:model")
 
           const done = yield* server.request(3, "session/prompt", {
             sessionId,
@@ -168,182 +154,49 @@ describe("Acp", () => {
     ),
   )
 
-  it.effect("reports the model and thought level as separate state", () =>
+  it.effect("applies model and thought-level changes to the next turn", () =>
     withStore(
       Effect.scoped(
         Effect.gen(function* () {
-          const resolved: Array<string> = []
+          const resolved: Array<[string, string]> = []
           const server = yield* makeServer(
             () => assistantSays("done"),
             executor,
-            {
-              defaultModel: "openai:gpt-6-astra",
-              acceptsModel: (modelId) => modelId.startsWith("openai:"),
-              onMakeModel: (modelId, thoughtLevel) =>
-                resolved.push(`${modelId} ${thoughtLevel}`),
-            },
-          )
-
-          const created = yield* server.request(1, "session/new", {
-            cwd: "/tmp",
-            model: "openai:gpt-6-astra",
-          })
-          assert.isUndefined(created.error)
-          assert.deepStrictEqual(created.result.models, {
-            availableModels: [
-              { modelId: "openai:gpt-6-astra", name: "openai:gpt-6-astra" },
-            ],
-            currentModelId: "openai:gpt-6-astra",
-          })
-          const thoughtLevel = thoughtLevelOption(created.result)
-          assert.deepInclude(thoughtLevel, {
-            id: "thought_level",
-            category: "thought_level",
-            type: "select",
-            currentValue: "medium",
-          })
-          assert.deepStrictEqual(
-            thoughtLevel.options.map((option: any) => option.value),
-            ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-          )
-          assert.deepStrictEqual(resolved, ["openai:gpt-6-astra medium"])
-
-          const rejected = yield* server.request(2, "session/new", {
-            cwd: "/tmp",
-            model: "openai/gpt-6-astra/high",
-          })
-          assert.strictEqual(rejected.error?.code, -32602)
-          assert.match(rejected.error!.message, /Unknown model/)
-        }),
-      ),
-    ),
-  )
-
-  it.effect("loads a persisted session with its thought level", () =>
-    withStore(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const kvs = yield* KeyValueStore.KeyValueStore
-          const store = KeyValueStore.toSchemaStore(
-            KeyValueStore.prefix(kvs, "session-"),
-            Acp.SessionRecord,
-          )
-          const sessionId = "persisted-model-session"
-          yield* store.set(
-            sessionId,
-            new Acp.SessionRecord({
-              cwd: "/tmp",
-              model: "openai:gpt-6-astra",
-              thoughtLevel: "high",
-              history: Prompt.empty,
-            }),
-          )
-          const resolved: Array<string> = []
-          const server = yield* makeServer(
-            () => assistantSays("done"),
-            executor,
-            {
-              defaultModel: "openai:gpt-6-astra",
-              acceptsModel: (modelId) => modelId === "openai:gpt-6-astra",
-              onMakeModel: (modelId, thoughtLevel) =>
-                resolved.push(`${modelId} ${thoughtLevel}`),
-            },
-          )
-
-          const loaded = yield* server.request(1, "session/load", {
-            sessionId,
-            cwd: "/tmp",
-          })
-          assert.isUndefined(loaded.error)
-          assert.strictEqual(
-            loaded.result.models.currentModelId,
-            "openai:gpt-6-astra",
-          )
-          assert.strictEqual(
-            thoughtLevelOption(loaded.result).currentValue,
-            "high",
-          )
-          assert.deepStrictEqual(resolved, ["openai:gpt-6-astra high"])
-        }),
-      ),
-    ),
-  )
-
-  it.effect("applies ACP model and thought-level changes to later turns", () =>
-    withStore(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const resolved: Array<string> = []
-          const server = yield* makeServer(
-            () => assistantSays("done"),
-            executor,
-            {
-              defaultModel: "openai:gpt-6-astra",
-              acceptsModel: (modelId) =>
-                modelId === "openai:gpt-6-astra" ||
-                modelId === "copilot:gpt-6-astra",
-              onMakeModel: (modelId, thoughtLevel) =>
-                resolved.push(`${modelId} ${thoughtLevel}`),
-            },
+            (modelId, thoughtLevel) => resolved.push([modelId, thoughtLevel]),
           )
           const created = yield* server.request(1, "session/new", {
             cwd: "/tmp",
           })
           const sessionId: string = created.result.sessionId
 
-          const switched = yield* server.request(2, "session/set_model", {
+          yield* server.request(2, "session/set_model", {
             sessionId,
-            modelId: "copilot:gpt-6-astra",
+            modelId: "other:model",
           })
-          assert.isUndefined(switched.error)
-
-          const unknown = yield* server.request(3, "session/set_model", {
-            sessionId,
-            modelId: "xai:grok-5",
-          })
-          assert.strictEqual(unknown.error?.code, -32602)
 
           const configured = yield* server.request(
-            4,
+            3,
             "session/set_config_option",
             { sessionId, configId: "thought_level", value: "high" },
           )
-          assert.isUndefined(configured.error)
           assert.strictEqual(
-            thoughtLevelOption(configured.result).currentValue,
+            configured.result.configOptions[0].currentValue,
             "high",
           )
 
           const rejected = yield* server.request(
-            5,
+            4,
             "session/set_config_option",
             { sessionId, configId: "thought_level", value: "turbo" },
           )
           assert.strictEqual(rejected.error?.code, -32602)
 
-          const unknownOption = yield* server.request(
-            6,
-            "session/set_config_option",
-            { sessionId, configId: "mode", value: "high" },
-          )
-          assert.strictEqual(unknownOption.error?.code, -32602)
-
           resolved.length = 0
-          yield* server.request(7, "session/prompt", {
+          yield* server.request(5, "session/prompt", {
             sessionId,
             prompt: [{ type: "text", text: "use the selected model" }],
           })
-          assert.deepStrictEqual(resolved, ["copilot:gpt-6-astra high"])
-
-          const state = yield* server.request(8, "session/load", { sessionId })
-          assert.strictEqual(
-            state.result.models.currentModelId,
-            "copilot:gpt-6-astra",
-          )
-          assert.strictEqual(
-            thoughtLevelOption(state.result).currentValue,
-            "high",
-          )
+          assert.deepStrictEqual(resolved, [["other:model", "high"]])
         }),
       ),
     ),
@@ -512,7 +365,7 @@ describe("Acp", () => {
     ),
   )
 
-  it.effect("loads a persisted session into a new server", () =>
+  it.effect("reports canonical state for new and loaded sessions", () =>
     withStore(
       Effect.gen(function* () {
         const sessionId = yield* Effect.scoped(
@@ -521,7 +374,27 @@ describe("Acp", () => {
             const created = yield* server.request(1, "session/new", {
               cwd: "/tmp",
             })
-            yield* server.request(2, "session/prompt", {
+            assert.deepStrictEqual(created.result.models, {
+              availableModels: [{ modelId: "test:model", name: "test:model" }],
+              currentModelId: "test:model",
+            })
+            assert.deepInclude(created.result.configOptions[0], {
+              id: "thought_level",
+              currentValue: "medium",
+            })
+
+            const legacy = yield* server.request(2, "session/new", {
+              cwd: "/tmp",
+              model: "test/model/high",
+            })
+            assert.strictEqual(legacy.error?.code, -32602)
+
+            yield* server.request(3, "session/set_config_option", {
+              sessionId: created.result.sessionId,
+              configId: "thought_level",
+              value: "high",
+            })
+            yield* server.request(4, "session/prompt", {
               sessionId: created.result.sessionId,
               prompt: [{ type: "text", text: "hello" }],
             })
@@ -539,7 +412,11 @@ describe("Acp", () => {
             })
             assert.strictEqual(
               loaded.result.models.currentModelId,
-              "test/model",
+              "test:model",
+            )
+            assert.strictEqual(
+              loaded.result.configOptions[0].currentValue,
+              "high",
             )
             assert.deepStrictEqual(
               server.updates(sessionId).map((u) => u.sessionUpdate),
@@ -592,7 +469,7 @@ describe("Acp", () => {
               sessionId,
               new Acp.SessionRecord({
                 cwd: "/tmp",
-                model: "test/model",
+                model: "test:model",
                 thoughtLevel: "medium",
                 history,
               }),

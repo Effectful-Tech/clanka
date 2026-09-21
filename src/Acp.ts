@@ -56,6 +56,10 @@ export interface Options<RAgent, RModel> {
    */
   readonly defaultModel: string
   /**
+   * Thought level used for new sessions.
+   */
+  readonly defaultThoughtLevel: ThoughtLevel
+  /**
    * Write one JSON-RPC message to the client.
    */
   readonly send: (message: object) => Effect.Effect<void>
@@ -66,10 +70,12 @@ export interface Options<RAgent, RModel> {
     cwd: string,
   ) => Effect.Effect<Agent.Agent, never, Scope.Scope | RAgent>
   /**
-   * Resolve a model id to the services an Agent needs. `None` rejects the id.
+   * Resolve a model id and thought level to the services an Agent needs.
+   * `None` rejects the combination.
    */
   readonly makeModel: (
     modelId: string,
+    thoughtLevel: ThoughtLevel,
   ) => Option.Option<Layer.Layer<ModelServices, never, RModel>>
 }
 
@@ -86,6 +92,29 @@ export interface Server<R = never> {
 }
 
 /**
+ * Reasoning effort levels offered through the ACP `thought_level` config
+ * option.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export const ThoughtLevel = Schema.Literals([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+])
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export type ThoughtLevel = typeof ThoughtLevel.Type
+
+/**
  * @since 1.0.0
  * @category Models
  */
@@ -94,15 +123,7 @@ export class SessionRecord extends Schema.Class<SessionRecord>(
 )({
   cwd: Schema.String,
   model: Schema.String,
-  thoughtLevel: Schema.Literals([
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-  ]),
+  thoughtLevel: ThoughtLevel,
   history: Prompt.Prompt,
 }) {}
 
@@ -149,62 +170,9 @@ const SetModelParams = Schema.Struct({
 
 const SetConfigOptionParams = Schema.Struct({
   sessionId: Schema.String,
-  configId: Schema.String,
-  value: Schema.String,
+  configId: Schema.Literal("thought_level"),
+  value: ThoughtLevel,
 })
-
-const thoughtLevels = [
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const
-
-type ThoughtLevel = (typeof thoughtLevels)[number]
-
-interface ModelSelection {
-  readonly model: string
-  readonly thoughtLevel: ThoughtLevel
-}
-
-const parseInternalModelId = (modelId: string): ModelSelection | undefined => {
-  const [provider, model, effort, ...rest] = modelId.split("/")
-  return provider !== undefined &&
-    provider.length > 0 &&
-    model !== undefined &&
-    model.length > 0 &&
-    effort !== undefined &&
-    effort.length > 0 &&
-    thoughtLevels.includes(effort as ThoughtLevel) &&
-    rest.length === 0
-    ? { model: `${provider}:${model}`, thoughtLevel: effort as ThoughtLevel }
-    : undefined
-}
-
-const parseCanonicalModelId = (
-  modelId: string,
-): { readonly provider: string; readonly model: string } | undefined => {
-  const separator = modelId.indexOf(":")
-  if (
-    separator <= 0 ||
-    separator === modelId.length - 1 ||
-    modelId.includes("/")
-  ) {
-    return undefined
-  }
-  return {
-    provider: modelId.slice(0, separator),
-    model: modelId.slice(separator + 1),
-  }
-}
-
-const toInternalModelId = (selection: ModelSelection) => {
-  const model = parseCanonicalModelId(selection.model)!
-  return `${model.provider}/${model.model}/${selection.thoughtLevel}`
-}
 
 const TextBlock = Schema.Struct({
   type: Schema.Literal("text"),
@@ -367,51 +335,12 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       sessionNotFound(sessionId),
     )
 
-  const requireModel = (modelId: string) =>
+  const requireModel = (modelId: string, thoughtLevel: ThoughtLevel) =>
     Effect.fromOption(
-      options.makeModel(modelId),
+      options.makeModel(modelId, thoughtLevel),
       () =>
         new RpcError({ code: -32602, message: `Unknown model: ${modelId}` }),
     )
-
-  const resolveModel = (
-    model: string,
-    preferredThoughtLevels: ReadonlyArray<ThoughtLevel>,
-  ): Effect.Effect<ModelSelection, RpcError> => {
-    if (parseCanonicalModelId(model) === undefined) {
-      return Effect.fail(
-        new RpcError({ code: -32602, message: `Unknown model: ${model}` }),
-      )
-    }
-    for (const thoughtLevel of new Set([
-      ...preferredThoughtLevels,
-      ...thoughtLevels,
-    ])) {
-      const selection = { model, thoughtLevel }
-      if (Option.isSome(options.makeModel(toInternalModelId(selection)))) {
-        return Effect.succeed(selection)
-      }
-    }
-    return Effect.fail(
-      new RpcError({ code: -32602, message: `Unknown model: ${model}` }),
-    )
-  }
-
-  const requireSelection = (selection: ModelSelection) =>
-    requireModel(toInternalModelId(selection)).pipe(Effect.as(selection))
-
-  const defaultModel = parseInternalModelId(options.defaultModel)
-
-  const modelsInfo = (session: Session) => ({
-    availableModels: [
-      ...new Set([
-        session.model,
-        ...(defaultModel === undefined ? [] : [defaultModel.model]),
-      ]),
-    ]
-      .map((modelId) => ({ modelId, name: modelId })),
-    currentModelId: session.model,
-  })
 
   const configOptions = (session: Session) => [
     {
@@ -420,17 +349,19 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       category: "thought_level",
       type: "select",
       currentValue: session.thoughtLevel,
-      options: thoughtLevels
-        .filter((thoughtLevel) =>
-          Option.isSome(
-            options.makeModel(
-              toInternalModelId({ model: session.model, thoughtLevel }),
-            ),
-          ),
-        )
-        .map((value) => ({ value, name: value })),
+      options: ThoughtLevel.literals.map((value) => ({ value, name: value })),
     },
   ]
+
+  const sessionState = (session: Session) => ({
+    models: {
+      availableModels: [...new Set([session.model, options.defaultModel])].map(
+        (modelId) => ({ modelId, name: modelId }),
+      ),
+      currentModelId: session.model,
+    },
+    configOptions: configOptions(session),
+  })
 
   const persist = (session: Session) =>
     store
@@ -451,7 +382,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
 
   const openSession = Effect.fnUntraced(function* (
     id: string,
-    record: SessionRecord & { readonly thoughtLevel: ThoughtLevel },
+    record: SessionRecord,
   ) {
     const agent = yield* Scope.provide(options.makeAgent(record.cwd), scope)
     MutableRef.set(agent.history, record.history)
@@ -779,25 +710,20 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
 
   const newSession = Effect.fnUntraced(function* (params: unknown) {
     const { cwd, model } = yield* decodeParams(NewSessionParams, params)
-    if (defaultModel === undefined) {
-      return yield* invalidParams(
-        `Invalid default model: ${options.defaultModel}`,
-      )
-    }
-    const selection =
-      model === undefined
-        ? yield* requireSelection(defaultModel)
-        : yield* resolveModel(model, [defaultModel.thoughtLevel])
+    const modelId = model ?? options.defaultModel
+    const thoughtLevel = options.defaultThoughtLevel
+    yield* requireModel(modelId, thoughtLevel)
     const session = yield* openSession(
       crypto.randomUUID(),
-      { cwd, ...selection, history: Prompt.empty },
+      new SessionRecord({
+        cwd,
+        model: modelId,
+        thoughtLevel,
+        history: Prompt.empty,
+      }),
     )
     yield* persist(session)
-    return {
-      sessionId: session.id,
-      models: modelsInfo(session),
-      configOptions: configOptions(session),
-    }
+    return { sessionId: session.id, ...sessionState(session) }
   })
 
   const loadSession = Effect.fnUntraced(function* (
@@ -810,10 +736,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     )
     const existing = sessions.get(sessionId)
     if (existing !== undefined) {
-      return {
-        models: modelsInfo(existing),
-        configOptions: configOptions(existing),
-      }
+      return sessionState(existing)
     }
     const record = yield* store
       .get(sessionId)
@@ -825,56 +748,40 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     if (Option.isNone(record)) {
       return yield* sessionNotFound(sessionId)
     }
-    const selection =
-      model === undefined
-        ? yield* requireSelection(record.value)
-        : yield* resolveModel(model, [record.value.thoughtLevel])
+    const modelId = model ?? record.value.model
+    yield* requireModel(modelId, record.value.thoughtLevel)
     const session = yield* openSession(
       sessionId,
-      {
+      new SessionRecord({
         cwd: cwd ?? record.value.cwd,
-        ...selection,
+        model: modelId,
+        thoughtLevel: record.value.thoughtLevel,
         history: record.value.history,
-      },
+      }),
     )
     if (replay) {
       yield* replayHistory(session)
     }
-    return {
-      models: modelsInfo(session),
-      configOptions: configOptions(session),
-    }
+    return sessionState(session)
   })
 
   const setModel = Effect.fnUntraced(function* (params: unknown) {
     const { sessionId, modelId } = yield* decodeParams(SetModelParams, params)
     const session = yield* getSession(sessionId)
-    const selection = yield* resolveModel(modelId, [session.thoughtLevel])
-    session.model = selection.model
-    session.thoughtLevel = selection.thoughtLevel
+    yield* requireModel(modelId, session.thoughtLevel)
+    session.model = modelId
     yield* persist(session)
     return {}
   })
 
   const setConfigOption = Effect.fnUntraced(function* (params: unknown) {
-    const { sessionId, configId, value } = yield* decodeParams(
+    const { sessionId, value } = yield* decodeParams(
       SetConfigOptionParams,
       params,
     )
     const session = yield* getSession(sessionId)
-    if (
-      configId !== "thought_level" ||
-      !thoughtLevels.includes(value as ThoughtLevel)
-    ) {
-      return yield* invalidParams(
-        configId === "thought_level"
-          ? `Unsupported thought level: ${value}`
-          : `Unknown config option: ${configId}`,
-      )
-    }
-    const thoughtLevel = value as ThoughtLevel
-    yield* requireSelection({ model: session.model, thoughtLevel })
-    session.thoughtLevel = thoughtLevel
+    yield* requireModel(session.model, value)
+    session.thoughtLevel = value
     yield* persist(session)
     return { configOptions: configOptions(session) }
   })
@@ -888,7 +795,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         message: `Session ${sessionId} already has a prompt in progress`,
       })
     }
-    const model = yield* requireModel(toInternalModelId(session))
+    const model = yield* requireModel(session.model, session.thoughtLevel)
     // Resolve images before the turn starts, so a bad block rejects the
     // request without a model call.
     const input = yield* promptFromBlocks(session.cwd, prompt)

@@ -38,17 +38,7 @@ const executor = AgentExecutor.AgentExecutor.of({
 interface MakeServerOptions {
   readonly defaultModel?: string
   readonly acceptsModel?: (modelId: string) => boolean
-  readonly onMakeModel?: (modelId: string) => void
-}
-
-const productionAcceptsModel = (modelId: string) => {
-  const [provider, model, effort, ...rest] = modelId.split("/")
-  return (
-    ["openai", "copilot", "xai"].includes(provider!) &&
-    model !== undefined &&
-    effort !== undefined &&
-    rest.length === 0
-  )
+  readonly onMakeModel?: (modelId: string, thoughtLevel: string) => void
 }
 
 const makeServer = (
@@ -69,7 +59,8 @@ const makeServer = (
     )
     const server = yield* Acp.make({
       version: "test",
-      defaultModel: options.defaultModel ?? "openai/test-model/medium",
+      defaultModel: options.defaultModel ?? "test/model",
+      defaultThoughtLevel: "medium",
       send: (message) =>
         Effect.sync(() => {
           sent.push(message as Message)
@@ -78,9 +69,9 @@ const makeServer = (
         Agent.make.pipe(
           Effect.provideService(AgentExecutor.AgentExecutor, agentExecutor),
         ),
-      makeModel: (modelId) => {
-        options.onMakeModel?.(modelId)
-        return (options.acceptsModel ?? productionAcceptsModel)(modelId)
+      makeModel: (modelId, thoughtLevel) => {
+        options.onMakeModel?.(modelId, thoughtLevel)
+        return (options.acceptsModel ?? ((id) => id === "test/model"))(modelId)
           ? Option.some(
               Layer.merge(modelLayer, Agent.layerSubagentModel(modelLayer)),
             )
@@ -132,15 +123,6 @@ const thoughtLevelOption = (result: any) => {
   return option
 }
 
-const assertAdvertisesCurrentThoughtLevel = (result: any) => {
-  const option = thoughtLevelOption(result)
-  assert.include(
-    option.options.map((candidate: any) => candidate.value),
-    option.currentValue,
-  )
-  return option
-}
-
 describe("Acp", () => {
   it.effect("runs a prompt turn", () =>
     withStore(
@@ -159,10 +141,7 @@ describe("Acp", () => {
             mcpServers: [],
           })
           const sessionId: string = created.result.sessionId
-          assert.strictEqual(
-            created.result.models.currentModelId,
-            "openai:test-model",
-          )
+          assert.strictEqual(created.result.models.currentModelId, "test/model")
 
           const done = yield* server.request(3, "session/prompt", {
             sessionId,
@@ -189,103 +168,87 @@ describe("Acp", () => {
     ),
   )
 
-  it.effect(
-    "reports canonical model state and persists model and effort separately",
-    () =>
-      withStore(
-        Effect.scoped(
-          Effect.gen(function* () {
-            const kvs = yield* KeyValueStore.KeyValueStore
-            const store = KeyValueStore.toSchemaStore(
-              KeyValueStore.prefix(kvs, "session-"),
-              Acp.SessionRecord,
-            )
-            const server = yield* makeServer(() => assistantSays("done"))
+  it.effect("reports the model and thought level as separate state", () =>
+    withStore(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const resolved: Array<string> = []
+          const server = yield* makeServer(
+            () => assistantSays("done"),
+            executor,
+            {
+              defaultModel: "openai:gpt-6-astra",
+              acceptsModel: (modelId) => modelId.startsWith("openai:"),
+              onMakeModel: (modelId, thoughtLevel) =>
+                resolved.push(`${modelId} ${thoughtLevel}`),
+            },
+          )
 
-            const created = yield* server.request(1, "session/new", {
-              cwd: "/tmp",
-              model: "openai:gpt-6-astra",
-            })
-            assert.isUndefined(created.error)
-            assert.deepStrictEqual(created.result.models, {
-              availableModels: [
-                {
-                  modelId: "openai:gpt-6-astra",
-                  name: "openai:gpt-6-astra",
-                },
-                {
-                  modelId: "openai:test-model",
-                  name: "openai:test-model",
-                },
-              ],
-              currentModelId: "openai:gpt-6-astra",
-            })
-            assert.strictEqual(
-              assertAdvertisesCurrentThoughtLevel(created.result).currentValue,
-              "medium",
-            )
+          const created = yield* server.request(1, "session/new", {
+            cwd: "/tmp",
+            model: "openai:gpt-6-astra",
+          })
+          assert.isUndefined(created.error)
+          assert.deepStrictEqual(created.result.models, {
+            availableModels: [
+              { modelId: "openai:gpt-6-astra", name: "openai:gpt-6-astra" },
+            ],
+            currentModelId: "openai:gpt-6-astra",
+          })
+          const thoughtLevel = thoughtLevelOption(created.result)
+          assert.deepInclude(thoughtLevel, {
+            id: "thought_level",
+            category: "thought_level",
+            type: "select",
+            currentValue: "medium",
+          })
+          assert.deepStrictEqual(
+            thoughtLevel.options.map((option: any) => option.value),
+            ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+          )
+          assert.deepStrictEqual(resolved, ["openai:gpt-6-astra medium"])
 
-            const persisted = Option.getOrThrow(
-              yield* store.get(created.result.sessionId),
-            )
-            assert.strictEqual(persisted.model, "openai:gpt-6-astra")
-            assert.strictEqual(persisted.thoughtLevel, "medium")
-          }),
-        ),
+          const rejected = yield* server.request(2, "session/new", {
+            cwd: "/tmp",
+            model: "openai/gpt-6-astra/high",
+          })
+          assert.strictEqual(rejected.error?.code, -32602)
+          assert.match(rejected.error!.message, /Unknown model/)
+        }),
       ),
+    ),
   )
 
-  it.effect(
-    "accepts legacy model input but persists canonical model and effort",
-    () =>
-      withStore(
-        Effect.scoped(
-          Effect.gen(function* () {
-            const kvs = yield* KeyValueStore.KeyValueStore
-            const store = KeyValueStore.toSchemaStore(
-              KeyValueStore.prefix(kvs, "session-"),
-              Acp.SessionRecord,
-            )
-            const server = yield* makeServer(() => assistantSays("done"))
-            const created = yield* server.request(1, "session/new", {
-              cwd: "/tmp",
-              model: "openai/gpt-6-astra/high",
-            })
-
-            assert.isUndefined(created.error)
-            assert.strictEqual(
-              created.result.models.currentModelId,
-              "openai:gpt-6-astra",
-            )
-            assert.strictEqual(
-              assertAdvertisesCurrentThoughtLevel(created.result).currentValue,
-              "high",
-            )
-            const persisted = Option.getOrThrow(
-              yield* store.get(created.result.sessionId),
-            )
-            assert.strictEqual(persisted.model, "openai:gpt-6-astra")
-            assert.strictEqual(persisted.thoughtLevel, "high")
-          }),
-        ),
-      ),
-  )
-
-  it.effect("loads old session records as canonical ACP state", () =>
+  it.effect("loads a persisted session with its thought level", () =>
     withStore(
       Effect.scoped(
         Effect.gen(function* () {
           const kvs = yield* KeyValueStore.KeyValueStore
-          const sessionId = "legacy-model-session"
-          yield* kvs.set(
-            `session-${sessionId}`,
-            JSON.stringify({
+          const store = KeyValueStore.toSchemaStore(
+            KeyValueStore.prefix(kvs, "session-"),
+            Acp.SessionRecord,
+          )
+          const sessionId = "persisted-model-session"
+          yield* store.set(
+            sessionId,
+            new Acp.SessionRecord({
               cwd: "/tmp",
-              model: "openai/gpt-6-astra/high",
+              model: "openai:gpt-6-astra",
+              thoughtLevel: "high",
               history: Prompt.empty,
             }),
           )
-          const server = yield* makeServer(() => assistantSays("done"))
+          const resolved: Array<string> = []
+          const server = yield* makeServer(
+            () => assistantSays("done"),
+            executor,
+            {
+              defaultModel: "openai:gpt-6-astra",
+              acceptsModel: (modelId) => modelId === "openai:gpt-6-astra",
+              onMakeModel: (modelId, thoughtLevel) =>
+                resolved.push(`${modelId} ${thoughtLevel}`),
+            },
+          )
 
           const loaded = yield* server.request(1, "session/load", {
             sessionId,
@@ -297,146 +260,93 @@ describe("Acp", () => {
             "openai:gpt-6-astra",
           )
           assert.strictEqual(
-            assertAdvertisesCurrentThoughtLevel(loaded.result).currentValue,
+            thoughtLevelOption(loaded.result).currentValue,
             "high",
           )
+          assert.deepStrictEqual(resolved, ["openai:gpt-6-astra high"])
         }),
       ),
     ),
   )
 
-  for (const [name, arrange] of [
-    [
-      "initial model",
-      Effect.fnUntraced(function* () {
-        const server = yield* makeServer(
-          () => assistantSays("done"),
-          executor,
-          {
-            defaultModel: "openai/gpt-6-astra/turbo",
-          },
-        )
-        return yield* server.request(1, "session/new", { cwd: "/tmp" })
-      }),
-    ],
-    [
-      "loaded record",
-      Effect.fnUntraced(function* () {
-        const kvs = yield* KeyValueStore.KeyValueStore
-        const sessionId = "invalid-effort-session"
-        yield* kvs.set(
-          `session-${sessionId}`,
-          JSON.stringify({
+  it.effect("applies ACP model and thought-level changes to later turns", () =>
+    withStore(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const resolved: Array<string> = []
+          const server = yield* makeServer(
+            () => assistantSays("done"),
+            executor,
+            {
+              defaultModel: "openai:gpt-6-astra",
+              acceptsModel: (modelId) =>
+                modelId === "openai:gpt-6-astra" ||
+                modelId === "copilot:gpt-6-astra",
+              onMakeModel: (modelId, thoughtLevel) =>
+                resolved.push(`${modelId} ${thoughtLevel}`),
+            },
+          )
+          const created = yield* server.request(1, "session/new", {
             cwd: "/tmp",
-            model: "openai:gpt-6-astra",
-            thoughtLevel: "turbo",
-            history: Prompt.empty,
-          }),
-        )
-        const server = yield* makeServer(() => assistantSays("done"))
-        return yield* server.request(1, "session/load", { sessionId })
-      }),
-    ],
-    [
-      "legacy model input",
-      Effect.fnUntraced(function* () {
-        const server = yield* makeServer(() => assistantSays("done"))
-        return yield* server.request(1, "session/new", {
-          cwd: "/tmp",
-          model: "openai/gpt-6-astra/turbo",
-        })
-      }),
-    ],
-  ] as const) {
-    it.effect(`rejects an unsupported effort in the ${name}`, () =>
-      withStore(
-        Effect.scoped(
-          Effect.gen(function* () {
-            const result = yield* arrange()
-            assert.strictEqual(result.error?.code, -32602)
-            assert.include(result.error?.message, "Unsupported thought level")
-          }),
-        ),
+          })
+          const sessionId: string = created.result.sessionId
+
+          const switched = yield* server.request(2, "session/set_model", {
+            sessionId,
+            modelId: "copilot:gpt-6-astra",
+          })
+          assert.isUndefined(switched.error)
+
+          const unknown = yield* server.request(3, "session/set_model", {
+            sessionId,
+            modelId: "xai:grok-5",
+          })
+          assert.strictEqual(unknown.error?.code, -32602)
+
+          const configured = yield* server.request(
+            4,
+            "session/set_config_option",
+            { sessionId, configId: "thought_level", value: "high" },
+          )
+          assert.isUndefined(configured.error)
+          assert.strictEqual(
+            thoughtLevelOption(configured.result).currentValue,
+            "high",
+          )
+
+          const rejected = yield* server.request(
+            5,
+            "session/set_config_option",
+            { sessionId, configId: "thought_level", value: "turbo" },
+          )
+          assert.strictEqual(rejected.error?.code, -32602)
+
+          const unknownOption = yield* server.request(
+            6,
+            "session/set_config_option",
+            { sessionId, configId: "mode", value: "high" },
+          )
+          assert.strictEqual(unknownOption.error?.code, -32602)
+
+          resolved.length = 0
+          yield* server.request(7, "session/prompt", {
+            sessionId,
+            prompt: [{ type: "text", text: "use the selected model" }],
+          })
+          assert.deepStrictEqual(resolved, ["copilot:gpt-6-astra high"])
+
+          const state = yield* server.request(8, "session/load", { sessionId })
+          assert.strictEqual(
+            state.result.models.currentModelId,
+            "copilot:gpt-6-astra",
+          )
+          assert.strictEqual(
+            thoughtLevelOption(state.result).currentValue,
+            "high",
+          )
+        }),
       ),
-    )
-  }
-
-  it.effect(
-    "keeps config state in sync across canonical and legacy model switches",
-    () =>
-      withStore(
-        Effect.scoped(
-          Effect.gen(function* () {
-            const resolved: Array<string> = []
-            const server = yield* makeServer(
-              () => assistantSays("done"),
-              executor,
-              { onMakeModel: (modelId) => resolved.push(modelId) },
-            )
-            const created = yield* server.request(1, "session/new", {
-              cwd: "/tmp",
-            })
-            const sessionId: string = created.result.sessionId
-
-            const configured = yield* server.request(
-              2,
-              "session/set_config_option",
-              {
-                sessionId,
-                configId: "thought_level",
-                value: "high",
-              },
-            )
-            assert.isUndefined(configured.error)
-            assert.strictEqual(
-              assertAdvertisesCurrentThoughtLevel(configured.result)
-                .currentValue,
-              "high",
-            )
-
-            const canonical = yield* server.request(3, "session/set_model", {
-              sessionId,
-              modelId: "copilot:gpt-6-astra",
-            })
-            assert.isUndefined(canonical.error)
-            const canonicalState = yield* server.request(4, "session/load", {
-              sessionId,
-            })
-            assert.strictEqual(
-              assertAdvertisesCurrentThoughtLevel(canonicalState.result)
-                .currentValue,
-              "high",
-            )
-
-            const updatesBeforeLegacySwitch = server.updates(sessionId).length
-            const legacy = yield* server.request(5, "session/set_model", {
-              sessionId,
-              modelId: "openai/gpt-6-astra/low",
-            })
-            assert.isUndefined(legacy.error)
-            const switchUpdates = server
-              .updates(sessionId)
-              .slice(updatesBeforeLegacySwitch)
-            assert.strictEqual(switchUpdates.length, 1)
-            assert.strictEqual(
-              switchUpdates[0]?.sessionUpdate,
-              "config_option_update",
-            )
-            assert.strictEqual(
-              assertAdvertisesCurrentThoughtLevel(switchUpdates[0])
-                .currentValue,
-              "low",
-            )
-
-            resolved.length = 0
-            yield* server.request(6, "session/prompt", {
-              sessionId,
-              prompt: [{ type: "text", text: "use the selected model" }],
-            })
-            assert.deepStrictEqual(resolved, ["openai/gpt-6-astra/low"])
-          }),
-        ),
-      ),
+    ),
   )
 
   for (const script of [
@@ -629,11 +539,7 @@ describe("Acp", () => {
             })
             assert.strictEqual(
               loaded.result.models.currentModelId,
-              "openai:test-model",
-            )
-            assert.strictEqual(
-              assertAdvertisesCurrentThoughtLevel(loaded.result).currentValue,
-              "medium",
+              "test/model",
             )
             assert.deepStrictEqual(
               server.updates(sessionId).map((u) => u.sessionUpdate),
@@ -686,7 +592,7 @@ describe("Acp", () => {
               sessionId,
               new Acp.SessionRecord({
                 cwd: "/tmp",
-                model: "openai:test-model",
+                model: "test/model",
                 thoughtLevel: "medium",
                 history,
               }),

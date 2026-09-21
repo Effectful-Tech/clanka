@@ -51,6 +51,16 @@ const executor = AgentExecutor.AgentExecutor.of({
   executeUnsafe: () => Effect.die("executeUnsafe not implemented"),
 })
 
+const productionAcceptsModel = (modelId: string) => {
+  const [provider, model, effort, ...rest] = modelId.split("/")
+  return (
+    ["openai", "copilot", "xai"].includes(provider!) &&
+    model !== undefined &&
+    effort !== undefined &&
+    rest.length === 0
+  )
+}
+
 const assistantSays = (
   text: string,
 ): Stream.Stream<AiResponse.StreamPartEncoded> =>
@@ -81,7 +91,7 @@ const makeServer = Effect.fnUntraced(function* () {
   )
   const server = yield* Acp.make({
     version: "test",
-    defaultModel: "test/model",
+    defaultModel: "openai/test-model/medium",
     send: (message) =>
       Effect.sync(() => {
         sent.push(message as Message)
@@ -91,7 +101,7 @@ const makeServer = Effect.fnUntraced(function* () {
         Effect.provideService(AgentExecutor.AgentExecutor, executor),
       ),
     makeModel: (modelId) =>
-      modelId === "test/model"
+      productionAcceptsModel(modelId)
         ? Option.some(
             Layer.merge(modelLayer, Agent.layerSubagentModel(modelLayer)),
           )

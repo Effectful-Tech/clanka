@@ -206,6 +206,56 @@ describe("Acp", () => {
     ),
   )
 
+  it.effect(
+    "reports zero cache usage when the provider omits cache fields",
+    () =>
+      withStore(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const server = yield* makeServer(() =>
+              parts(
+                { type: "text-start", id: "1" },
+                { type: "text-delta", id: "1", delta: "done" },
+                { type: "text-end", id: "1" },
+                {
+                  type: "finish",
+                  reason: "stop",
+                  usage: {
+                    inputTokens: { total: 120 },
+                    outputTokens: { total: 12 },
+                  },
+                },
+              ),
+            )
+            const created = yield* server.request(1, "session/new", {
+              cwd: "/tmp",
+            })
+            const sessionId: string = created.result.sessionId
+
+            yield* server.request(2, "session/prompt", {
+              sessionId,
+              prompt: [{ type: "text", text: "hello" }],
+            })
+
+            assert.deepStrictEqual(
+              server
+                .updates(sessionId)
+                .find((update) => update.sessionUpdate === "usage_update"),
+              {
+                sessionUpdate: "usage_update",
+                usage: {
+                  inputTokens: 120,
+                  outputTokens: 12,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                },
+              },
+            )
+          }),
+        ),
+      ),
+  )
+
   it.effect("applies model and thought-level changes to the next turn", () =>
     withStore(
       Effect.scoped(

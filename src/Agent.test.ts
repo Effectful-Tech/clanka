@@ -18,7 +18,7 @@ import type * as Response from "effect/unstable/ai/Response"
 import * as ResponseIdTracker from "effect/unstable/ai/ResponseIdTracker"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
-import type * as AgentOutput from "./AgentOutput.ts"
+import * as AgentOutput from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
 
 const capabilities = new AgentExecutor.Capabilities({
@@ -556,27 +556,22 @@ describe("Agent usage", () => {
       })
 
       assert.deepStrictEqual(exit, Exit.succeed("complete"))
-      assert.deepStrictEqual(
-        outputsOfTag(outputs, "Usage") as ReadonlyArray<unknown>,
-        [
-          {
-            _tag: "Usage",
-            contextTokens: 100,
-            inputTokens: 100,
-            outputTokens: 10,
-            cacheRead: 25,
-            cacheWrite: 5,
-          },
-          {
-            _tag: "Usage",
-            contextTokens: 60,
-            inputTokens: 160,
-            outputTokens: 20,
-            cacheRead: 40,
-            cacheWrite: 8,
-          },
-        ],
-      )
+      assert.deepStrictEqual(outputsOfTag(outputs, "Usage"), [
+        new AgentOutput.Usage({
+          contextTokens: 100,
+          inputTokens: 100,
+          outputTokens: 10,
+          cacheRead: 25,
+          cacheWrite: 5,
+        }),
+        new AgentOutput.Usage({
+          contextTokens: 60,
+          inputTokens: 160,
+          outputTokens: 20,
+          cacheRead: 40,
+          cacheWrite: 8,
+        }),
+      ])
     }),
   )
 })

@@ -124,8 +124,7 @@ export const AgentTools = Toolkit.make(
     dependencies: [CurrentDirectory, ImageAttacher],
   }),
   Tool.make("rg", {
-    description:
-      "Search for a pattern in files using ripgrep.",
+    description: "Search for a pattern in files using ripgrep",
     parameters: Schema.Struct({
       pattern: Schema.String,
       glob: Schema.optional(Schema.String).annotate({

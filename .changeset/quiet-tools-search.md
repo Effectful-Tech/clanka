@@ -2,4 +2,4 @@
 "clanka": patch
 ---
 
-Allow `rg` glob searches to enter ignored directories when the glob explicitly names a directory, while preserving ignore rules for ordinary wildcard searches.
+Allow `rg` wildcard glob searches that name a directory to retry with ignored and hidden files when the normal search returns no matches. The fallback is skipped when the normal search finds any matches, so partial results can omit matching files from ignored directories.

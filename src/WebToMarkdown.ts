@@ -4,8 +4,8 @@
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Context from "effect/Context"
-import * as HttpClient from "effect/unstable/http/HttpClient"
-import type * as HttpClientError from "effect/unstable/http/HttpClientError"
+import * as HttpClient from "effect/http/HttpClient"
+import type * as HttpClientError from "effect/http/HttpClientError"
 
 /**
  * @since 1.0.0

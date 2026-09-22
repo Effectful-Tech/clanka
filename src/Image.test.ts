@@ -1,7 +1,7 @@
 import * as Photon from "@silvia-odwyer/photon-node"
 import { assert, describe, it } from "@effect/vitest"
 import * as Effect from "effect/Effect"
-import * as Encoding from "effect/Encoding"
+import * as Base64 from "effect/encoding/Base64"
 import * as Option from "effect/Option"
 import { vi } from "vitest"
 import * as Image from "./Image.ts"
@@ -32,7 +32,7 @@ const withDecoderSpy = <A, E, R>(
     )
   })
 
-const base64Length = (bytes: Uint8Array) => Encoding.encodeBase64(bytes).length
+const base64Length = (bytes: Uint8Array) => Base64.encode(bytes).length
 
 describe("Image.prepare", () => {
   it.effect("passes an in-limit image through unchanged", () =>

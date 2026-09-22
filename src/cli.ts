@@ -1,9 +1,9 @@
 #!/usr/bin/env -S node --optimize-for-size
 import * as Effect from "effect/Effect"
-import * as Prompt from "effect/unstable/cli/Prompt"
+import * as Prompt from "effect/cli/Prompt"
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient"
-import * as Command from "effect/unstable/cli/Command"
-import * as Flag from "effect/unstable/cli/Flag"
+import * as Command from "effect/cli/Command"
+import * as Flag from "effect/cli/Flag"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
 import * as GlobalWebSocket from "./GlobalWebSocket.ts"
@@ -21,10 +21,10 @@ import * as Layer from "effect/Layer"
 import * as Logger from "effect/Logger"
 import * as Path from "effect/Path"
 import * as Schema from "effect/Schema"
-import type * as LanguageModel from "effect/unstable/ai/LanguageModel"
-import type * as Model from "effect/unstable/ai/Model"
+import type * as LanguageModel from "effect/ai/LanguageModel"
+import type * as Model from "effect/ai/Model"
 import * as Config from "effect/Config"
-import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
+import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Option from "effect/Option"
 import { OpenAiClient, OpenAiEmbeddingModel } from "@effect/ai-openai"
 import * as DeviceCodeHandler from "./DeviceCodeHandler.ts"
@@ -58,7 +58,9 @@ const modelLayer = (provider: Provider, model: string, effort: string) =>
       ).pipe(Layer.provide(Codex.layerClient))
     : provider === "xai"
       ? withSubagentModel(
-          Xai.model(model, { reasoning: { effort: effort as any } }),
+          Xai.modelWebSocket(model, {
+            reasoning: { effort: effort as any },
+          }),
         ).pipe(Layer.provide(Xai.layerClient))
       : withSubagentModel(Copilot.model(model, { reasoning: { effort } })).pipe(
           Layer.provide(Copilot.layerClient),

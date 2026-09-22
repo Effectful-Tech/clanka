@@ -3,7 +3,7 @@
  */
 /** @effect-diagnostics schemaNumber:off */
 import * as Effect from "effect/Effect"
-import * as Encoding from "effect/Encoding"
+import * as Base64Url from "effect/encoding/Base64Url"
 import * as Function from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
@@ -12,10 +12,10 @@ import * as Schedule from "effect/Schedule"
 import * as Schema from "effect/Schema"
 import * as Semaphore from "effect/Semaphore"
 import * as Context from "effect/Context"
-import * as HttpClient from "effect/unstable/http/HttpClient"
-import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
-import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
-import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
+import * as HttpClient from "effect/http/HttpClient"
+import * as HttpClientRequest from "effect/http/HttpClientRequest"
+import * as HttpClientResponse from "effect/http/HttpClientResponse"
+import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import { DeviceCodeHandler } from "./DeviceCodeHandler.ts"
 
 export const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -158,7 +158,7 @@ const decodeJwtPayload = (token: string): Option.Option<string> => {
   }
 
   return Option.fromNullishOr(
-    Result.getOrUndefined(Encoding.decodeBase64UrlString(payload)),
+    Result.getOrUndefined(Base64Url.decodeString(payload)),
   )
 }
 

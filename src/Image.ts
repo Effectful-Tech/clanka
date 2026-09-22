@@ -14,13 +14,13 @@
  */
 import type * as Photon from "@silvia-odwyer/photon-node"
 import * as Effect from "effect/Effect"
-import * as Encoding from "effect/Encoding"
+import * as Base64 from "effect/encoding/Base64"
 import type * as FileSystem from "effect/FileSystem"
 import * as Option from "effect/Option"
 import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
-import type * as AiError from "effect/unstable/ai/AiError"
-import * as Prompt from "effect/unstable/ai/Prompt"
+import type * as AiError from "effect/ai/AiError"
+import * as Prompt from "effect/ai/Prompt"
 
 /**
  * @since 1.0.0
@@ -677,7 +677,7 @@ export const partBytes = (part: Prompt.FilePart): Option.Option<Uint8Array> => {
   const base64 = part.data.startsWith("data:")
     ? part.data.slice(part.data.indexOf(",") + 1)
     : part.data
-  const decoded = Encoding.decodeBase64(base64)
+  const decoded = Base64.decode(base64)
   return decoded._tag === "Success"
     ? Option.some(decoded.success)
     : Option.none()

@@ -1,14 +1,14 @@
 /**
  * @since 1.0.0
  */
-import * as Model from "effect/unstable/ai/Model"
-import type * as Response from "effect/unstable/ai/Response"
+import * as Model from "effect/ai/Model"
+import type * as Response from "effect/ai/Response"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as AgentSkills from "./AgentSkills.ts"
 import { stripWrappingCodeFence } from "./ScriptExtraction.ts"
 import type * as Path from "effect/Path"
-import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
-import type * as HttpClient from "effect/unstable/http/HttpClient"
+import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
+import type * as HttpClient from "effect/http/HttpClient"
 import type {
   CurrentDirectory,
   DirectoryChanger,
@@ -19,12 +19,12 @@ import type {
 } from "./AgentTools.ts"
 import * as Image from "./Image.ts"
 import type * as FileSystem from "effect/FileSystem"
-import * as Prompt from "effect/unstable/ai/Prompt"
+import * as Prompt from "effect/ai/Prompt"
 import * as Effect from "effect/Effect"
 import * as Stream from "effect/Stream"
 import type * as Scope from "effect/Scope"
-import * as LanguageModel from "effect/unstable/ai/LanguageModel"
-import * as AiError from "effect/unstable/ai/AiError"
+import * as LanguageModel from "effect/ai/LanguageModel"
+import * as AiError from "effect/ai/AiError"
 import * as Context from "effect/Context"
 import * as Option from "effect/Option"
 import { identity, pipe } from "effect/Function"
@@ -33,8 +33,8 @@ import * as Queue from "effect/Queue"
 import * as Array from "effect/Array"
 import * as Schema from "effect/Schema"
 import * as Layer from "effect/Layer"
-import * as Tool from "effect/unstable/ai/Tool"
-import * as Toolkit from "effect/unstable/ai/Toolkit"
+import * as Tool from "effect/ai/Tool"
+import * as Toolkit from "effect/ai/Toolkit"
 import * as Semaphore from "effect/Semaphore"
 import * as Schedule from "effect/Schedule"
 import * as Duration from "effect/Duration"
@@ -574,7 +574,7 @@ ${content}
           runModel,
           Effect.raceFirst(turnTimeoutEffect),
           Effect.retry({
-            while: (err) => {
+            while(err) {
               if (err._tag === "TimeoutError") {
                 maybeSend({
                   agentId,

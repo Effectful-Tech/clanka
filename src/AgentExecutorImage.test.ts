@@ -2,15 +2,15 @@ import { assert, describe, it } from "@effect/vitest"
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as Effect from "effect/Effect"
-import * as Encoding from "effect/Encoding"
+import * as Base64 from "effect/encoding/Base64"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
 import * as Path from "effect/Path"
 import * as Stream from "effect/Stream"
-import * as HttpServer from "effect/unstable/http/HttpServer"
-import * as RpcClient from "effect/unstable/rpc/RpcClient"
-import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization"
-import * as RpcServer from "effect/unstable/rpc/RpcServer"
+import * as HttpServer from "effect/http/HttpServer"
+import * as RpcClient from "effect/rpc/RpcClient"
+import * as RpcSerialization from "effect/rpc/RpcSerialization"
+import * as RpcServer from "effect/rpc/RpcServer"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import type { ImageAttachment } from "./AgentTools.ts"
 import { equalBytes, supportedImages } from "./fixtures/TestImages.ts"
@@ -94,7 +94,7 @@ describe("RPC image executor", () => {
             assert.instanceOf(image.data, Uint8Array)
             assert.isTrue(equalBytes(image.data, bytes))
             assert.include(output.join(""), "Image attached: " + name)
-            assert.notInclude(output.join(""), Encoding.encodeBase64(bytes))
+            assert.notInclude(output.join(""), Base64.encode(bytes))
           }
           assert.notInclude(output.join(""), "data:image/")
         }),

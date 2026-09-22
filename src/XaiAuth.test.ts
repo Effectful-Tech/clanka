@@ -9,8 +9,8 @@ import {
   HttpClientError,
   type HttpClientRequest,
   HttpClientResponse,
-} from "effect/unstable/http"
-import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
+} from "effect/http"
+import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import { DeviceCodeHandler } from "./DeviceCodeHandler.ts"
 import { XaiAuth, TokenData, toTokenStore } from "./XaiAuth.ts"
 

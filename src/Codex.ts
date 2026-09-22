@@ -6,10 +6,10 @@ import * as Layer from "effect/Layer"
 import * as Struct from "effect/Struct"
 import { CodexAuth } from "./CodexAuth.ts"
 import { AgentModelConfig } from "./Agent.ts"
-import * as Model from "effect/unstable/ai/Model"
-import type * as LanguageModel from "effect/unstable/ai/LanguageModel"
-import type * as Socket from "effect/unstable/socket/Socket"
-import type * as ResponseIdTracker from "effect/unstable/ai/ResponseIdTracker"
+import * as Model from "effect/ai/Model"
+import type * as LanguageModel from "effect/ai/LanguageModel"
+import type * as Socket from "effect/socket/Socket"
+import type * as ResponseIdTracker from "effect/ai/ResponseIdTracker"
 
 /**
  * @since 1.0.0

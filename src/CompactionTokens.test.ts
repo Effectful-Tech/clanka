@@ -1,8 +1,8 @@
 import { assert, describe, it } from "@effect/vitest"
-import * as Encoding from "effect/Encoding"
+import * as Base64 from "effect/encoding/Base64"
 import * as Option from "effect/Option"
 import * as Schema from "effect/Schema"
-import * as Prompt from "effect/unstable/ai/Prompt"
+import * as Prompt from "effect/ai/Prompt"
 import * as Compaction from "./Compaction.ts"
 
 const text = (value: string) => Prompt.makePart("text", { text: value })
@@ -141,7 +141,7 @@ describe("Compaction image token estimates", () => {
     if (image.type !== "file") return
     assert.strictEqual(
       image.data,
-      Encoding.encodeBase64(new Uint8Array(1024).fill(137)),
+      Base64.encode(new Uint8Array(1024).fill(137)),
     )
     assert.strictEqual(
       Compaction.estimateTokens(restored),

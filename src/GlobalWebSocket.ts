@@ -2,7 +2,7 @@
  * @since 1.0.0
  */
 import * as Layer from "effect/Layer"
-import * as Socket from "effect/unstable/socket/Socket"
+import * as Socket from "effect/socket/Socket"
 
 type GlobalWebSocket = InstanceType<typeof globalThis.WebSocket>
 

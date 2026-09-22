@@ -3,8 +3,8 @@ await applyPatch(`*** Begin Patch
 @@
  import * as ExaSearch from "./ExaSearch.ts"
  import * as WebToMarkdown from "./WebToMarkdown.ts"
--import type * as HttpClient from "effect/unstable/http/HttpClient"
-+import * as HttpClient from "effect/unstable/http/HttpClient"
+-import type * as HttpClient from "effect/http/HttpClient"
++import * as HttpClient from "effect/http/HttpClient"
 @@
    Tool.make("fetchMarkdown", {
      description: "Fetch a web page and convert it to markdown.",
@@ -64,7 +64,7 @@ await applyPatch(`*** Begin Patch
 +  HttpClient,
 +  type HttpClientRequest,
 +  HttpClientResponse,
-+} from "effect/unstable/http"
++} from "effect/http"
 +import * as AgentTools from "./AgentTools.ts"
 +import * as ToolkitRenderer from "./ToolkitRenderer.ts"
 +

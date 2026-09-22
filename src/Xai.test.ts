@@ -1,16 +1,14 @@
 import { assert, describe, it } from "@effect/vitest"
+import { OpenAiClient } from "@effect/ai-openai"
 import * as Effect from "effect/Effect"
 import * as Exit from "effect/Exit"
 import * as Layer from "effect/Layer"
 import * as Stream from "effect/Stream"
-import * as LanguageModel from "effect/unstable/ai/LanguageModel"
-import * as Model from "effect/unstable/ai/Model"
-import {
-  HttpClient,
-  type HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http"
-import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
+import * as LanguageModel from "effect/ai/LanguageModel"
+import * as Model from "effect/ai/Model"
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
+import * as KeyValueStore from "effect/persistence/KeyValueStore"
+import * as Socket from "effect/socket/Socket"
 import * as Compaction from "./Compaction.ts"
 import { DeviceCodeHandler } from "./DeviceCodeHandler.ts"
 import * as Public from "./index.ts"
@@ -61,6 +59,67 @@ const noLogin = Layer.succeed(DeviceCodeHandler, {
 })
 
 describe("Xai provider", () => {
+  it.todo(
+    "replays WebSocket history inline with storage enabled once upstream supports disabling item references",
+  )
+
+  for (const store of [undefined, false, true] as const) {
+    it.effect("always stores WebSocket responses with store=" + store, () =>
+      Effect.gen(function* () {
+        const http = capture()
+        const requests: Array<
+          Parameters<
+            OpenAiClient.OpenAiSocket["Service"]["createResponseStream"]
+          >[0]
+        > = []
+        yield* Effect.gen(function* () {
+          const ai = yield* LanguageModel.LanguageModel
+          const summarize = yield* Compaction.SummarizerTransform
+          const request = ai
+            .streamText({ prompt: "hello" })
+            .pipe(Stream.runDrain)
+          yield* request.pipe(Effect.exit)
+          yield* summarize(request).pipe(Effect.exit)
+        }).pipe(
+          Effect.provideService(OpenAiClient.OpenAiSocket, {
+            createResponseStream: (request) =>
+              Effect.sync(() => {
+                requests.push(request)
+                return [
+                  HttpClientResponse.fromWeb(
+                    HttpClientRequest.post("https://api.x.ai/v1/responses"),
+                    new Response(),
+                  ),
+                  Stream.empty,
+                ] as const
+              }),
+          }),
+          Effect.provide(
+            Xai.modelWebSocket(
+              "grok-4.6",
+              store === undefined ? undefined : { store },
+            ).pipe(
+              Layer.provide(
+                OpenAiClient.layer({ apiUrl: "https://api.x.ai/v1" }),
+              ),
+              Layer.provide(http.layer),
+              Layer.provide(
+                Layer.succeed(Socket.WebSocketConstructor, () => {
+                  throw new Error("Unexpected live WebSocket")
+                }),
+              ),
+            ),
+          ),
+        )
+        assert.lengthOf(http.requests, 0)
+        assert.lengthOf(requests, 2)
+        for (const request of requests) assert.strictEqual(request.store, true)
+        assert.isUndefined(requests[0]!.max_output_tokens)
+        assert.strictEqual(requests[1]!.max_output_tokens, 4000)
+      }),
+    )
+  }
+
   it("exports Xai, but not XaiAuth, from the public entry point", () => {
     assert.strictEqual(Public.Xai, Xai)
     assert.isFalse("XaiAuth" in Public)

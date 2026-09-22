@@ -2,8 +2,8 @@
  * @since 1.0.0
  */
 /** @effect-diagnostics schemaNumber:off */
-import * as Prompt from "effect/unstable/ai/Prompt"
-import * as AiError from "effect/unstable/ai/AiError"
+import * as Prompt from "effect/ai/Prompt"
+import * as AiError from "effect/ai/AiError"
 import * as Schema from "effect/Schema"
 
 /**

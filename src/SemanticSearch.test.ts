@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect"
 import * as Fiber from "effect/Fiber"
 import * as RequestResolver from "effect/RequestResolver"
 import { TestClock } from "effect/testing"
-import type * as EmbeddingModel from "effect/unstable/ai/EmbeddingModel"
+import type * as EmbeddingModel from "effect/ai/EmbeddingModel"
 import { makeEmbeddingResolver } from "./SemanticSearch.ts"
 
 const baseResolver = RequestResolver.make<EmbeddingModel.EmbeddingRequest>(

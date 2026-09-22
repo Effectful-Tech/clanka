@@ -7,8 +7,8 @@ import * as Struct from "effect/Struct"
 import { API_URL, GithubCopilotAuth } from "./CopilotAuth.ts"
 import { AgentModelConfig } from "./Agent.ts"
 import * as Compaction from "./Compaction.ts"
-import * as Model from "effect/unstable/ai/Model"
-import type * as LanguageModel from "effect/unstable/ai/LanguageModel"
+import * as Model from "effect/ai/Model"
+import type * as LanguageModel from "effect/ai/LanguageModel"
 
 /**
  * @since 1.0.0

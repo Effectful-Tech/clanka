@@ -1,9 +1,9 @@
 import { assert, describe, it } from "@effect/vitest"
 import * as Effect from "effect/Effect"
 import * as Option from "effect/Option"
-import * as AiError from "effect/unstable/ai/AiError"
-import * as Prompt from "effect/unstable/ai/Prompt"
-import * as ResponseIdTracker from "effect/unstable/ai/ResponseIdTracker"
+import * as AiError from "effect/ai/AiError"
+import * as Prompt from "effect/ai/Prompt"
+import * as ResponseIdTracker from "effect/ai/ResponseIdTracker"
 import * as Compaction from "./Compaction.ts"
 
 // -----------------------------------------------------------------------------

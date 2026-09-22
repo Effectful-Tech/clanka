@@ -9,7 +9,7 @@ import * as Option from "effect/Option"
 import * as Path from "effect/Path"
 import * as Predicate from "effect/Predicate"
 import * as Schema from "effect/Schema"
-import * as Yaml from "effect/unstable/encoding/Yaml"
+import * as Yaml from "effect/encoding/Yaml"
 
 /**
  * @since 1.0.0
@@ -90,6 +90,10 @@ export const discover: (options: {
       .pipe(Effect.orElseSucceed(() => []))
     entries.sort()
     for (const entry of entries) {
+      const files = yield* fs
+        .readDirectory(path.join(skillsDir, entry))
+        .pipe(Effect.orElseSucceed((): Array<string> => []))
+      if (!files.includes("SKILL.md")) continue
       const location = path.join(skillsDir, entry, "SKILL.md")
       const content = yield* Effect.option(
         fs.stat(location).pipe(

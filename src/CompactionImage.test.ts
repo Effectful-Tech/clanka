@@ -1,15 +1,15 @@
 import { assert, describe, it } from "@effect/vitest"
 import * as Effect from "effect/Effect"
-import * as Encoding from "effect/Encoding"
+import * as Base64 from "effect/encoding/Base64"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
-import * as LanguageModel from "effect/unstable/ai/LanguageModel"
-import * as Prompt from "effect/unstable/ai/Prompt"
+import * as LanguageModel from "effect/ai/LanguageModel"
+import * as Prompt from "effect/ai/Prompt"
 import * as Compaction from "./Compaction.ts"
 import { tinyPng } from "./fixtures/TestImages.ts"
 
-const base64 = Encoding.encodeBase64(tinyPng)
+const base64 = Base64.encode(tinyPng)
 
 const user = (text: string) =>
   Prompt.makeMessage("user", {

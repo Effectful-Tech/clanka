@@ -5,7 +5,7 @@ import {
   HttpClient,
   type HttpClientRequest,
   HttpClientResponse,
-} from "effect/unstable/http"
+} from "effect/http"
 import * as WebToMarkdown from "./WebToMarkdown.ts"
 
 describe("WebToMarkdown", () => {

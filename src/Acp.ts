@@ -10,7 +10,7 @@
  */
 import * as Cause from "effect/Cause"
 import * as Effect from "effect/Effect"
-import * as Encoding from "effect/Encoding"
+import * as Base64 from "effect/encoding/Base64"
 import * as Exit from "effect/Exit"
 import * as Fiber from "effect/Fiber"
 import * as FileSystem from "effect/FileSystem"
@@ -24,11 +24,11 @@ import * as Schema from "effect/Schema"
 import * as Scope from "effect/Scope"
 import * as Stdio from "effect/Stdio"
 import * as Stream from "effect/Stream"
-import type * as LanguageModel from "effect/unstable/ai/LanguageModel"
-import type * as Model from "effect/unstable/ai/Model"
-import * as Prompt from "effect/unstable/ai/Prompt"
-import * as HttpClient from "effect/unstable/http/HttpClient"
-import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
+import type * as LanguageModel from "effect/ai/LanguageModel"
+import type * as Model from "effect/ai/Model"
+import * as Prompt from "effect/ai/Prompt"
+import * as HttpClient from "effect/http/HttpClient"
+import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import type * as Agent from "./Agent.ts"
 import type * as AgentOutput from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
@@ -248,7 +248,7 @@ const decodeBase64 = (data: string, what: string) => {
       ),
     )
   }
-  const decoded = Encoding.decodeBase64(data)
+  const decoded = Base64.decode(data)
   return decoded._tag === "Success"
     ? Effect.succeed(decoded.success)
     : Effect.fail(invalidParams(`Invalid base64 image data in ${what}`))
@@ -264,7 +264,7 @@ const textContent = (text: string) => ({ type: "text", text })
 const imageContent = (part: Prompt.FilePart) =>
   Option.map(Image.partBytes(part), (bytes) => ({
     type: "image",
-    data: Encoding.encodeBase64(bytes),
+    data: Base64.encode(bytes),
     mimeType: part.mediaType,
   }))
 

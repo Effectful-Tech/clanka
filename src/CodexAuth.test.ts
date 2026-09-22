@@ -1,8 +1,8 @@
 import { assert, describe, it } from "@effect/vitest"
 import * as Effect from "effect/Effect"
-import * as Encoding from "effect/Encoding"
+import * as Base64Url from "effect/encoding/Base64Url"
 import * as Option from "effect/Option"
-import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
+import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import {
   CodexAuthError,
   STORE_PREFIX,
@@ -17,7 +17,7 @@ import {
 } from "./CodexAuth.ts"
 
 const createJwt = (payload: string): string =>
-  `${Encoding.encodeBase64Url(JSON.stringify({ alg: "none" }))}.${Encoding.encodeBase64Url(payload)}.sig`
+  `${Base64Url.encode(JSON.stringify({ alg: "none" }))}.${Base64Url.encode(payload)}.sig`
 
 const createTestJwt = (payload: Record<string, unknown>): string =>
   createJwt(JSON.stringify(payload))

@@ -6,19 +6,19 @@ import * as NodePath from "@effect/platform-node/NodePath"
 import * as Effect from "effect/Effect"
 import * as Fiber from "effect/Fiber"
 import { TestClock } from "effect/testing"
-import * as Encoding from "effect/Encoding"
+import * as Base64 from "effect/encoding/Base64"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as Path from "effect/Path"
 import * as Stream from "effect/Stream"
-import * as LanguageModel from "effect/unstable/ai/LanguageModel"
-import * as Model from "effect/unstable/ai/Model"
-import type * as Prompt from "effect/unstable/ai/Prompt"
-import type * as AiResponse from "effect/unstable/ai/Response"
-import * as HttpClient from "effect/unstable/http/HttpClient"
-import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
-import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore"
+import * as LanguageModel from "effect/ai/LanguageModel"
+import * as Model from "effect/ai/Model"
+import type * as Prompt from "effect/ai/Prompt"
+import type * as AiResponse from "effect/ai/Response"
+import * as HttpClient from "effect/http/HttpClient"
+import * as HttpClientResponse from "effect/http/HttpClientResponse"
+import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Acp from "./Acp.ts"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
@@ -167,7 +167,7 @@ const withTempDir = <A, E, R>(f: (cwd: string) => Effect.Effect<A, E, R>) =>
     return yield* f(cwd)
   })
 
-const base64 = (bytes: Uint8Array) => Encoding.encodeBase64(bytes)
+const base64 = (bytes: Uint8Array) => Base64.encode(bytes)
 
 describe("Acp images", () => {
   it.effect("maps an image block onto a file part instead of text", () =>

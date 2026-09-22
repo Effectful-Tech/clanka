@@ -1,6 +1,6 @@
 import * as Photon from "@silvia-odwyer/photon-node"
 import * as Zlib from "node:zlib"
-import * as Encoding from "effect/Encoding"
+import * as Base64 from "effect/encoding/Base64"
 
 export const encodePng = (options: {
   readonly width: number
@@ -278,7 +278,7 @@ export const bytesOf = (data: string | Uint8Array | URL): Uint8Array => {
   const base64 = data.startsWith("data:")
     ? data.slice(data.indexOf(",") + 1)
     : data
-  const decoded = Encoding.decodeBase64(base64)
+  const decoded = Base64.decode(base64)
   if (decoded._tag === "Failure") throw new Error("Invalid base64 image data")
   return decoded.success
 }

@@ -7,8 +7,8 @@ import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as Path from "effect/Path"
 import * as Stream from "effect/Stream"
-import * as LanguageModel from "effect/unstable/ai/LanguageModel"
-import * as Model from "effect/unstable/ai/Model"
+import * as LanguageModel from "effect/ai/LanguageModel"
+import * as Model from "effect/ai/Model"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as AgentSkills from "./AgentSkills.ts"
@@ -219,7 +219,9 @@ describe("AgentSkills", () => {
           if (mode !== "missing skills")
             assert.deepStrictEqual(reads, [
               path.join(roots.project, ".agents", "skills"),
+              path.join(roots.project, ".agents", "skills", "proj"),
               path.join(roots.home, ".agents", "skills"),
+              path.join(roots.home, ".agents", "skills", "usr"),
             ])
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
@@ -601,58 +603,65 @@ describe("AgentSkills", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   )
 
-  it.effect("skips skills without a description and tolerates bad YAML", () =>
-    withRoots(
-      Effect.fnUntraced(function* (roots) {
-        yield* writeSkill(
-          roots.project,
-          "no-description",
-          `---
+  it.effect(
+    "skips skills without a description or with invalid frontmatter",
+    () =>
+      withRoots(
+        Effect.fnUntraced(function* (roots) {
+          yield* writeSkill(
+            roots.project,
+            "no-description",
+            `---
 name: no-description
 ---
 body`,
-        )
-        yield* writeSkill(
-          roots.project,
-          "empty-description",
-          `---
+          )
+          yield* writeSkill(
+            roots.project,
+            "empty-description",
+            `---
 name: empty-description
 description: ""
 ---
 body`,
-        )
-        yield* writeSkill(
-          roots.project,
-          "broken",
-          `---
+          )
+          yield* writeSkill(
+            roots.project,
+            "broken",
+            `---
 this is not yaml at all
 ---
 body`,
-        )
-        yield* writeSkill(roots.project, "no-frontmatter", "# Just markdown")
-        yield* writeSkill(
-          roots.project,
-          "messy",
-          `---
+          )
+          yield* writeSkill(roots.project, "no-frontmatter", "# Just markdown")
+          yield* writeSkill(
+            roots.project,
+            "unquoted-colon",
+            "---\nname: unquoted-colon\ndescription: Use when: deploying\n---\nbody",
+          )
+          yield* writeSkill(
+            roots.project,
+            "messy",
+            `---
 name: messy-name-differs
-description: Use when: the task mentions colons, "quotes" or other messy things
+description: 'Use when: the task mentions colons, "quotes" or other messy things'
 metadata:
   author: someone
 ---
 body`,
-        )
-        const skills = yield* discover(roots)
-        assert.deepStrictEqual(
-          skills.map((skill) => [skill.name, skill.description]),
-          [
+          )
+          const skills = yield* discover(roots)
+          assert.deepStrictEqual(
+            skills.map((skill) => [skill.name, skill.description]),
             [
-              "messy-name-differs",
-              'Use when: the task mentions colons, "quotes" or other messy things',
+              [
+                "messy-name-differs",
+                'Use when: the task mentions colons, "quotes" or other messy things',
+              ],
             ],
-          ],
-        )
-      }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+          )
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
   )
 
   it.effect("reads quoted and block scalar frontmatter values", () =>
@@ -738,6 +747,41 @@ body`,
         )
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
+  )
+
+  it.effect(
+    "requires exact filename casing even when SKILL.md is readable",
+    () =>
+      withRoots(
+        Effect.fnUntraced(function* (roots) {
+          const fs = yield* FileSystem.FileSystem
+          const path = yield* Path.Path
+          const location = yield* writeSkill(
+            roots.project,
+            "lowercase",
+            skillFile("lowercase", "Ignored"),
+          )
+          const regular = yield* writeSkill(
+            roots.project,
+            "regular",
+            skillFile("regular", "Found"),
+          )
+          const controlledFs = FileSystem.FileSystem.of({
+            ...fs,
+            readDirectory: (directory, options) =>
+              directory === path.dirname(location)
+                ? Effect.succeed(["skill.md"])
+                : fs.readDirectory(directory, options),
+          })
+          const skills = yield* discover(roots).pipe(
+            Effect.provideService(FileSystem.FileSystem, controlledFs),
+          )
+          assert.deepStrictEqual(
+            skills.map((skill) => skill.location),
+            [regular],
+          )
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
   )
 
   it.effect("returns an empty catalog when nothing exists", () =>

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.8.1
+
+### Patch Changes
+
+- [`80ab4e6`](https://github.com/Effectful-Tech/clanka/commit/80ab4e6329fd5b1331a104537288f473c7cd434f) Thanks [@tim-smart](https://github.com/tim-smart)! - Support xAI WebSocket mode
+
 ## 0.8.0
 
 ### Minor Changes

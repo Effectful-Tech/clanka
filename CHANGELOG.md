@@ -1,5 +1,11 @@
 # clanka
 
+## 0.8.3
+
+### Patch Changes
+
+- [#209](https://github.com/Effectful-Tech/clanka/pull/209) [`3fd8cde`](https://github.com/Effectful-Tech/clanka/commit/3fd8cde2c2252bc713ea374cfe56be881252ce9f) Thanks [@tim-smart](https://github.com/tim-smart)! - Report cached reads and writes as separate ACP usage buckets, excluding both from uncached input tokens.
+
 ## 0.8.2
 
 ### Patch Changes

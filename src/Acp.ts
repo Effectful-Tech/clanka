@@ -653,10 +653,13 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
           return update(session.id, {
             sessionUpdate: "usage_update",
             usage: {
-              inputTokens: part.inputTokens,
+              inputTokens: Math.max(
+                0,
+                part.inputTokens - part.cacheRead - part.cacheWrite,
+              ),
               outputTokens: part.outputTokens,
-              cacheRead: part.cacheRead,
-              cacheWrite: part.cacheWrite,
+              cachedReadTokens: part.cacheRead,
+              cachedWriteTokens: part.cacheWrite,
             },
           })
         case "ErrorRetry":

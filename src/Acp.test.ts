@@ -169,6 +169,7 @@ describe("Acp", () => {
                 usage: {
                   inputTokens: {
                     total: 120,
+                    uncached: 84,
                     cacheRead: 30,
                     cacheWrite: 6,
                   },
@@ -194,10 +195,10 @@ describe("Acp", () => {
             {
               sessionUpdate: "usage_update",
               usage: {
-                inputTokens: 120,
+                inputTokens: 84,
                 outputTokens: 12,
-                cacheRead: 30,
-                cacheWrite: 6,
+                cachedReadTokens: 30,
+                cachedWriteTokens: 6,
               },
             },
           )
@@ -246,8 +247,8 @@ describe("Acp", () => {
                 usage: {
                   inputTokens: 120,
                   outputTokens: 12,
-                  cacheRead: 0,
-                  cacheWrite: 0,
+                  cachedReadTokens: 0,
+                  cachedWriteTokens: 0,
                 },
               },
             )

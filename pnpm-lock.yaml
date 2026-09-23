@@ -46,23 +46,23 @@ importers:
         specifier: ^3.0.3
         version: 3.0.3
       '@effect/ai-openai':
-        specifier: https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai@24fa0ab
-        version: https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai@24fa0ab(effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab)
+        specifier: https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai@b3032f0
+        version: https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai@b3032f0(effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0)
       '@effect/ai-openai-compat':
-        specifier: https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai-compat@24fa0ab
-        version: https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai-compat@24fa0ab(effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab)
+        specifier: https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai-compat@b3032f0
+        version: https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai-compat@b3032f0(effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0)
       '@effect/platform-node':
-        specifier: https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@24fa0ab
-        version: https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@24fa0ab(effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab)(redis@6.2.1)
+        specifier: https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@b3032f0
+        version: https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@b3032f0(effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0)(redis@6.2.1)
       '@effect/sql-sqlite-node':
-        specifier: https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@24fa0ab
-        version: https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@24fa0ab(effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab)
+        specifier: https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@b3032f0
+        version: https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@b3032f0(effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0)
       '@effect/tsgo':
         specifier: 0.45.0
         version: 0.45.0
       '@effect/vitest':
-        specifier: https://pkg.pr.new/Effect-TS/effect/@effect/vitest@24fa0ab
-        version: https://pkg.pr.new/Effect-TS/effect/@effect/vitest@24fa0ab(effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab)(vitest@5.0.1(@types/node@26.1.1)(vite@8.0.10(@types/node@26.1.1)(yaml@2.9.1)))
+        specifier: https://pkg.pr.new/Effect-TS/effect/@effect/vitest@b3032f0
+        version: https://pkg.pr.new/Effect-TS/effect/@effect/vitest@b3032f0(effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0)(vitest@5.0.1(@types/node@26.1.1)(vite@8.0.10(@types/node@26.1.1)(yaml@2.9.1)))
       '@types/node':
         specifier: ^26.1.1
         version: 26.1.1
@@ -70,8 +70,8 @@ importers:
         specifier: ^5.0.6
         version: 5.0.6
       effect:
-        specifier: https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab
-        version: https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab
+        specifier: https://pkg.pr.new/Effect-TS/effect/effect@b3032f0
+        version: https://pkg.pr.new/Effect-TS/effect/effect@b3032f0
       husky:
         specifier: ^9.1.7
         version: 9.1.7
@@ -173,35 +173,35 @@ packages:
     resolution: {integrity: sha512-dlT1m5e/0yUL0kRNcQn7yGLVThkgbB0Ga/1AmfDDC/8ik6AIiSf2QLQO2zPYvefsHP0aFgxO93cVLCCfDp7kzQ==}
     engines: {node: '>= 20.12.0'}
 
-  '@effect/ai-openai-compat@https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai-compat@24fa0ab':
-    resolution: {integrity: sha512-mZFnY1MN84AddanC10wmJkvor1IHTS1bLFfrCvK5pUU2JNsUTUlSS80etNbJJbLupJ7M/LtKY8Xexk1uziX4Bg==, tarball: https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai-compat@24fa0ab}
+  '@effect/ai-openai-compat@https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai-compat@b3032f0':
+    resolution: {integrity: sha512-dUBoSlGwYgslxTYoLzmimM9Riwk+hj7JVShn5cJ1OBrG0R1ozoxX9pI27F+2/cAo5e+DjnWYdNj89Hwf3IweAA==, tarball: https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai-compat@b3032f0}
     version: 4.0.0-rc.117
     peerDependencies:
       effect: ^4.0.0-rc.117
 
-  '@effect/ai-openai@https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai@24fa0ab':
-    resolution: {integrity: sha512-RLDGaVJcark2OiUY8N05p3BxMZum+eLaYb02HfL6rDksf1qG28Yf4iSPCG+JGWXfe1Y/MuLzJmpvg2LYG90Ubg==, tarball: https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai@24fa0ab}
+  '@effect/ai-openai@https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai@b3032f0':
+    resolution: {integrity: sha512-zWzjhjHSpM0e5waZxQ8VC7BkCKuk7JBsdNr0JeGcKcWu+CFif25tpzZHKDG47F6NkpZ2H/PFDY9XEEkQWh3hqQ==, tarball: https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai@b3032f0}
     version: 4.0.0-rc.117
     peerDependencies:
       effect: ^4.0.0-rc.117
 
-  '@effect/platform-node-shared@https://pkg.pr.new/Effect-TS/effect/@effect/platform-node-shared@24fa0ab30b34685ecea3cae387e43a1075ddc3ce':
-    resolution: {integrity: sha512-CvFpVkFXmli8H7IttATocbLM2YOi2uMnHsBsNn3ceNqcxkQvkEEPpP9t0JvvEtrc6ybUXz/XKYmwcqRnGfcZvQ==, tarball: https://pkg.pr.new/Effect-TS/effect/@effect/platform-node-shared@24fa0ab30b34685ecea3cae387e43a1075ddc3ce}
+  '@effect/platform-node-shared@https://pkg.pr.new/Effect-TS/effect/@effect/platform-node-shared@b3032f01f288942e7ef7398efc654b58d6525792':
+    resolution: {integrity: sha512-8yeRpMDlv5vteQPtitHVK0qBARwVulzenRWQNm9NZkUNx+OaR6KmOWMQZBO/wUkBX6vVH5Vyl0cUgq5RGxnPnw==, tarball: https://pkg.pr.new/Effect-TS/effect/@effect/platform-node-shared@b3032f01f288942e7ef7398efc654b58d6525792}
     version: 4.0.0-rc.117
     engines: {node: '>=18.0.0'}
     peerDependencies:
       effect: ^4.0.0-rc.117
 
-  '@effect/platform-node@https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@24fa0ab':
-    resolution: {integrity: sha512-axi4yFugr3MT66E9ysJC4gk4D7vJKinEBNPRO39x4EZTFHeOH06vIvLoEBerTJgEnNlblvNTCGpYXNuEDL68zQ==, tarball: https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@24fa0ab}
+  '@effect/platform-node@https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@b3032f0':
+    resolution: {integrity: sha512-o3mo18nRNyaWZ7hyujIUsg2TVFIaQnBE5k3KIBE7YC+P8y0X8mdSsAVPgoSNiqB6jIOnh3Cu9H+9rTDac3oyCw==, tarball: https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@b3032f0}
     version: 4.0.0-rc.117
     engines: {node: '>=18.0.0'}
     peerDependencies:
       effect: ^4.0.0-rc.117
       redis: '>=5.0.0 <7.0.0'
 
-  '@effect/sql-sqlite-node@https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@24fa0ab':
-    resolution: {integrity: sha512-ZbuN5heKyTFcmpXgIO18d1A9UeGIc0MrvgHDqGB03+PHr2q3Gvt94Ln6k6hQbGoYQqscyanCxknZoR/A8dzenA==, tarball: https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@24fa0ab}
+  '@effect/sql-sqlite-node@https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@b3032f0':
+    resolution: {integrity: sha512-lF+s83Anc0V+pMMy5/uHFMk3h4G2NTXlcTl+Tps3ZRlVfOuSrBPwTw9laB1DkubqrW07FXHT5sHt+LjcrOc30w==, tarball: https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@b3032f0}
     version: 4.0.0-rc.117
     peerDependencies:
       effect: ^4.0.0-rc.117
@@ -245,8 +245,8 @@ packages:
     resolution: {integrity: sha512-gPG0ixVHgtYBUe5DbKX9vzHlhqd9+ZEfs4m/XWy0808av0A2XqMzaG3F5rnPBN7EUJRPlo9TluIi8WHx/pBV+A==}
     hasBin: true
 
-  '@effect/vitest@https://pkg.pr.new/Effect-TS/effect/@effect/vitest@24fa0ab':
-    resolution: {integrity: sha512-H1nrmMIklxF+xxNVX21xKFw3pIegD0Y2IMiHg8bMj7helqAWqGLftT4j3WmOyL+HAxLtxFPEoyxcxBccESP2zg==, tarball: https://pkg.pr.new/Effect-TS/effect/@effect/vitest@24fa0ab}
+  '@effect/vitest@https://pkg.pr.new/Effect-TS/effect/@effect/vitest@b3032f0':
+    resolution: {integrity: sha512-6GzjzfuBEGCADJWDvHfGWRPQHCAh6RLmabE8xuO3/IIusqmX8Z1xJZE/1a33EGCqQajimYLNs7g08Xa9m2fbZw==, tarball: https://pkg.pr.new/Effect-TS/effect/@effect/vitest@b3032f0}
     version: 4.0.0-rc.117
     peerDependencies:
       effect: ^4.0.0-rc.117
@@ -1127,8 +1127,8 @@ packages:
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
 
-  effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab:
-    resolution: {integrity: sha512-QqGXXp3kitMcXaGp25vdoPNhTzZNemSTjXj/mVRmfsmjO+EAF0E9ja09gOHYgwp2sPemc6Bjag6USbKTW7kWpg==, tarball: https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab}
+  effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0:
+    resolution: {integrity: sha512-ZnaF0cv9qMcezLmzPt5HqVECG6uSyGHBk9awPJhpRDbm38diCqvPhOQC7sIlJXk6Z2FDSX0SeG8XEf14r/Ft4A==, tarball: https://pkg.pr.new/Effect-TS/effect/effect@b3032f0}
     version: 4.0.0-rc.117
 
   empathic@2.1.0:
@@ -2066,36 +2066,36 @@ snapshots:
       fast-wrap-ansi: 0.2.2
       sisteransi: 1.0.5
 
-  '@effect/ai-openai-compat@https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai-compat@24fa0ab(effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab)':
+  '@effect/ai-openai-compat@https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai-compat@b3032f0(effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0)':
     dependencies:
-      effect: https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab
+      effect: https://pkg.pr.new/Effect-TS/effect/effect@b3032f0
 
-  '@effect/ai-openai@https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai@24fa0ab(effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab)':
+  '@effect/ai-openai@https://pkg.pr.new/Effect-TS/effect/@effect/ai-openai@b3032f0(effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0)':
     dependencies:
-      effect: https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab
+      effect: https://pkg.pr.new/Effect-TS/effect/effect@b3032f0
 
-  '@effect/platform-node-shared@https://pkg.pr.new/Effect-TS/effect/@effect/platform-node-shared@24fa0ab30b34685ecea3cae387e43a1075ddc3ce(effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab)':
+  '@effect/platform-node-shared@https://pkg.pr.new/Effect-TS/effect/@effect/platform-node-shared@b3032f01f288942e7ef7398efc654b58d6525792(effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0)':
     dependencies:
       '@types/ws': 8.18.1
-      effect: https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab
+      effect: https://pkg.pr.new/Effect-TS/effect/effect@b3032f0
       ws: 8.21.3
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@effect/platform-node@https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@24fa0ab(effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab)(redis@6.2.1)':
+  '@effect/platform-node@https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@b3032f0(effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0)(redis@6.2.1)':
     dependencies:
-      '@effect/platform-node-shared': https://pkg.pr.new/Effect-TS/effect/@effect/platform-node-shared@24fa0ab30b34685ecea3cae387e43a1075ddc3ce(effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab)
-      effect: https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab
+      '@effect/platform-node-shared': https://pkg.pr.new/Effect-TS/effect/@effect/platform-node-shared@b3032f01f288942e7ef7398efc654b58d6525792(effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0)
+      effect: https://pkg.pr.new/Effect-TS/effect/effect@b3032f0
       redis: 6.2.1
       undici: 8.10.2
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@effect/sql-sqlite-node@https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@24fa0ab(effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab)':
+  '@effect/sql-sqlite-node@https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@b3032f0(effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0)':
     dependencies:
-      effect: https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab
+      effect: https://pkg.pr.new/Effect-TS/effect/effect@b3032f0
 
   '@effect/tsgo-darwin-arm64@0.45.0':
     optional: true
@@ -2128,9 +2128,9 @@ snapshots:
       '@effect/tsgo-win32-arm64': 0.45.0
       '@effect/tsgo-win32-x64': 0.45.0
 
-  '@effect/vitest@https://pkg.pr.new/Effect-TS/effect/@effect/vitest@24fa0ab(effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab)(vitest@5.0.1(@types/node@26.1.1)(vite@8.0.10(@types/node@26.1.1)(yaml@2.9.1)))':
+  '@effect/vitest@https://pkg.pr.new/Effect-TS/effect/@effect/vitest@b3032f0(effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0)(vitest@5.0.1(@types/node@26.1.1)(vite@8.0.10(@types/node@26.1.1)(yaml@2.9.1)))':
     dependencies:
-      effect: https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab
+      effect: https://pkg.pr.new/Effect-TS/effect/effect@b3032f0
       vitest: 5.0.1(@types/node@26.1.1)(vite@8.0.10(@types/node@26.1.1)(yaml@2.9.1))
 
   '@emnapi/core@1.10.0':
@@ -2716,7 +2716,7 @@ snapshots:
 
   ee-first@1.1.1: {}
 
-  effect@https://pkg.pr.new/Effect-TS/effect/effect@24fa0ab: {}
+  effect@https://pkg.pr.new/Effect-TS/effect/effect@b3032f0: {}
 
   empathic@2.1.0: {}
 

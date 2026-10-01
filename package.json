@@ -45,11 +45,11 @@
     "turndown": "^7.2.4"
   },
   "peerDependencies": {
-    "@effect/ai-openai": ">=4.0.0 <4.0.1",
-    "@effect/ai-openai-compat": ">=4.0.0 <4.0.1",
-    "@effect/platform-node": ">=4.0.0 <4.0.1",
-    "@effect/sql-sqlite-node": ">=4.0.0 <4.0.1",
-    "effect": ">=4.0.0 <4.0.1"
+    "@effect/ai-openai": "^4.0.0",
+    "@effect/ai-openai-compat": "^4.0.0",
+    "@effect/platform-node": "^4.0.0",
+    "@effect/sql-sqlite-node": "^4.0.0",
+    "effect": "^4.0.0"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^1.0.1",

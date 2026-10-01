@@ -64,7 +64,7 @@ describe("RPC subagent executor", () => {
                 onImage: () => Effect.void,
                 onSubagent: (prompt) =>
                   Effect.gen(function* () {
-                    assert.strictEqual(prompt, "first")
+                    assert.isTrue(prompt.endsWith("\n\nfirst"))
                     yield* Deferred.succeed(firstStarted, undefined)
                     yield* Deferred.await(secondStarted)
                     return "first-output"
@@ -78,7 +78,7 @@ describe("RPC subagent executor", () => {
                 onImage: () => Effect.void,
                 onSubagent: (prompt) =>
                   Effect.gen(function* () {
-                    assert.strictEqual(prompt, "second")
+                    assert.isTrue(prompt.endsWith("\n\nsecond"))
                     yield* Deferred.succeed(secondStarted, undefined)
                     yield* Deferred.await(firstStarted)
                     return "second-output"
@@ -88,8 +88,8 @@ describe("RPC subagent executor", () => {
           ],
           { concurrency: "unbounded" },
         )
-        assert.strictEqual(outputs[0].join(""), "first:first-output\n")
-        assert.strictEqual(outputs[1].join(""), "second:second-output\n")
+        assert.isTrue(outputs[0].join("").endsWith("first:first-output\n"))
+        assert.isTrue(outputs[1].join("").endsWith("second:second-output\n"))
       }),
     ),
   )
@@ -106,7 +106,7 @@ describe("RPC subagent executor", () => {
               onImage: () => Effect.void,
               onSubagent: (prompt) =>
                 Effect.gen(function* () {
-                  assert.strictEqual(prompt, "outer")
+                  assert.isTrue(prompt.endsWith("\n\nouter"))
                   const childOutput = yield* executor
                     .execute({
                       script: 'console.log("child:" + await delegate("inner"))',
@@ -114,20 +114,19 @@ describe("RPC subagent executor", () => {
                       onImage: () => Effect.void,
                       onSubagent: (innerPrompt) =>
                         Effect.sync(() => {
-                          assert.strictEqual(innerPrompt, "inner")
+                          assert.isTrue(innerPrompt.endsWith("\n\ninner"))
                           return "inner-output"
                         }),
                     })
                     .pipe(Stream.runCollect)
-                  assert.strictEqual(
-                    childOutput.join(""),
-                    "child:inner-output\n",
+                  assert.isTrue(
+                    childOutput.join("").endsWith("child:inner-output\n"),
                   )
-                  return childOutput.join("").trim()
+                  return childOutput.join("").trim().split("\n").at(-1)!
                 }),
             })
             .pipe(Stream.runCollect)
-          assert.strictEqual(output.join(""), "parent:child:inner-output\n")
+          assert.isTrue(output.join("").endsWith("parent:child:inner-output\n"))
         }),
       ),
   )

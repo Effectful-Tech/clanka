@@ -1,5 +1,13 @@
 # clanka
 
+## 0.8.4
+
+### Patch Changes
+
+- [#212](https://github.com/Effectful-Tech/clanka/pull/212) [`d714957`](https://github.com/Effectful-Tech/clanka/commit/d7149577c4d3ef96cded4b204bbfea5e2cebc8e7) Thanks [@tim-smart](https://github.com/tim-smart)! - Upgrade Effect and its companion packages to 4.0.0 and require stable Effect 4 peers.
+
+- [#211](https://github.com/Effectful-Tech/clanka/pull/211) [`4c58d3a`](https://github.com/Effectful-Tech/clanka/commit/4c58d3a1fe25f416f433e4b556c0f10f36b239f4) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix RPC subagent ID collisions across concurrent execute streams, including nested delegation, by allocating IDs from a server-wide counter.
+
 ## 0.8.3
 
 ### Patch Changes

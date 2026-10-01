@@ -422,6 +422,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
             number,
             (effect: Effect.Effect<string>) => void
           >()
+          let subagentId = 0
 
           return Rpcs.of({
             capabilities: () => local.capabilities,
@@ -438,8 +439,6 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
                 typeof ExecuteOutput.Type,
                 Cause.Done
               >()
-              let subagentId = 0
-
               yield* pipe(
                 local.execute({
                   script,

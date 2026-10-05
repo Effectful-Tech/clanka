@@ -489,7 +489,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         )
       }),
       bash: Effect.fn("AgentTools.bash")(function* (options) {
-        const timeoutMs = Math.min(options.timeoutMs ?? 120_000, 240_000)
+        const timeoutMs = Math.min(options.timeoutMs ?? 600_000, 600_000)
         yield* Effect.logInfo(`Calling "bash"`).pipe(
           Effect.annotateLogs({
             ...options,
@@ -539,6 +539,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
       applyPatch: Effect.fn("AgentTools.applyPatch")(function* (patchText) {
         yield* Effect.logInfo(`Calling "applyPatch"`)
         const cwd = yield* CurrentDirectory
+        // oxlint-disable-next-line unicorn/consistent-function-scoping
         const fail = (path: string, reason: "delete" | "update") =>
           Effect.fail(
             new ApplyPatchError({

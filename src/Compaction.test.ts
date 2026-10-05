@@ -454,6 +454,7 @@ describe("Compaction.isContextLengthError", () => {
 
 describe("Compaction.split", () => {
   // Each execute result is ~8k chars => ~2k tokens per tool message.
+  // oxlint-disable-next-line unicorn/consistent-function-scoping
   const dump = (i: number) => filler(`dump${i}`, 8_000)
   const conversation = [
     user("first request"),

@@ -1,5 +1,13 @@
 # clanka
 
+## 0.8.5
+
+### Patch Changes
+
+- [`2e89de6`](https://github.com/Effectful-Tech/clanka/commit/2e89de6d49838f4b5e960bd58bb37fdb94b0c425) Thanks [@tim-smart](https://github.com/tim-smart)! - update effect
+
+- [`2e89de6`](https://github.com/Effectful-Tech/clanka/commit/2e89de6d49838f4b5e960bd58bb37fdb94b0c425) Thanks [@tim-smart](https://github.com/tim-smart)! - lift default bash timeout
+
 ## 0.8.4
 
 ### Patch Changes

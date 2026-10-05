@@ -40,7 +40,10 @@
           "effect",
           "@effect/platform-node",
           "@effect/sql-sqlite-node"
-        ]
+        ],
+        "diagnosticSeverity": {
+          "unstableApiUsage": "off"
+        }
       }
     ]
   },

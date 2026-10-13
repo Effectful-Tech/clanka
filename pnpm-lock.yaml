@@ -46,23 +46,23 @@ importers:
         specifier: ^3.0.3
         version: 3.0.3
       '@effect/ai-openai':
-        specifier: 4.0.1
-        version: 4.0.1(effect@4.0.1)
+        specifier: 4.0.4
+        version: 4.0.4(effect@4.0.4)
       '@effect/ai-openai-compat':
-        specifier: 4.0.1
-        version: 4.0.1(effect@4.0.1)
+        specifier: 4.0.4
+        version: 4.0.4(effect@4.0.4)
       '@effect/platform-node':
-        specifier: 4.0.0
-        version: 4.0.0(effect@4.0.1)(redis@6.2.1)
+        specifier: 4.0.4
+        version: 4.0.4(effect@4.0.4)(redis@6.2.1)
       '@effect/sql-sqlite-node':
-        specifier: 4.0.1
-        version: 4.0.1(effect@4.0.1)
+        specifier: 4.0.4
+        version: 4.0.4(effect@4.0.4)
       '@effect/tsgo':
         specifier: 0.48.0
         version: 0.48.0
       '@effect/vitest':
-        specifier: 4.0.1
-        version: 4.0.1(effect@4.0.1)(vitest@5.0.3(@types/node@26.6.4)(vite@8.0.10(@types/node@26.6.4)(yaml@2.9.1)))
+        specifier: 4.0.4
+        version: 4.0.4(effect@4.0.4)(vitest@5.0.3(@types/node@26.6.4)(vite@8.0.10(@types/node@26.6.4)(yaml@2.9.1)))
       '@types/node':
         specifier: ^26.6.4
         version: 26.6.4
@@ -70,8 +70,8 @@ importers:
         specifier: ^5.0.6
         version: 5.0.6
       effect:
-        specifier: 4.0.1
-        version: 4.0.1
+        specifier: 4.0.4
+        version: 4.0.4
       husky:
         specifier: ^9.1.7
         version: 9.1.7
@@ -173,33 +173,33 @@ packages:
     resolution: {integrity: sha512-dlT1m5e/0yUL0kRNcQn7yGLVThkgbB0Ga/1AmfDDC/8ik6AIiSf2QLQO2zPYvefsHP0aFgxO93cVLCCfDp7kzQ==}
     engines: {node: '>= 20.12.0'}
 
-  '@effect/ai-openai-compat@4.0.1':
-    resolution: {integrity: sha512-PuFYB/Gd+2YB3zJAlivFUrvEHOg9p6DP93/c1kPH+IGqtBp8oVBS6qNWPWfEkD7+JX8qOWOlwwk5Mqe7X1jvQg==}
+  '@effect/ai-openai-compat@4.0.4':
+    resolution: {integrity: sha512-7ujq5yF/9xSvPvUdxqcdMfrAb1c9IeN6JZtfU/MXrLVSpEKl0pSmFizd+v7fWeUQMWAp4q5Gah0TU5ErGsJkJQ==}
     peerDependencies:
-      effect: ^4.0.1
+      effect: ^4.0.4
 
-  '@effect/ai-openai@4.0.1':
-    resolution: {integrity: sha512-NiiwUX+wXhYJf+dwRFqMpF1q2Vc/RjXKk8HXv9+8NwglV7k2NQMiIrShBO8pO8guT+w7afA12xX4ieSL5GPDfg==}
+  '@effect/ai-openai@4.0.4':
+    resolution: {integrity: sha512-CoNvGv4bYhrTQayNBZZnG4mJOl7beD2NPz49+uBtg8wD/QN7c+2FdKOFKqL23BlNtQb4fK+kvxtwnnCzGcX0fA==}
     peerDependencies:
-      effect: ^4.0.1
+      effect: ^4.0.4
 
-  '@effect/platform-node-shared@4.0.0':
-    resolution: {integrity: sha512-VBXHJU9UXVZPdQGGDRjGXpo+TpOzRwZuMrdKAtIxi1qwcRftmacZ1zTgIrzBa0Z2RA2KVkoOecQUsTlt/nJZhw==}
+  '@effect/platform-node-shared@4.0.4':
+    resolution: {integrity: sha512-gh2KRmqGWrJ0FVL8GqnI1GpB+fCfCUI7sGiUZkxxBHyHj1t94rm6VDJffCfuVZWe6GpvYXtizifVczUrgOce8A==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
-      effect: ^4.0.0
+      effect: ^4.0.4
 
-  '@effect/platform-node@4.0.0':
-    resolution: {integrity: sha512-/L+4MUbl8FejPKLHLROYSOebvHnfixkP8KiblSD/DE5uH5xENZBHaux4nH6XMnRP+lr8ajpEJFS8sUrmmxFJeQ==}
+  '@effect/platform-node@4.0.4':
+    resolution: {integrity: sha512-SdoyQMrO5zmqBebb2fxDk0sHYyJjBiw4QmLdV2ZcWf3ATpQPge3B5sTLijZg49PadekOwNeO83o5TfdtiiFEig==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
-      effect: ^4.0.0
+      effect: ^4.0.4
       redis: '>=5.0.0 <7.0.0'
 
-  '@effect/sql-sqlite-node@4.0.1':
-    resolution: {integrity: sha512-VBlNvfFRxyyiu1viNygxA0ZVGZcpxBHA3+QLobaLQSXgAP0submgo98IzioWTHzdZUc9Xodi7ICci5ehhbD2fQ==}
+  '@effect/sql-sqlite-node@4.0.4':
+    resolution: {integrity: sha512-dKPaiab7UpRvD+CfkcT2qavV83h9k2Vz5cjvNvwa7DyxZWuf10LQiSl8tJDtXMcz69BMLdy7skUUFFnlXVNROw==}
     peerDependencies:
-      effect: ^4.0.1
+      effect: ^4.0.4
 
   '@effect/tsgo-darwin-arm64@0.48.0':
     resolution: {integrity: sha512-MGfjTc/ZLlX045/7br+adgpyo6z/4MJIzMgnISYVWvUgIOzGbGbwdlkINHn4x0ADKZh3f8M2jBzGPv0BPp9m/A==}
@@ -240,10 +240,10 @@ packages:
     resolution: {integrity: sha512-802nDQDmDxT/zGtGqJp+AVvhMMHfnHNxdAK92612hDU1ba1fWrXlxY2ayuTi3iACIP94NCIdSaFRaTcqw/FEnw==}
     hasBin: true
 
-  '@effect/vitest@4.0.1':
-    resolution: {integrity: sha512-DbY9kf/018zBxRIX7rJwBnPVPzSarnUpcshm0vfYPFiDkSa7AFrXTh2BlDNUbrdrmqcIOBhVZ7GkEtxf8WiQrg==}
+  '@effect/vitest@4.0.4':
+    resolution: {integrity: sha512-l5KN46RbDVpqZxWzwXZtX6FVQiyzd+/hTYqL543uSDRo7hC0m19IeICh6O9U/nqCtfersqsNZnBjgHFfkuHsBw==}
     peerDependencies:
-      effect: ^4.0.1
+      effect: ^4.0.4
       vitest: '>=5.0.0 <6.0.0'
 
   '@emnapi/core@1.10.0':
@@ -672,8 +672,8 @@ packages:
   '@types/turndown@5.0.6':
     resolution: {integrity: sha512-ru00MoyeeouE5BX4gRL+6m/BsDfbRayOskWqUvh7CLGW+UXxHQItqALa38kKnOiZPqJrtzJUgAC2+F0rL1S4Pg==}
 
-  '@types/ws@8.18.1':
-    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
+  '@types/ws@8.18.2':
+    resolution: {integrity: sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w==}
 
   '@typescript/typescript-aix-ppc64@7.0.2':
     resolution: {integrity: sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ==}
@@ -1121,8 +1121,8 @@ packages:
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
 
-  effect@4.0.1:
-    resolution: {integrity: sha512-b1VlQG9g8fwxE5QnIZuPoOP/0MsqHJSRKxUijjoM80E5q95FXrX5yWtY5XI8G+GJsBQAVSDbLS458z9a++uVvw==}
+  effect@4.0.4:
+    resolution: {integrity: sha512-Sr50OeVSC3M5UkoUYUhFf3EULryhGaZZUf6OzDHTvaznOw7HRlxOKdF3/4nvQXHL22StOyMG3Cvo8Bt7xUp+Ng==}
 
   empathic@2.1.0:
     resolution: {integrity: sha512-AnfC1ATldl49/cvZdLPDjBfrRNwbDO05aibiOtzQu3qtlbJtomNLhF30HEtn/7iBz50dlMECqATo3fG0LrdEgw==}
@@ -2049,36 +2049,36 @@ snapshots:
       fast-wrap-ansi: 0.2.2
       sisteransi: 1.0.5
 
-  '@effect/ai-openai-compat@4.0.1(effect@4.0.1)':
+  '@effect/ai-openai-compat@4.0.4(effect@4.0.4)':
     dependencies:
-      effect: 4.0.1
+      effect: 4.0.4
 
-  '@effect/ai-openai@4.0.1(effect@4.0.1)':
+  '@effect/ai-openai@4.0.4(effect@4.0.4)':
     dependencies:
-      effect: 4.0.1
+      effect: 4.0.4
 
-  '@effect/platform-node-shared@4.0.0(effect@4.0.1)':
+  '@effect/platform-node-shared@4.0.4(effect@4.0.4)':
     dependencies:
-      '@types/ws': 8.18.1
-      effect: 4.0.1
+      '@types/ws': 8.18.2
+      effect: 4.0.4
       ws: 8.22.0
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@effect/platform-node@4.0.0(effect@4.0.1)(redis@6.2.1)':
+  '@effect/platform-node@4.0.4(effect@4.0.4)(redis@6.2.1)':
     dependencies:
-      '@effect/platform-node-shared': 4.0.0(effect@4.0.1)
-      effect: 4.0.1
+      '@effect/platform-node-shared': 4.0.4(effect@4.0.4)
+      effect: 4.0.4
       redis: 6.2.1
       undici: 8.11.2
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@effect/sql-sqlite-node@4.0.1(effect@4.0.1)':
+  '@effect/sql-sqlite-node@4.0.4(effect@4.0.4)':
     dependencies:
-      effect: 4.0.1
+      effect: 4.0.4
 
   '@effect/tsgo-darwin-arm64@0.48.0':
     optional: true
@@ -2111,9 +2111,9 @@ snapshots:
       '@effect/tsgo-win32-arm64': 0.48.0
       '@effect/tsgo-win32-x64': 0.48.0
 
-  '@effect/vitest@4.0.1(effect@4.0.1)(vitest@5.0.3(@types/node@26.6.4)(vite@8.0.10(@types/node@26.6.4)(yaml@2.9.1)))':
+  '@effect/vitest@4.0.4(effect@4.0.4)(vitest@5.0.3(@types/node@26.6.4)(vite@8.0.10(@types/node@26.6.4)(yaml@2.9.1)))':
     dependencies:
-      effect: 4.0.1
+      effect: 4.0.4
       vitest: 5.0.3(@types/node@26.6.4)(vite@8.0.10(@types/node@26.6.4)(yaml@2.9.1))
 
   '@emnapi/core@1.10.0':
@@ -2398,7 +2398,7 @@ snapshots:
 
   '@types/turndown@5.0.6': {}
 
-  '@types/ws@8.18.1':
+  '@types/ws@8.18.2':
     dependencies:
       '@types/node': 26.6.4
 
@@ -2699,7 +2699,7 @@ snapshots:
 
   ee-first@1.1.1: {}
 
-  effect@4.0.1: {}
+  effect@4.0.4: {}
 
   empathic@2.1.0: {}
 

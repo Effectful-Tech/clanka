@@ -179,7 +179,7 @@ describe("Compaction provider transport", () => {
           "Codex does not support max_output_tokens",
         )
         assert.deepInclude(request.input, {
-          role: "system",
+          role: "developer",
           content: [{ type: "input_text", text: Compaction.summarizerSystem }],
         })
       }),

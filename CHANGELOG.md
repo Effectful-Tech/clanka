@@ -1,5 +1,11 @@
 # clanka
 
+## 0.8.6
+
+### Patch Changes
+
+- [#215](https://github.com/Effectful-Tech/clanka/pull/215) [`677d9ac`](https://github.com/Effectful-Tech/clanka/commit/677d9ac1ad2af2e18815e37181bdbc384028ced1) Thanks [@tim-smart](https://github.com/tim-smart)! - update effect to 4.0.4
+
 ## 0.8.5
 
 ### Patch Changes

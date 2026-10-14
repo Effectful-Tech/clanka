@@ -160,6 +160,7 @@ const makeAgent = (options: {
             Compaction.CompactionConfig.layer(options.compaction ?? {}),
           ),
         ),
+        Effect.scoped,
         Effect.exit,
       )
     return { agent, calls, send }

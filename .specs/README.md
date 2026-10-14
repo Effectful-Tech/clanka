@@ -13,3 +13,7 @@
   sub-agents in the background, address them by ID with `waitAgents`,
   `messageAgent`, `stopAgent` and `listAgents`, and push their results to the
   parent between model turns.
+- [Caller-selected tools, instructions, skills and loop-side tools](./caller-tools.md) -
+  Let a caller leave out built-in tools, supply the project instructions and
+  skills, and register tools whose handlers run next to the `Agent` rather than
+  in the executor, in local and RPC mode.

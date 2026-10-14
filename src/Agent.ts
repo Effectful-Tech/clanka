@@ -5,6 +5,7 @@ import * as Model from "effect/ai/Model"
 import type * as Response from "effect/ai/Response"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as AgentSkills from "./AgentSkills.ts"
+import { ToolkitRenderer } from "./ToolkitRenderer.ts"
 import { stripWrappingCodeFence } from "./ScriptExtraction.ts"
 import type * as Path from "effect/Path"
 import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
@@ -12,6 +13,7 @@ import type * as HttpClient from "effect/http/HttpClient"
 import type {
   CurrentDirectory,
   DirectoryChanger,
+  ExcludableTool,
   ImageAttacher,
   ImageAttachment,
   SubagentExecutor,
@@ -119,7 +121,6 @@ export interface Agent {
     | LanguageModel.LanguageModel
     | Model.ProviderName
     | Model.ModelName
-    | SubagentModel
   >
 
   /**
@@ -140,35 +141,84 @@ export interface Agent {
 export const Agent = Context.Service<Agent>("clanka/Agent")
 
 /**
+ * What the Agent offers the model, beyond the executor's built-in tools.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export interface Options<LoopTools extends Toolkit.Any = never> {
+  /**
+   * The project instructions for the system prompt. Unset uses the
+   * executor's `AGENTS.md`; `Option.none()` leaves them out.
+   */
+  readonly instructions?: Option.Option<string> | undefined
+  /**
+   * The skills offered to the model. Unset uses the skills discovered on the
+   * executor; a list, possibly empty, replaces them. The model reads a
+   * skill's content with `readSkill`, which runs on the loop side.
+   */
+  readonly skills?: ReadonlyArray<AgentSkills.ProvidedSkill> | undefined
+  /**
+   * Tools whose handlers run next to the Agent rather than in the executor.
+   * Scripts call them like any other function; arguments are decoded with
+   * the tool's parameters schema before the handler runs, and a handler
+   * failure rejects the script's call with that message.
+   */
+  readonly loopTools?: LoopTools | undefined
+}
+
+/**
+ * The services needed by the handlers of a loop-side toolkit.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export type LoopToolServices<LoopTools> =
+  LoopTools extends Toolkit.Toolkit<infer T>
+    ? Tool.HandlersFor<T> | Tool.HandlerServices<T[keyof T]>
+    : never
+
+/**
  * @since 1.0.0
  * @category Constructors
  */
-export const make = Effect.gen(function* (): Effect.fn.Return<
+export const makeWith = Effect.fnUntraced(function* <
+  LoopTools extends Toolkit.Any = never,
+>(
+  options: Options<LoopTools>,
+): Effect.fn.Return<
   Agent,
   never,
-  Scope.Scope | AgentExecutor.AgentExecutor
+  Scope.Scope | AgentExecutor.AgentExecutor | LoopToolServices<LoopTools>
 > {
   const executor = yield* AgentExecutor.AgentExecutor
 
   const singleTool = yield* SingleTools.pipe(Effect.provide(SingleToolHandlers))
   const capabilities = yield* executor.capabilities
+  const loopTools = yield* makeLoopTools({
+    loopTools: options.loopTools,
+    skills: options.skills,
+    executorTools: capabilities.tools,
+  })
+  const promptTools: PromptTools = {
+    toolsDts:
+      loopTools.dts === ""
+        ? capabilities.toolsDts
+        : `${capabilities.toolsDts}\n\n${loopTools.dts}`,
+    offers: (name) => capabilities.tools.includes(name),
+    skillsCatalog:
+      options.skills === undefined
+        ? AgentSkills.renderCatalog(capabilities.skills)
+        : AgentSkills.renderProvidedCatalog(options.skills),
+  }
 
   // Steering messages for the root agent. Sub-agents get their own mailbox.
   const rootMailbox = makeMailbox()
 
-  const agentsMd = Option.map(
-    capabilities.agentsMd,
-    (content) => `# AGENTS.md
-
-The following instructions are from ./AGENTS.md in the current directory.
-You do not need to read this file again.
-
-**ALWAYS follow these instructions when completing tasks**:
-
-<!-- AGENTS.md start -->
-${content}
-<!-- AGENTS.md end -->`,
-  )
+  const agentsMd =
+    options.instructions === undefined
+      ? Option.map(capabilities.agentsMd, renderAgentsMd)
+      : Option.map(options.instructions, renderInstructions)
 
   let agentCounter = 0
 
@@ -202,14 +252,12 @@ ${content}
   }) => Stream.Stream<
     Output,
     AgentFinished | AiError.AiError | RetriesExhausted,
-    | LanguageModel.LanguageModel
-    | Model.ProviderName
-    | Model.ModelName
-    | SubagentModel
+    LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName
   > = Effect.fnUntraced(function* (opts) {
     const agentId = opts.agentId
     const ai = yield* LanguageModel.LanguageModel
-    const subagentModel = yield* SubagentModel
+    // Without a SubagentModel, sub-agents run on this agent's model.
+    const subagentModel = yield* Effect.serviceOption(SubagentModel)
     const modelConfig = yield* AgentModelConfig
     const conversationMode = yield* ConversationMode
     const turnTimeout = yield* TurnTimeout
@@ -266,7 +314,7 @@ ${content}
     const generateSystem =
       typeof opts.system === "function" ? opts.system : defaultSystem
 
-    const toolInstructions = generateSystemTools(capabilities, conversationMode)
+    const toolInstructions = generateSystemTools(promptTools, conversationMode)
     let system = generateSystem({
       toolInstructions,
       agentsMd: Option.getOrElse(agentsMd, () => ""),
@@ -322,6 +370,15 @@ ${content}
     const runContext = yield* Effect.context<
       LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName
     >()
+    const provideSubagentModel = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      Option.match(subagentModel, {
+        onNone: () => effect,
+        onSome: (model) =>
+          effect.pipe(
+            Effect.provide(model),
+            Effect.provideService(SubagentModel, model),
+          ),
+      })
     const children = new Map<string, Child>()
     // Finished turns waiting to be pushed to the model.
     const completions: Array<Turn> = []
@@ -430,8 +487,7 @@ ${content}
         )
       }).pipe(
         Effect.onExit((exit) => finishTurn(turn, exit)),
-        Effect.provide(subagentModel),
-        Effect.provideService(SubagentModel, subagentModel),
+        provideSubagentModel,
         Effect.provideContext(runContext),
         Effect.forkIn(runScope, { startImmediately: true }),
       )
@@ -656,6 +712,7 @@ ${prompt}`,
             Effect.sync(() => {
               pendingImages.push(image)
             }),
+          loopTools: loopTools.handlers,
         }),
         Stream.mkString,
       )
@@ -1023,6 +1080,19 @@ ${Compaction.capOutput(turn.output ?? "").output}
   })
 })
 
+/**
+ * Create an Agent with every executor tool, the executor's `AGENTS.md` and
+ * skills, and no loop-side tools.
+ *
+ * @since 1.0.0
+ * @category Constructors
+ */
+export const make: Effect.Effect<
+  Agent,
+  never,
+  Scope.Scope | AgentExecutor.AgentExecutor
+> = makeWith({})
+
 interface Mailbox {
   readonly messages: Set<{
     readonly message: string
@@ -1067,10 +1137,8 @@ const makeTurn = (agentId: number, background: boolean): Turn => ({
   fiber: undefined,
 })
 
-const causeMessage = (cause: Cause.Cause<unknown>): string => {
-  const error = Cause.squash(cause)
-  return error instanceof Error ? error.message : String(error)
-}
+const causeMessage = (cause: Cause.Cause<unknown>): string =>
+  errorMessage(Cause.squash(cause))
 
 const turnTimeoutError = AiError.make({
   module: "clanka/Agent",
@@ -1085,6 +1153,25 @@ const retryPolicy = Schedule.min([
   Schedule.spaced(5000),
 ]).pipe(Schedule.jittered)
 
+const renderAgentsMd = (content: string) => `# AGENTS.md
+
+The following instructions are from ./AGENTS.md in the current directory.
+You do not need to read this file again.
+
+**ALWAYS follow these instructions when completing tasks**:
+
+<!-- AGENTS.md start -->
+${content}
+<!-- AGENTS.md end -->`
+
+const renderInstructions = (content: string) => `# Project instructions
+
+**ALWAYS follow these instructions when completing tasks**:
+
+<!-- instructions start -->
+${content}
+<!-- instructions end -->`
+
 const defaultSystem = (options: {
   readonly toolInstructions: string
   readonly agentsMd: string | null
@@ -1095,31 +1182,80 @@ ${options.toolInstructions}
 ${options.agentsMd}
 `
 
+interface PromptTools {
+  readonly toolsDts: string
+  readonly offers: (name: ExcludableTool) => boolean
+  readonly skillsCatalog: Option.Option<string>
+}
+
+const when = (condition: boolean, text: string) => (condition ? text : "")
+
 const generateSystemTools = (
-  capabilities: AgentExecutor.Capabilities,
+  tools: PromptTools,
   conversationMode: boolean,
 ) => `YOU ONLY HAVE ONE TOOL AVAILABLE: "execute", to run javascript code to do your work.
 
 - Use \`console.log\` to print any output you need.
-- Use top level await.${
-  capabilities.supportsSearch
-    ? `
-- Prefer using the "search" function over "rg", unless you are targeting specific files or patterns.`
-    : ""
-}
-- You can add / update / remove multiple files in one go with "applyPatch".
-- Avoid passing scripts into the "bash" function, and instead write javascript.
+- Use top level await.${when(
+  tools.offers("search") && tools.offers("rg"),
+  `
+- Prefer using the "search" function over "rg", unless you are targeting specific files or patterns.`,
+)}${when(
+  tools.offers("applyPatch"),
+  `
+- You can add / update / remove multiple files in one go with "applyPatch".${when(
+    tools.offers("writeFile"),
+    ` Prefer it over "writeFile" to update existing files.`,
+  )}`,
+)}${when(
+  tools.offers("bash"),
+  `
+- Avoid passing scripts into the "bash" function, and instead write javascript.`,
+)}
 - Variables are not shared between executions.
-- Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.
-- "delegate" runs a sub-agent and waits for it. Pass \`background: true\` to keep working while it runs: its result is sent to you later as a \`<subagent id="..." status="...">\` message. Use the returned id with "waitAgents", "messageAgent" and "stopAgent"; "listAgents" shows the agents you started.${
-  conversationMode
-    ? ""
-    : `
+- Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.${when(
+  tools.offers("delegate"),
+  `
+- "delegate" runs a sub-agent and waits for it. Pass \`background: true\` to keep working while it runs: its result is sent to you later as a \`<subagent id="..." status="...">\` message.${when(
+    tools.offers("waitAgents"),
+    ` Use "waitAgents" to wait for the returned id.`,
+  )}${when(
+    tools.offers("messageAgent"),
+    ` Use "messageAgent" to send a message to the returned id.`,
+  )}${when(
+    tools.offers("stopAgent"),
+    ` Use "stopAgent" to stop the returned id.`,
+  )}${when(
+    tools.offers("listAgents"),
+    ` "listAgents" shows the agents you started.`,
+  )}`,
+)}${when(
+  !conversationMode,
+  `
 
 When you have fully completed your task, call the "taskComplete" function with the final output.
-Make sure every detail of the task is done before calling "taskComplete".
-Wait for or stop any running sub-agents first: "taskComplete" fails while they are running.`
-}
+Make sure every detail of the task is done before calling "taskComplete".${when(
+    tools.offers("delegate"),
+    `
+Any sub-agents you started must finish first: "taskComplete" fails while they are running.`,
+  )}`,
+)}${when(tools.offers("readFile") && tools.offers("ls"), example)}
+
+These are the functions available to you:
+
+\`\`\`ts
+${tools.toolsDts}
+
+/** The global Fetch API available for making HTTP requests. */
+declare const fetch: typeof globalThis.fetch
+\`\`\`${Option.match(tools.skillsCatalog, {
+  onNone: () => "",
+  onSome: (catalog) => `
+
+${catalog}`,
+})}`
+
+const example = `
 
 Here is how you would read a file and list a directory:
 
@@ -1146,21 +1282,104 @@ package.json: {
   "name": "my-project",
   "version": "1.0.0"
 }
-\`\`\`
+\`\`\``
 
-These are the functions available to you:
+const ReadSkillTools = Toolkit.make(
+  Tool.make("readSkill", {
+    description:
+      "Read the instructions of a skill listed under Skills, by its name.",
+    parameters: Schema.String.annotate({ identifier: "name" }),
+    success: Schema.String,
+    failure: Schema.String,
+  }),
+)
 
-\`\`\`ts
-${capabilities.toolsDts}
+/**
+ * Builds the loop-side handlers the executor puts in the sandbox, and their
+ * type declarations. Every call is decoded by `Toolkit.handle` before the
+ * handler runs; results are encoded to JSON.
+ */
+const makeLoopTools = Effect.fnUntraced(function* (options: {
+  readonly loopTools: Toolkit.Any | undefined
+  readonly skills: ReadonlyArray<AgentSkills.ProvidedSkill> | undefined
+  readonly executorTools: ReadonlyArray<string>
+}) {
+  const skills = options.skills ?? []
+  const callerTools = Object.keys(options.loopTools?.tools ?? {})
+  const names = skills.length > 0 ? [...callerTools, "readSkill"] : callerTools
+  for (const name of names) {
+    if (
+      options.executorTools.includes(name) ||
+      names.indexOf(name) !== names.lastIndexOf(name)
+    ) {
+      return yield* Effect.die(
+        new Error(`Loop-side tool "${name}" clashes with another tool`),
+      )
+    }
+  }
 
-/** The global Fetch API available for making HTTP requests. */
-declare const fetch: typeof globalThis.fetch
-\`\`\`${Option.match(AgentSkills.renderCatalog(capabilities.skills), {
-  onNone: () => "",
-  onSome: (catalog) => `
+  const toolkit = Toolkit.merge(
+    options.loopTools ?? Toolkit.empty,
+    skills.length > 0 ? ReadSkillTools : Toolkit.empty,
+  ) as unknown as Toolkit.Toolkit<Record<string, Tool.Any>>
+  const withHandlers = toolkit as unknown as Effect.Effect<
+    Toolkit.WithHandler<Record<string, Tool.Any>>
+  >
+  // Only provided with the tool itself, so it never replaces a caller's
+  // `readSkill` handler.
+  const handled = yield* skills.length > 0
+    ? withHandlers.pipe(
+        Effect.provide(
+          ReadSkillTools.toLayer({
+            readSkill: (name) => {
+              const skill = skills.find((skill) => skill.name === name)
+              return skill
+                ? Effect.succeed(skill.content)
+                : Effect.fail(
+                    `Unknown skill ${JSON.stringify(name)}. Available skills: ${skills.map((skill) => skill.name).join(", ")}`,
+                  )
+            },
+          }),
+        ),
+      )
+    : withHandlers
+  // Provides the services the caller's handlers depend on.
+  const context = yield* Effect.context<never>()
 
-${catalog}`,
-})}`
+  const handlers: Record<
+    string,
+    (params: unknown) => Effect.Effect<unknown, string>
+  > = {}
+  for (const [name, tool] of Object.entries(handled.tools)) {
+    const encodeSuccess = Schema.encodeUnknownEffect(
+      Schema.toCodecJson(tool.successSchema as Schema.Codec<unknown>),
+    )
+    handlers[name] = (params) =>
+      handled.handle(name, params as never).pipe(
+        Effect.flatMap(Stream.runLast),
+        Effect.flatMap((last): Effect.Effect<unknown, unknown> => {
+          if (Option.isNone(last)) return Effect.void
+          return last.value.isFailure
+            ? Effect.fail(last.value.result)
+            : encodeSuccess(last.value.result)
+        }),
+        Effect.mapError(errorMessage),
+        Effect.provideContext(context),
+      ) as Effect.Effect<unknown, string>
+  }
+
+  const renderer = yield* Effect.service(ToolkitRenderer).pipe(
+    Effect.provide(ToolkitRenderer.layer),
+  )
+  return { handlers, dts: renderer.render(toolkit) }
+})
+
+const errorMessage = (error: unknown): string =>
+  typeof error === "string"
+    ? error
+    : error instanceof Error
+      ? error.message
+      : (JSON.stringify(error) ?? String(error))
 
 class ScriptExecutor extends Context.Service<
   ScriptExecutor,
@@ -1192,18 +1411,32 @@ export const layer: Layer.Layer<Agent, never, AgentExecutor.AgentExecutor> =
   Layer.effect(Agent, make)
 
 /**
+ * @since 1.0.0
+ * @category Layers
+ */
+export const layerWith = <LoopTools extends Toolkit.Any = never>(
+  options: Options<LoopTools>,
+): Layer.Layer<
+  Agent,
+  never,
+  AgentExecutor.AgentExecutor | LoopToolServices<LoopTools>
+> => Layer.effect(Agent, makeWith(options))
+
+/**
  * Create an Agent layer that uses a local AgentExecutor.
  *
  * @since 1.0.0
  * @category Layers
  */
-export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
-  readonly directory: string
-  readonly tools?: Toolkit | undefined
-  readonly limits?: AgentExecutor.Limits | undefined
-}): Layer.Layer<
+export const layerLocal = <
+  Toolkit extends Toolkit.Any = never,
+  LoopTools extends Toolkit.Any = never,
+>(
+  options: AgentExecutor.LocalOptions<Toolkit> & Options<LoopTools>,
+): Layer.Layer<
   Agent,
   never,
+  | LoopToolServices<LoopTools>
   | FileSystem.FileSystem
   | Path.Path
   | ChildProcessSpawner.ChildProcessSpawner
@@ -1218,7 +1451,7 @@ export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
       | TaskCompleter
       | ImageAttacher
     >
-> => layer.pipe(Layer.provide(AgentExecutor.layerLocal(options)))
+> => layerWith(options).pipe(Layer.provide(AgentExecutor.layerLocal(options)))
 
 /**
  * @since 1.0.0

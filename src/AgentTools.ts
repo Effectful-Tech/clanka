@@ -387,7 +387,7 @@ export const AgentTools = Toolkit.make(
   }),
   Tool.make("writeFile", {
     description:
-      "Write content to a file, creating parent directories if needed. Prefer applyPatch to update existing files.",
+      "Write content to a file, creating parent directories if needed.",
     parameters: Schema.Struct({
       path: Schema.String,
       content: Schema.String,
@@ -464,6 +464,17 @@ const SearchTool = Toolkit.make(
  * @category Toolkit
  */
 export const AgentToolsWithSearch = Toolkit.merge(SearchTool, AgentTools)
+
+/**
+ * A built-in tool a caller can leave out. `taskComplete` always stays.
+ *
+ * @since 1.0.0
+ * @category Toolkit
+ */
+export type ExcludableTool = Exclude<
+  keyof typeof AgentToolsWithSearch.tools,
+  "taskComplete"
+>
 
 /**
  * @since 1.0.0

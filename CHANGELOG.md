@@ -1,5 +1,19 @@
 # clanka
 
+## 0.10.0
+
+### Minor Changes
+
+- [#224](https://github.com/Effectful-Tech/clanka/pull/224) [`5d2f92a`](https://github.com/Effectful-Tech/clanka/commit/5d2f92a582cdb9999bf94a51b130ab9376087b5a) Thanks [@tim-smart](https://github.com/tim-smart)! - Send AGENTS.md files and skills to the model when an agent changes directory, without changing the system prompt.
+
+- [#223](https://github.com/Effectful-Tech/clanka/pull/223) [`0d90248`](https://github.com/Effectful-Tech/clanka/commit/0d9024899b31468a9983c2284b28cba8513a89ce) Thanks [@tim-smart](https://github.com/tim-smart)! - Give every agent its own working directory.
+
+  Before, `changeDirectory` changed one directory shared by the whole executor. Concurrent sub-agents, and every session served by one `layerRpcServer`, could resolve paths against each other's directory.
+
+### Patch Changes
+
+- [#221](https://github.com/Effectful-Tech/clanka/pull/221) [`6542b3b`](https://github.com/Effectful-Tech/clanka/commit/6542b3b21e25cc7520035548010ae1e2d9de05b3) Thanks [@tim-smart](https://github.com/tim-smart)! - Emit the required ACP usage_update used and size fields alongside the unchanged usage object, fixing protocol decoding failures in clients such as T3 Code.
+
 ## 0.9.0
 
 ### Minor Changes

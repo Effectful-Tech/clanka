@@ -40,6 +40,11 @@ type Message = {
 
 const capabilities = new AgentExecutor.Capabilities({
   toolsDts: "",
+  environment: new AgentExecutor.ExecutionEnvironment({
+    cwd: "/",
+    baseline: [],
+    seen: [],
+  }),
   agentsMd: Option.none(),
   supportsSearch: false,
   tools: [],

@@ -753,6 +753,72 @@ console.log(JSON.stringify(result))`,
             }
           }),
       )
+
+      it.effect(
+        "each agent keeps its own working directory, starting from its parent's",
+        () =>
+          Effect.gen(function* () {
+            // Both children change directory before either prints it, so a
+            // shared directory shows up as the wrong path.
+            const bothChanged = Latch.makeUnsafe(false)
+            let changed = 0
+            const { exit, calls } = yield* runAgent({
+              conversationMode: true,
+              respond: (call) => {
+                if (call.role === "child") {
+                  const name = firstUserText(call.prompt).includes("ONE")
+                    ? "one"
+                    : "two"
+                  if (toolResultTexts(call.prompt).length === 0) {
+                    return Stream.make(
+                      toolCall(
+                        `cd-${name}`,
+                        `await changeDirectory("${name}")`,
+                      ),
+                    )
+                  }
+                  if (++changed === 2) bothChanged.openUnsafe()
+                  return Stream.fromEffect(bothChanged.await).pipe(
+                    Stream.flatMap(() =>
+                      Stream.make(
+                        toolCall(
+                          `pwd-${name}`,
+                          `const pwd = await bash({ command: "pwd" })
+await taskComplete("${name.toUpperCase()}:" + pwd.trim())`,
+                        ),
+                      ),
+                    ),
+                  )
+                }
+                switch (call.index) {
+                  case 0:
+                    return Stream.make(
+                      toolCall(
+                        "spawn",
+                        `await bash({ command: "mkdir -p a/one a/two" })
+await changeDirectory("a")
+await delegate({ prompt: "TASK-CHILD-ONE", background: true })
+await delegate({ prompt: "TASK-CHILD-TWO", background: true })
+console.log(JSON.stringify(await waitAgents()))
+console.log("ROOT:" + (await bash({ command: "pwd" })).trim())`,
+                      ),
+                    )
+                  case 1:
+                    return Stream.fromIterable(text("done"))
+                  default:
+                    return unexpected(call)
+                }
+              },
+            })
+
+            assert.deepStrictEqual(exit, Exit.succeed("done"))
+            const root = calls.filter((call) => call.role === "root")
+            const result = lastToolResult(root[1]!.prompt)
+            assert.match(result, /ONE:[^"\s]*\/a\/one"/)
+            assert.match(result, /TWO:[^"\s]*\/a\/two"/)
+            assert.match(result, /ROOT:\S*\/a$/m)
+          }),
+      )
     },
   )
 }

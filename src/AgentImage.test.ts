@@ -17,6 +17,11 @@ import { tinyPng } from "./fixtures/TestImages.ts"
 
 const capabilities = new AgentExecutor.Capabilities({
   toolsDts: "",
+  environment: new AgentExecutor.ExecutionEnvironment({
+    cwd: "/",
+    baseline: [],
+    seen: [],
+  }),
   agentsMd: Option.none(),
   supportsSearch: false,
   tools: [],
@@ -265,11 +270,15 @@ describe("Agent images", () => {
 
   it.effect("does not copy image bytes into a delegate prompt", () =>
     Effect.gen(function* () {
-      const executor = makeExecutor(({ subagents }) =>
+      const executor = makeExecutor(({ subagents, environment }) =>
         Stream.fromEffect(
           subagents.delegate({
             prompt: "child task: describe the layout",
             background: false,
+            environment: new AgentExecutor.EnvironmentUpdate({
+              environment,
+              update: Option.none(),
+            }),
           }),
         ).pipe(
           Stream.map((result) => result.output ?? ""),

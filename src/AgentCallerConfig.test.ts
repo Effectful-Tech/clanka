@@ -209,9 +209,12 @@ const execute = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* AgentExecutor.AgentExecutor
+    const { environment } = yield* executor.capabilities
     return yield* executor
       .execute({
         script,
+        environment,
+        onEnvironment: () => Effect.void,
         onTaskComplete: () => Effect.void,
         onImage: () => Effect.void,
         subagents: subagentsUnavailable,
@@ -500,6 +503,11 @@ describe("executor capabilities", () => {
       const encoded = yield* Schema.encodeEffect(codec)(
         new AgentExecutor.Capabilities({
           toolsDts: "",
+          environment: new AgentExecutor.ExecutionEnvironment({
+            cwd: "/",
+            baseline: [],
+            seen: [],
+          }),
           agentsMd: Option.none(),
           supportsSearch: false,
           tools: ["readFile"],

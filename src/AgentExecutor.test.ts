@@ -3,6 +3,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
+import * as Fiber from "effect/Fiber"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
 import * as Stream from "effect/Stream"
@@ -59,12 +60,15 @@ describe("RPC subagent executor", () => {
   it.live("routes concurrent delegates to their originating scripts", () =>
     withRpc((executor) =>
       Effect.gen(function* () {
+        const { environment } = yield* executor.capabilities
         const firstStarted = yield* Deferred.make<void>()
         const secondStarted = yield* Deferred.make<void>()
         const outputs = yield* Effect.all(
           [
             executor
               .execute({
+                environment,
+                onEnvironment: () => Effect.void,
                 script:
                   'console.log("first:" + (await delegate({ prompt: "first" })).output)',
                 onTaskComplete: () => Effect.void,
@@ -87,6 +91,8 @@ describe("RPC subagent executor", () => {
               .pipe(Stream.runCollect),
             executor
               .execute({
+                environment,
+                onEnvironment: () => Effect.void,
                 script:
                   'console.log("second:" + (await delegate({ prompt: "second" })).output)',
                 onTaskComplete: () => Effect.void,
@@ -121,8 +127,11 @@ describe("RPC subagent executor", () => {
     () =>
       withRpc((executor) =>
         Effect.gen(function* () {
+          const { environment } = yield* executor.capabilities
           const output = yield* executor
             .execute({
+              environment,
+              onEnvironment: () => Effect.void,
               script:
                 'console.log("parent:" + (await delegate({ prompt: "outer" })).output)',
               onTaskComplete: () => Effect.void,
@@ -134,6 +143,8 @@ describe("RPC subagent executor", () => {
                     assert.strictEqual(prompt, "outer")
                     const childOutput = yield* executor
                       .execute({
+                        environment,
+                        onEnvironment: () => Effect.void,
                         script:
                           'console.log("child:" + (await delegate({ prompt: "inner" })).output)',
                         onTaskComplete: () => Effect.void,
@@ -218,16 +229,20 @@ const executorModes = {
 }
 
 const runScript = (script: string) =>
-  AgentExecutor.AgentExecutor.use((executor) =>
-    executor
+  Effect.gen(function* () {
+    const executor = yield* AgentExecutor.AgentExecutor
+    const { environment } = yield* executor.capabilities
+    return yield* executor
       .execute({
+        environment,
+        onEnvironment: () => Effect.void,
         script,
         onTaskComplete: () => Effect.void,
         subagents: subagentsUnavailable,
         onImage: () => Effect.void,
       })
-      .pipe(Stream.mkString),
-  )
+      .pipe(Stream.mkString)
+  })
 
 // Puts a `gh` that only sleeps first on PATH, so the test needs neither the
 // real CLI nor the network.
@@ -253,6 +268,108 @@ const withSlowGh = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   )
 
 for (const [mode, executorLayer] of Object.entries(executorModes)) {
+  describe(`${mode} executor environment`, () => {
+    // A cancelled script keeps the directory it changed to, as an ACP
+    // `session/cancel` or a `stopAgent` continues the same agent afterwards.
+    it.live("returns the environment when the caller interrupts", () =>
+      Effect.gen(function* () {
+        const executor = yield* AgentExecutor.AgentExecutor
+        const { environment } = yield* executor.capabilities
+        const ready = yield* Deferred.make<void>()
+        const updates: Array<AgentExecutor.EnvironmentUpdate> = []
+        const fiber = yield* executor
+          .execute({
+            script: `await changeDirectory("..")
+console.log("ready")
+await sleep(60000)`,
+            environment,
+            onEnvironment: (update) =>
+              Effect.sync(() => {
+                updates.push(update)
+              }),
+            onTaskComplete: () => Effect.void,
+            subagents: subagentsUnavailable,
+            onImage: () => Effect.void,
+          })
+          .pipe(
+            Stream.runForEach((text) =>
+              text.includes("ready")
+                ? Deferred.succeed(ready, undefined)
+                : Effect.void,
+            ),
+            Effect.forkScoped,
+          )
+        yield* Deferred.await(ready)
+        yield* Fiber.interrupt(fiber)
+        assert.strictEqual(updates.length, 1)
+        assert.strictEqual(
+          updates[0]!.environment.cwd,
+          NodePath.dirname(environment.cwd),
+        )
+      }).pipe(
+        Effect.scoped,
+        Effect.timeout("5 seconds"),
+        Effect.provide(executorLayer({})),
+      ),
+    )
+
+    // The caller is still busy with output from before the change when it
+    // interrupts. Whatever the script got done by then, the environment
+    // returned matches it: the marker shows it got past `changeDirectory`.
+    it.live(
+      "returns the environment when the caller interrupts while behind",
+      () =>
+        Effect.gen(function* () {
+          const executor = yield* AgentExecutor.AgentExecutor
+          const { environment } = yield* executor.capabilities
+          const marker = NodePath.join(environment.cwd, "changed")
+          const busy = yield* Deferred.make<void>()
+          const updates: Array<AgentExecutor.EnvironmentUpdate> = []
+          const fiber = yield* executor
+            .execute({
+              script: `console.log("before")
+await sleep(50)
+await changeDirectory("..")
+await writeFile({ path: ${JSON.stringify(marker)}, content: "" })
+await sleep(60000)`,
+              environment,
+              onEnvironment: (update) =>
+                Effect.sync(() => {
+                  updates.push(update)
+                }),
+              onTaskComplete: () => Effect.void,
+              subagents: subagentsUnavailable,
+              onImage: () => Effect.void,
+            })
+            .pipe(
+              Stream.runForEach(() =>
+                Deferred.succeed(busy, undefined).pipe(
+                  Effect.andThen(Effect.never),
+                ),
+              ),
+              Effect.forkScoped,
+            )
+          yield* Deferred.await(busy)
+          yield* Effect.gen(function* () {
+            while (!NodeFs.existsSync(marker)) {
+              yield* Effect.sleep("10 millis")
+            }
+          }).pipe(Effect.timeoutOption("500 millis"))
+          const changed = NodeFs.existsSync(marker)
+          yield* Fiber.interrupt(fiber)
+          assert.strictEqual(updates.length, 1)
+          assert.strictEqual(
+            updates[0]!.environment.cwd,
+            changed ? NodePath.dirname(environment.cwd) : environment.cwd,
+          )
+        }).pipe(
+          Effect.scoped,
+          Effect.timeout("5 seconds"),
+          Effect.provide(executorLayer({})),
+        ),
+    )
+  })
+
   describe(`${mode} executor limits`, () => {
     it.live("stops a bash command at the caller's command timeout", () =>
       Effect.gen(function* () {
@@ -354,8 +471,11 @@ console.log("MAIN" + "_DONE")`)
       () =>
         Effect.gen(function* () {
           const executor = yield* AgentExecutor.AgentExecutor
+          const { environment } = yield* executor.capabilities
           const output = yield* executor
             .execute({
+              environment,
+              onEnvironment: () => Effect.void,
               // `delegate` never finishes. The worker then exits through
               // the host's `process`, the way a crashed worker would.
               script: `

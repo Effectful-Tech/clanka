@@ -69,8 +69,11 @@ describe("RPC image executor", () => {
       withRpc((executor) =>
         Effect.gen(function* () {
           const images: Array<ImageAttachment> = []
+          const { environment } = yield* executor.capabilities
           const output = yield* executor
             .execute({
+              environment,
+              onEnvironment: () => Effect.void,
               script: fixtures
                 .map(
                   ([name]) =>

@@ -30,6 +30,7 @@ import * as Prompt from "effect/ai/Prompt"
 import * as HttpClient from "effect/http/HttpClient"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import type * as Agent from "./Agent.ts"
+import * as AgentExecutor from "./AgentExecutor.ts"
 import type * as AgentOutput from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Image from "./Image.ts"
@@ -125,6 +126,10 @@ export class SessionRecord extends Schema.Class<SessionRecord>(
   model: Schema.String,
   thoughtLevel: ThoughtLevel,
   history: Prompt.Prompt,
+  /**
+   * The agent's executor environment, such as its working directory.
+   */
+  environment: Schema.optionalKey(AgentExecutor.ExecutionEnvironment),
 }) {}
 
 /**
@@ -377,6 +382,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
           model: session.model,
           thoughtLevel: session.thoughtLevel,
           history: session.agent.history.current,
+          environment: session.agent.environment.current,
         }),
       )
       .pipe(
@@ -391,6 +397,9 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
   ) {
     const agent = yield* Scope.provide(options.makeAgent(record.cwd), scope)
     MutableRef.set(agent.history, record.history)
+    if (record.environment !== undefined) {
+      MutableRef.set(agent.environment, record.environment)
+    }
     const session: Session = {
       id,
       cwd: record.cwd,
@@ -777,6 +786,11 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         model: modelId,
         thoughtLevel: record.value.thoughtLevel,
         history: record.value.history,
+        // The stored environment belongs to the stored cwd.
+        ...(record.value.environment !== undefined &&
+        (cwd === undefined || cwd === record.value.cwd)
+          ? { environment: record.value.environment }
+          : {}),
       }),
     )
     if (replay) {

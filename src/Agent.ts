@@ -19,7 +19,6 @@ import type {
   SubagentExecutor,
   SubagentResult,
   SubagentStatus,
-  Subagents,
   TaskCompleter,
 } from "./AgentTools.ts"
 import * as Image from "./Image.ts"
@@ -94,6 +93,14 @@ export interface Agent {
   readonly [TypeId]: TypeId
 
   readonly history: MutableRef.MutableRef<Prompt.Prompt>
+
+  /**
+   * The executor environment the next script runs in, such as its working
+   * directory. Opaque to the agent: it is passed to the executor and replaced
+   * with what the executor returns. Store it next to `history` to resume a
+   * session where it left off.
+   */
+  readonly environment: MutableRef.MutableRef<AgentExecutor.ExecutionEnvironment>
 
   /**
    * Send a prompt to the agent and receive a stream of output.
@@ -226,6 +233,7 @@ export const makeWith = Effect.fnUntraced(function* <
   let currentOutputAgent: number | null = null
 
   const history = MutableRef.make(Prompt.empty)
+  const environment = MutableRef.make(capabilities.environment)
 
   const spawn: (opts: {
     readonly agentId: number
@@ -238,6 +246,7 @@ export const makeWith = Effect.fnUntraced(function* <
         }) => string)
       | undefined
     readonly history: MutableRef.MutableRef<Prompt.Prompt>
+    readonly environment: MutableRef.MutableRef<AgentExecutor.ExecutionEnvironment>
     readonly mailbox: Mailbox
     /**
      * Whether this agent's output is streamed for display. Background agents
@@ -439,6 +448,7 @@ export const makeWith = Effect.fnUntraced(function* <
         prompt: Prompt.make(options.prompt),
         system: opts.system,
         history: child.history,
+        environment: child.environment,
         mailbox: child.mailbox,
         display,
         historyEvents: false,
@@ -509,13 +519,18 @@ export const makeWith = Effect.fnUntraced(function* <
             )
       })
 
-    const subagents: Subagents = {
-      delegate: Effect.fnUntraced(function* ({ prompt, background }) {
+    const subagents: AgentExecutor.ExecuteSubagents = {
+      delegate: Effect.fnUntraced(function* ({
+        prompt,
+        background,
+        environment,
+      }) {
         const agentId = agentCounter++
         const child: Child = {
           id: agentId,
           prompt,
           history: MutableRef.make(Prompt.empty),
+          environment: MutableRef.make(environment.environment),
           mailbox: makeMailbox(),
           turn: makeTurn(agentId, background),
         }
@@ -706,6 +721,11 @@ ${prompt}`,
       const output = yield* pipe(
         executor.execute({
           script: normalizedScript,
+          environment: opts.environment.current,
+          onEnvironment: (update) =>
+            Effect.sync(() => {
+              MutableRef.set(opts.environment, update.environment)
+            }),
           subagents,
           onTaskComplete,
           onImage: (image) =>
@@ -1057,12 +1077,14 @@ ${Compaction.capOutput(turn.output ?? "").output}
   return Agent.of({
     [TypeId]: TypeId,
     history,
+    environment,
     send: (options) =>
       spawn({
         agentId: agentCounter++,
         prompt: Prompt.make(options.prompt),
         system: options.system,
         history,
+        environment,
         mailbox: rootMailbox,
         display: true,
         historyEvents: true,
@@ -1112,6 +1134,8 @@ interface Child {
   readonly prompt: string
   /** Kept for the whole run so `messageAgent` can resume the agent. */
   readonly history: MutableRef.MutableRef<Prompt.Prompt>
+  /** Starts as a copy of the parent's at the moment it was delegated. */
+  readonly environment: MutableRef.MutableRef<AgentExecutor.ExecutionEnvironment>
   readonly mailbox: Mailbox
   /** The latest turn. Replaced when `messageAgent` resumes the agent. */
   turn: Turn

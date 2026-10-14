@@ -33,7 +33,11 @@ export class ToolkitRenderer extends Context.Service<
             SchemaAST.resolveIdentifier(tool.parametersSchema.ast) ?? "options"
           const paramType = TypeBuilder.render(tool.parametersSchema)
           const params =
-            paramType === "void" ? "" : `${paramName}: ${paramType}`
+            paramType === "void"
+              ? ""
+              : paramType.endsWith(optionalSuffix)
+                ? `${paramName}?: ${paramType.slice(0, -optionalSuffix.length)}`
+                : `${paramName}: ${paramType}`
           output.push(
             `/** ${tool.description} */
 declare function ${name}(${params}): Promise<${TypeBuilder.render(tool.successSchema)}>`,
@@ -44,3 +48,5 @@ declare function ${name}(${params}): Promise<${TypeBuilder.render(tool.successSc
     ),
   })
 }
+
+const optionalSuffix = " | undefined"

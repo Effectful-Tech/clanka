@@ -669,6 +669,8 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
               `Retrying after error: ${part.error.message}\n`,
             ),
           })
+        // A background agent's tool call stays in progress until the agent
+        // finishes, while the parent keeps taking turns.
         case "SubagentStart":
           return update(session.id, {
             sessionUpdate: "tool_call",
@@ -682,7 +684,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
           return update(session.id, {
             sessionUpdate: "tool_call_update",
             toolCallId: `subagent-${part.id}`,
-            status: "completed",
+            status: part.status === "completed" ? "completed" : "failed",
             rawOutput: part.summary,
             content: [{ type: "content", content: textContent(part.summary) }],
           })

@@ -4,6 +4,7 @@
 /** @effect-diagnostics schemaNumber:off */
 import * as Prompt from "effect/ai/Prompt"
 import * as AiError from "effect/ai/AiError"
+import * as Effect from "effect/Effect"
 import * as Schema from "effect/Schema"
 
 /**
@@ -127,6 +128,14 @@ export class SubagentStart extends Schema.TaggedClass<SubagentStart>()(
     prompt: Schema.String,
     model: Schema.String,
     provider: Schema.String,
+    /**
+     * Background agents report only their start and completion; their
+     * output is not streamed.
+     */
+    background: Schema.Boolean.pipe(
+      Schema.withDecodingDefaultKey(Effect.succeed(false)),
+      Schema.withConstructorDefault(Effect.succeed(false)),
+    ),
   },
 ) {
   get modelAndProvider() {
@@ -142,7 +151,14 @@ export class SubagentComplete extends Schema.TaggedClass<SubagentComplete>()(
   "SubagentComplete",
   {
     id: Schema.Number,
+    /**
+     * The agent's final output, or the error message when it failed.
+     */
     summary: Schema.String,
+    status: Schema.Literals(["completed", "failed", "cancelled"]).pipe(
+      Schema.withDecodingDefaultKey(Effect.succeed("completed" as const)),
+      Schema.withConstructorDefault(Effect.succeed("completed" as const)),
+    ),
   },
 ) {}
 

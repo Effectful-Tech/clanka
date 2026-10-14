@@ -14,6 +14,8 @@ import {
   AgentToolsWithSearch,
   CurrentDirectory,
   DirectoryChanger,
+  type ExcludableTool,
+  excludedToolNames,
   ImageAttacher,
   type ImageAttachment,
   SubagentExecutor,
@@ -87,7 +89,24 @@ export interface ExecuteOptions {
    * Receives every image `readFile` attached while the script ran.
    */
   readonly onImage: (image: ImageAttachment) => Effect.Effect<void>
+  /**
+   * Functions added to the script sandbox whose handlers run on the loop
+   * side, next to the Agent.
+   */
+  readonly loopTools?: LoopToolHandlers | undefined
 }
+
+/**
+ * Loop-side tool handlers by function name. A handler receives the script's
+ * argument undecoded; a failure rejects the script's call with the string as
+ * the error message.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export type LoopToolHandlers = Readonly<
+  Record<string, (params: unknown) => Effect.Effect<unknown, string>>
+>
 
 /**
  * @since 1.0.0
@@ -97,6 +116,14 @@ export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
   toolsDts: Schema.String,
   agentsMd: Schema.Option(Schema.String),
   supportsSearch: Schema.Boolean,
+  /**
+   * The names of the script functions the executor offers. Empty when the
+   * executor predates this field.
+   */
+  tools: Schema.Array(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+    Schema.withConstructorDefault(Effect.succeed([])),
+  ),
   /**
    * Skills available on the executor filesystem.
    */
@@ -115,6 +142,10 @@ export const makeLocal = Effect.fnUntraced(function* <
 >(options: {
   readonly directory: string
   readonly tools?: Toolkit | undefined
+  /**
+   * Built-in tools to leave out of the sandbox and the type declarations.
+   */
+  readonly excludeTools?: ReadonlyArray<ExcludableTool> | undefined
 }): Effect.fn.Return<
   AgentExecutor["Service"],
   never,
@@ -146,12 +177,21 @@ export const makeLocal = Effect.fnUntraced(function* <
     currentDirectory = target
     return target
   }, Effect.orDie)
+  const excluded = excludedToolNames(options.excludeTools)
   const search = yield* Effect.serviceOption(SemanticSearch)
-  const hasSearch = Option.isSome(search)
-  const AllTools = Toolkit.merge(
+  const hasSearch = Option.isSome(search) && !excluded.has("search")
+  const MergedTools = Toolkit.merge(
     hasSearch ? AgentToolsWithSearch : AgentTools,
     (options.tools as unknown as Toolkit.Toolkit<{}>) ?? Toolkit.empty,
   )
+  const AllTools =
+    excluded.size === 0
+      ? MergedTools
+      : (Toolkit.make(
+          ...Object.values(
+            MergedTools.tools as Record<string, Tool.Any>,
+          ).filter((tool) => !excluded.has(tool.name)),
+        ) as unknown as typeof MergedTools)
   const tools = yield* AllTools
   const toolsDts = renderer.render(AllTools)
 
@@ -200,28 +240,44 @@ export const makeLocal = Effect.fnUntraced(function* <
         process: undefined,
       }
 
+      const runTool = <A>(
+        effect: Effect.Effect<A, unknown>,
+        services: Context.Context<never>,
+      ) => {
+        const runFork = Effect.runForkWith(
+          Context.add(services, CurrentDirectory, currentDirectory),
+        )
+        running++
+        const fiber = trackFiber(runFork(effect))
+        return new Promise((resolve, reject) => {
+          fiber.addObserver((exit) => {
+            running--
+            if (exit._tag === "Success") {
+              return resolve(exit.value)
+            }
+            if (Cause.hasInterruptsOnly(exit.cause)) return
+            reject(Cause.squash(exit.cause))
+          })
+        })
+      }
+
       for (let i = 0; i < toolEntries.length; i++) {
         const { name, handler, services } = toolEntries[i]!
         const toolServices = Context.merge(services, taskServices)
 
         // oxlint-disable-next-line typescript/no-explicit-any
-        sandbox[name] = function (params: any) {
-          const runFork = Effect.runForkWith(
-            Context.add(toolServices, CurrentDirectory, currentDirectory),
+        sandbox[name] = (params: any) =>
+          runTool(handler(params, {}), toolServices)
+      }
+
+      for (const [name, handler] of Object.entries(opts.loopTools ?? {})) {
+        sandbox[name] = (params: unknown) =>
+          runTool(
+            handler(params).pipe(
+              Effect.catch((message) => Effect.die(new Error(message))),
+            ),
+            taskServices,
           )
-          running++
-          const fiber = trackFiber(runFork(handler(params, {})))
-          return new Promise((resolve, reject) => {
-            fiber.addObserver((exit) => {
-              running--
-              if (exit._tag === "Success") {
-                return resolve(exit.value)
-              }
-              if (Cause.hasInterruptsOnly(exit.cause)) return
-              reject(Cause.squash(exit.cause))
-            })
-          })
-        }
       }
 
       vmScript.runInNewContext(sandbox, {
@@ -260,6 +316,7 @@ export const makeLocal = Effect.fnUntraced(function* <
         toolsDts,
         agentsMd,
         supportsSearch: hasSearch,
+        tools: Object.keys(tools.tools),
         skills,
       })
     }),
@@ -314,37 +371,44 @@ export const makeRpc = Effect.gen(function* () {
     capabilities: Effect.orDie(client.capabilities()),
     execute: (opts) =>
       Scope.Scope.useSync((scope) =>
-        client.execute({ script: opts.script }).pipe(
-          Stream.tap((part) => {
-            switch (part._tag) {
-              case "Text": {
-                return Effect.void
+        client
+          .execute({
+            script: opts.script,
+            loopTools: Object.keys(opts.loopTools ?? {}),
+          })
+          .pipe(
+            Stream.tap((part) => {
+              switch (part._tag) {
+                case "Text": {
+                  return Effect.void
+                }
+                case "Request": {
+                  const id = part.id
+                  return pipe(
+                    handleRequest(opts, part.request),
+                    Effect.exit,
+                    Effect.flatMap((exit) =>
+                      client.respond({ id, response: exitToResponse(exit) }),
+                    ),
+                    Effect.forkIn(scope),
+                  )
+                }
+                case "Image": {
+                  return opts.onImage({
+                    fileName: part.fileName,
+                    mediaType: part.mediaType,
+                    data: part.data,
+                  })
+                }
               }
-              case "Request": {
-                const id = part.id
-                return pipe(
-                  handleRequest(opts, part.request),
-                  Effect.exit,
-                  Effect.flatMap((exit) =>
-                    client.respond({ id, response: exitToResponse(exit) }),
-                  ),
-                  Effect.forkIn(scope),
-                )
-              }
-              case "Image": {
-                return opts.onImage({
-                  fileName: part.fileName,
-                  mediaType: part.mediaType,
-                  data: part.data,
-                })
-              }
-            }
-          }),
-          Stream.orDie,
-          Stream.filterMap((part) =>
-            part._tag === "Text" ? Result.succeed(part.text) : Result.failVoid,
+            }),
+            Stream.orDie,
+            Stream.filterMap((part) =>
+              part._tag === "Text"
+                ? Result.succeed(part.text)
+                : Result.failVoid,
+            ),
           ),
-        ),
       ).pipe(Stream.unwrap),
     executeUnsafe(options) {
       return client.executeUnsafe(options).pipe(Effect.orDie)
@@ -359,6 +423,10 @@ export const makeRpc = Effect.gen(function* () {
 export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
   readonly directory: string
   readonly tools?: Toolkit | undefined
+  /**
+   * Built-in tools to leave out of the sandbox and the type declarations.
+   */
+  readonly excludeTools?: ReadonlyArray<ExcludableTool> | undefined
 }): Layer.Layer<
   AgentExecutor,
   never,
@@ -402,6 +470,10 @@ export const layerRpc: Layer.Layer<AgentExecutor, never, RpcClient.Protocol> =
 export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
   readonly directory: string
   readonly tools?: Toolkit | undefined
+  /**
+   * Built-in tools to leave out of the sandbox and the type declarations.
+   */
+  readonly excludeTools?: ReadonlyArray<ExcludableTool> | undefined
 }): Layer.Layer<
   never,
   never,
@@ -449,7 +521,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
               }
               return Effect.void
             },
-            execute: Effect.fnUntraced(function* ({ script }) {
+            execute: Effect.fnUntraced(function* ({ script, loopTools }) {
               const queue = yield* Queue.unbounded<
                 typeof ExecuteOutput.Type,
                 Cause.Done
@@ -509,6 +581,21 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
                       data: image.data,
                     })
                   },
+                  loopTools: Object.fromEntries(
+                    loopTools.map((name) => [
+                      name,
+                      (params: unknown) =>
+                        toJson(name, params).pipe(
+                          Effect.flatMap((params) =>
+                            request<unknown>({
+                              _tag: "LoopTool",
+                              name,
+                              params,
+                            }),
+                          ),
+                        ),
+                    ]),
+                  ),
                 }),
                 Stream.runForEachArray((parts) => {
                   for (const part of parts) {
@@ -550,6 +637,7 @@ export const AgentRequest = Schema.TaggedUnion({
   MessageAgent: { id: Schema.String, message: Schema.String },
   StopAgent: { id: Schema.String },
   ListAgents: {},
+  LoopTool: { name: Schema.String, params: Schema.optional(Schema.Json) },
 })
 
 /**
@@ -595,6 +683,12 @@ export class Rpcs extends RpcGroup.make(
   Rpc.make("execute", {
     payload: Schema.Struct({
       script: Schema.String,
+      /**
+       * The loop-side tools to add to the script sandbox.
+       */
+      loopTools: Schema.Array(Schema.String).pipe(
+        Schema.withDecodingDefaultKey(Effect.succeed([])),
+      ),
     }),
     success: ExecuteOutput,
     stream: true,
@@ -629,8 +723,28 @@ const handleRequest = (
       return opts.subagents.stopAgent(request.id)
     case "ListAgents":
       return opts.subagents.listAgents
+    case "LoopTool": {
+      const handler = opts.loopTools?.[request.name]
+      return handler
+        ? handler(request.params)
+        : Effect.fail(`Unknown loop-side tool: ${request.name}`)
+    }
   }
 }
+
+// Script arguments cross the RPC boundary as JSON.
+const toJson = (
+  name: string,
+  params: unknown,
+): Effect.Effect<Schema.Json | undefined, string> =>
+  Effect.try({
+    try: () => {
+      const json = JSON.stringify(params)
+      return json === undefined ? undefined : (JSON.parse(json) as Schema.Json)
+    },
+    catch: (error) =>
+      `Invalid arguments for ${name}: ${error instanceof Error ? error.message : String(error)}`,
+  })
 
 const exitToResponse = (
   exit: Exit.Exit<unknown, string>,

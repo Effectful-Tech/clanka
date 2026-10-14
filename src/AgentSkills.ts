@@ -149,6 +149,49 @@ paths when accessing them.
 ${entries}`)
 }
 
+/**
+ * A skill supplied by the caller instead of discovered on the executor. Its
+ * content stays on the loop side and is read with `readSkill`.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export class ProvidedSkill extends Schema.Class<ProvidedSkill>("ProvidedSkill")(
+  {
+    name: Schema.String,
+    description: Schema.String,
+    content: Schema.String,
+  },
+) {}
+
+/**
+ * Render the skills prompt section for caller-supplied skills, or `None` for
+ * an empty catalog.
+ *
+ * @since 1.0.0
+ * @category Rendering
+ */
+export const renderProvidedCatalog = (
+  skills: ReadonlyArray<ProvidedSkill>,
+): Option.Option<string> => {
+  if (skills.length === 0) return Option.none()
+  const entries = skills
+    .map(
+      (skill) =>
+        `- ${singleLine(skill.name)}: ${singleLine(skill.description)}`,
+    )
+    .join("\n")
+  return Option.some(`# Skills
+
+The following skills are available. Each one has instructions for a specific
+kind of task.
+
+When a task matches a skill's description, call "readSkill" with its name
+BEFORE proceeding, then follow the instructions it returns.
+
+${entries}`)
+}
+
 const Frontmatter = Schema.Struct({
   name: Schema.optional(Schema.Unknown),
   description: Schema.String,

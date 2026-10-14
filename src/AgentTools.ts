@@ -426,6 +426,49 @@ const SearchTool = Toolkit.make(
 export const AgentToolsWithSearch = Toolkit.merge(SearchTool, AgentTools)
 
 /**
+ * A built-in tool a caller can leave out. `taskComplete` always stays.
+ *
+ * @since 1.0.0
+ * @category Toolkit
+ */
+export type ExcludableTool = Exclude<
+  keyof typeof AgentToolsWithSearch.tools,
+  "taskComplete"
+>
+
+/**
+ * The tools that only address agents started by `delegate`. Leaving out
+ * `delegate` leaves them out too.
+ *
+ * @since 1.0.0
+ * @category Toolkit
+ */
+export const subagentTools: ReadonlyArray<ExcludableTool> = [
+  "delegate",
+  "waitAgents",
+  "messageAgent",
+  "stopAgent",
+  "listAgents",
+]
+
+/**
+ * The names of the built-in tools left out by `excludeTools`.
+ *
+ * @since 1.0.0
+ * @category Toolkit
+ */
+export const excludedToolNames = (
+  excludeTools: ReadonlyArray<ExcludableTool> | undefined,
+): ReadonlySet<string> => {
+  const names = new Set<string>(excludeTools)
+  if (names.has("delegate")) {
+    for (const name of subagentTools) names.add(name)
+  }
+  names.delete("taskComplete")
+  return names
+}
+
+/**
  * @since 1.0.0
  * @category Toolkit
  */

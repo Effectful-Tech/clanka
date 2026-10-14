@@ -81,7 +81,7 @@ class AgentSkills.ProvidedSkill { name: string; description: string; content: st
   from the executor's filesystem.
 - The catalog lists each name and description and tells the model to call
   `readSkill(name)` before a matching task. `readSkill` is a loop-side tool the
-  Agent adds when skills are provided; it returns the skill's `content` and
+  Agent adds when at least one skill is provided; it returns the skill's `content` and
   fails with the available names when the name is unknown. The content stays
   on the loop side until a script asks for it: the executor never sees it,
   and the prompt is not inflated by every skill on every turn.

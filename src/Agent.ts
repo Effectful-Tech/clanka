@@ -735,17 +735,6 @@ ${prompt}`,
       }
     }
 
-    // Any operation that rewrites the history must call this: the rewrite
-    // drops earlier updates, so the environment must stop counting them as
-    // seen, and what applies to the current directory is sent again.
-    const refreshEnvironment = Effect.suspend(() =>
-      executor.refreshEnvironment === undefined
-        ? Effect.void
-        : executor
-            .refreshEnvironment(opts.environment.current)
-            .pipe(Effect.map(applyEnvironmentUpdate)),
-    )
-
     // One update for every script of a response, rendered against the
     // environment they left behind. Nothing counts as seen before it is in
     // the history, so an interrupted response is covered by the next one.
@@ -757,6 +746,12 @@ ${prompt}`,
             .pipe(Effect.map(applyEnvironmentUpdate)),
     )
 
+    // Any operation that rewrites the history must refresh the environment:
+    // the rewrite drops earlier updates, so the environment must stop
+    // counting them as seen, and what applies to the current directory is
+    // sent again. The refresh is rendered before the rewrite and both are
+    // committed together, so an interrupt leaves the old history and the old
+    // environment, which still agree.
     const compactWithEvents = <E, R>(
       reason: Compaction.CompactionReason,
       compaction: Effect.Effect<
@@ -769,15 +764,30 @@ ${prompt}`,
         compactionStarted = false
         return compaction
       }).pipe(
+        Effect.flatMap((result) =>
+          Option.isNone(result) || executor.refreshEnvironment === undefined
+            ? Effect.succeed({
+                result,
+                refresh: Option.none<AgentExecutor.EnvironmentUpdate>(),
+              })
+            : executor.refreshEnvironment(opts.environment.current).pipe(
+                Effect.map((update) => ({
+                  result,
+                  refresh: Option.some(update),
+                })),
+              ),
+        ),
         Effect.onExit((exit) =>
           Effect.sync(() => {
             if (!compactionStarted) return
-            const result = Exit.isSuccess(exit) ? exit.value : Option.none()
+            const result = Exit.isSuccess(exit)
+              ? exit.value.result
+              : Option.none()
             let tokensBefore: number
             let tokensAfter: number
             if (Option.isSome(result)) {
-              // Updates in the kept messages are sent again by the refresh
-              // below, so they are dropped here to appear once.
+              // Updates in the kept messages are sent again by the refresh,
+              // so they are dropped here to appear once.
               replaceHistory(
                 executor.refreshEnvironment === undefined
                   ? result.value.prompt
@@ -799,11 +809,12 @@ ${prompt}`,
               agentId,
               part: new CompactionEnded({ reason, tokensBefore, tokensAfter }),
             })
+            if (Exit.isSuccess(exit) && Option.isSome(exit.value.refresh)) {
+              applyEnvironmentUpdate(exit.value.refresh.value)
+            }
           }),
         ),
-        Effect.tap((result) =>
-          Option.isSome(result) ? refreshEnvironment : Effect.void,
-        ),
+        Effect.map(({ result }) => result),
       )
 
     // Script execution

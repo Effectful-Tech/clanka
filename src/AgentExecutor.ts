@@ -12,10 +12,12 @@ import {
   type SubagentResult,
   AgentTools,
   AgentToolsWithSearch,
+  CommandLimits,
   CurrentDirectory,
   DirectoryChanger,
   ImageAttacher,
   type ImageAttachment,
+  makeBashTool,
   SubagentExecutor,
   type Subagents,
   subagentsUnavailable,
@@ -27,6 +29,7 @@ import * as AgentSkills from "./AgentSkills.ts"
 import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
 import type * as HttpClient from "effect/http/HttpClient"
 import * as Context from "effect/Context"
+import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
@@ -107,6 +110,39 @@ export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
 }) {}
 
 /**
+ * Limits applied by the executor that runs the tools. With `layerRpcServer`
+ * they are set on the server, next to the commands they bound.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export interface Limits {
+  /**
+   * The longest a single `bash` command may run. It is also the default when
+   * the model passes no `timeoutMs`, and the `bash` description states it.
+   *
+   * Defaults to 10 minutes.
+   */
+  readonly commandTimeout?: Duration.Input | undefined
+  /**
+   * The longest a single `execute` script may run, including the tool calls
+   * it awaits. A script that runs out of time is interrupted, and its output
+   * so far ends with a line saying it timed out.
+   *
+   * Defaults to no limit.
+   */
+  readonly scriptTimeout?: Duration.Input | undefined
+  /**
+   * The most characters of `bash` and `gh` output held in memory per command.
+   * Longer output keeps its start and end, with a marker in place of the
+   * middle.
+   *
+   * Defaults to no limit.
+   */
+  readonly commandOutputChars?: number | undefined
+}
+
+/**
  * @since 1.0.0
  * @category Constructors
  */
@@ -115,6 +151,7 @@ export const makeLocal = Effect.fnUntraced(function* <
 >(options: {
   readonly directory: string
   readonly tools?: Toolkit | undefined
+  readonly limits?: Limits | undefined
 }): Effect.fn.Return<
   AgentExecutor["Service"],
   never,
@@ -146,10 +183,23 @@ export const makeLocal = Effect.fnUntraced(function* <
     currentDirectory = target
     return target
   }, Effect.orDie)
+  const commandLimits: typeof CommandLimits.Service = {
+    timeout: Duration.fromInputUnsafe(
+      options.limits?.commandTimeout ?? CommandLimits.defaultValue().timeout,
+    ),
+    outputChars: options.limits?.commandOutputChars,
+  }
+  const scriptTimeout = Option.map(
+    Option.fromUndefinedOr(options.limits?.scriptTimeout),
+    Duration.fromInputUnsafe,
+  )
   const search = yield* Effect.serviceOption(SemanticSearch)
   const hasSearch = Option.isSome(search)
   const AllTools = Toolkit.merge(
     hasSearch ? AgentToolsWithSearch : AgentTools,
+    // Same tool id, so the handler is unchanged. Only the description, which
+    // states the timeout, differs.
+    Toolkit.make(makeBashTool(commandLimits.timeout)),
     (options.tools as unknown as Toolkit.Toolkit<{}>) ?? Toolkit.empty,
   )
   const tools = yield* AllTools
@@ -181,6 +231,7 @@ export const makeLocal = Effect.fnUntraced(function* <
       Context.add(DirectoryChanger, changeDirectory),
       Context.add(SubagentExecutor, opts.subagents),
       Context.add(ImageAttacher, opts.onImage),
+      Context.add(CommandLimits, commandLimits),
       Context.add(Console.Console, console),
       Context.add(References.CurrentLogAnnotations, {}),
       Option.isSome(search)
@@ -233,6 +284,17 @@ export const makeLocal = Effect.fnUntraced(function* <
         if (running === 0) break
       }
     }).pipe(
+      Option.isSome(scriptTimeout)
+        ? Effect.timeoutOrElse({
+            duration: scriptTimeout.value,
+            orElse: () =>
+              Queue.offer(
+                output,
+                `\nScript timed out: it reached its ${Duration.toMillis(scriptTimeout.value)}ms limit and was stopped. Pending tool calls were cancelled.\n`,
+              ),
+          })
+        : identity,
+      // Interrupts the tool calls still running, and the processes they own.
       Effect.ensuring(Scope.close(handlerScope, Exit.void)),
       Effect.catchCause(Effect.logFatal),
       Effect.provideService(Console.Console, console),
@@ -282,6 +344,7 @@ export const makeLocal = Effect.fnUntraced(function* <
           Context.add(SubagentExecutor, subagentsUnavailable),
           // Direct tool calls have no model turn to attach images to.
           Context.add(ImageAttacher, () => Effect.void),
+          Context.add(CommandLimits, commandLimits),
           Context.add(References.CurrentLogAnnotations, {}),
           Option.isSome(search)
             ? Context.add(SemanticSearch, search.value)
@@ -359,6 +422,7 @@ export const makeRpc = Effect.gen(function* () {
 export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
   readonly directory: string
   readonly tools?: Toolkit | undefined
+  readonly limits?: Limits | undefined
 }): Layer.Layer<
   AgentExecutor,
   never,
@@ -402,6 +466,7 @@ export const layerRpc: Layer.Layer<AgentExecutor, never, RpcClient.Protocol> =
 export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
   readonly directory: string
   readonly tools?: Toolkit | undefined
+  readonly limits?: Limits | undefined
 }): Layer.Layer<
   never,
   never,

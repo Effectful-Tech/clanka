@@ -256,11 +256,50 @@ export class SubagentPart extends Schema.TaggedClass<SubagentPart>()(
 ) {}
 
 /**
+ * Emitted when messages are committed to the agent's history: the user
+ * prompt, steering messages, and each model step's response and tool
+ * results. Applying `HistoryAppended` and `HistoryReplaced` in order to the
+ * history the agent started `send` with reproduces `agent.history`, minus
+ * the system message, which is rebuilt on every `send`.
+ *
+ * Only the top-level agent emits history events. Subagents have no history.
+ *
+ * @since 1.0.0
+ * @category Output
+ */
+export class HistoryAppended extends Schema.TaggedClass<HistoryAppended>()(
+  "HistoryAppended",
+  {
+    messages: Schema.Array(Prompt.Message),
+  },
+) {}
+
+/**
+ * Emitted when compaction rewrites the agent's history. `messages` is the
+ * whole new history, without the system message.
+ *
+ * @since 1.0.0
+ * @category Output
+ */
+export class HistoryReplaced extends Schema.TaggedClass<HistoryReplaced>()(
+  "HistoryReplaced",
+  {
+    messages: Schema.Array(Prompt.Message),
+  },
+) {}
+
+/**
  * @since 1.0.0
  * @category Output
  */
 export type Output =
-  AgentStart | ContentPart | SubagentStart | SubagentComplete | SubagentPart
+  | AgentStart
+  | ContentPart
+  | SubagentStart
+  | SubagentComplete
+  | SubagentPart
+  | HistoryAppended
+  | HistoryReplaced
 
 /**
  * @since 1.0.0
@@ -272,6 +311,8 @@ export const Output = Schema.Union([
   SubagentStart,
   SubagentComplete,
   SubagentPart,
+  HistoryAppended,
+  HistoryReplaced,
 ])
 
 /**
@@ -282,5 +323,21 @@ export class AgentFinished extends Schema.TaggedError<AgentFinished>()(
   "AgentFinished",
   {
     summary: Schema.String,
+  },
+) {}
+
+/**
+ * The `send` stream fails with this error when a model call, or a turn that
+ * hit `TurnTimeout`, was retried `MaxRetries` times in a row and still failed.
+ * `error` is the last failure.
+ *
+ * @since 1.0.0
+ * @category Output
+ */
+export class RetriesExhausted extends Schema.TaggedError<RetriesExhausted>()(
+  "RetriesExhausted",
+  {
+    retries: Schema.Number,
+    error: AiError.AiError,
   },
 ) {}

@@ -166,6 +166,7 @@ const runAgentCollect = (options: {
   readonly compaction?: Partial<Compaction.CompactionConfigService> | undefined
   readonly prompt?: string | undefined
   readonly turnTimeout?: Duration.Duration | undefined
+  readonly maxRetries?: number | undefined
   readonly respond: ScriptedResponse
 }) =>
   Effect.scoped(
@@ -247,6 +248,9 @@ const runAgentCollect = (options: {
                 Agent.TurnTimeout,
                 options.turnTimeout ?? Duration.minutes(5),
               ),
+              options.maxRetries === undefined
+                ? Layer.empty
+                : Agent.MaxRetries.layer(options.maxRetries),
             ),
           ),
           Effect.exit,
@@ -1168,7 +1172,7 @@ describe("Agent overflow compaction", () => {
         })
         assert.isTrue(Exit.isFailure(exit), "turn must fail")
         const error = Option.getOrThrow(Exit.findErrorOption(exit))
-        assert.strictEqual(error._tag, "AiError")
+        assert(error._tag === "AiError")
         assert.strictEqual(error.reason._tag, "InvalidRequestError")
         assert.strictEqual(calls.length, 3)
       }),
@@ -1287,5 +1291,93 @@ describe("Agent overflow compaction", () => {
       assert.strictEqual(outputsOfTag(outputs, "ErrorRetry").length, 1)
       assert.strictEqual(outputsOfTag(outputs, "CompactionStarted").length, 0)
     }),
+  )
+})
+
+describe("Agent retry limit", () => {
+  it.live(
+    "fails with RetriesExhausted once model errors and turn timeouts reach MaxRetries",
+    () =>
+      Effect.gen(function* () {
+        const { exit, calls } = yield* runAgentCollect({
+          maxRetries: 2,
+          turnTimeout: Duration.millis(100),
+          respond: (_call, index) => {
+            switch (index) {
+              case 0:
+                return Stream.fail(providerError)
+              case 1:
+                return Stream.fromEffect(Effect.never)
+              case 2:
+                return Stream.fail(providerError)
+              default:
+                return Stream.die(
+                  `unexpected model call #${index}: must stop retrying`,
+                )
+            }
+          },
+        }).pipe(Effect.timeout("3 seconds"))
+        assert.strictEqual(calls.length, 3)
+        const error = Option.getOrThrow(Exit.findErrorOption(exit))
+        assert(error._tag === "RetriesExhausted")
+        assert.strictEqual(error.retries, 2)
+        assert.strictEqual(error.error.reason._tag, "InternalProviderError")
+      }),
+  )
+})
+
+describe("Agent history events", () => {
+  it.effect(
+    "rebuild the agent's history from the history it was resumed with",
+    () =>
+      Effect.gen(function* () {
+        const { exit, outputs, history } = yield* runAgentCollect({
+          history: fatHistory,
+          compaction: {
+            contextWindow: 12_000,
+            reserveTokens: 2_000,
+            keepRecentTokens: 9_000,
+          },
+          executor: makeExecutor(() => Stream.succeed("listed")),
+          respond: (call, index) => {
+            switch (index) {
+              case 0:
+                assertSummarizerCall(call)
+                return Stream.fromIterable(text("SUMMARY"))
+              case 1:
+                return Stream.fromIterable([
+                  toolCall("call-3", "console.log(await ls('.'))"),
+                  finish(500),
+                ])
+              case 2:
+                return Stream.fromIterable([
+                  ...text("done"),
+                  finish(600, "stop"),
+                ])
+              default:
+                return Stream.die(`unexpected model call #${index}`)
+            }
+          },
+        })
+        assert.deepStrictEqual(exit, Exit.succeed("done"))
+
+        let replayed: Array<Prompt.Message> = [...fatHistory.content]
+        for (const output of outputs) {
+          if (output._tag === "HistoryAppended") {
+            replayed.push(...output.messages)
+          } else if (output._tag === "HistoryReplaced") {
+            replayed = [...output.messages]
+          }
+        }
+        assert.strictEqual(outputsOfTag(outputs, "HistoryReplaced").length, 1)
+        assert.strictEqual(
+          promptJson(Prompt.fromMessages(replayed)),
+          promptJson(
+            Prompt.fromMessages(
+              history.content.filter((message) => message.role !== "system"),
+            ),
+          ),
+        )
+      }),
   )
 })

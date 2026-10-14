@@ -67,6 +67,9 @@ import {
   ExecuteOutputCapped,
   CompactionStarted,
   CompactionEnded,
+  HistoryAppended,
+  HistoryReplaced,
+  RetriesExhausted,
 } from "./AgentOutput.ts"
 
 /**
@@ -110,7 +113,7 @@ export interface Agent {
         }) => string)
       | undefined
   }): Effect.Effect<
-    Stream.Stream<Output, AgentFinished | AiError.AiError>,
+    Stream.Stream<Output, AgentFinished | AiError.AiError | RetriesExhausted>,
     never,
     | Scope.Scope
     | LanguageModel.LanguageModel
@@ -191,9 +194,14 @@ ${content}
      * and everything under them are not, so they never hold the output lock.
      */
     readonly display: boolean
+    /**
+     * Whether commits to `history` are emitted as `HistoryAppended` and
+     * `HistoryReplaced` events. Only the root agent's history is public.
+     */
+    readonly historyEvents: boolean
   }) => Stream.Stream<
     Output,
-    AgentFinished | AiError.AiError,
+    AgentFinished | AiError.AiError | RetriesExhausted,
     | LanguageModel.LanguageModel
     | Model.ProviderName
     | Model.ModelName
@@ -205,6 +213,7 @@ ${content}
     const modelConfig = yield* AgentModelConfig
     const conversationMode = yield* ConversationMode
     const turnTimeout = yield* TurnTimeout
+    const maxRetries = yield* MaxRetries
     let finalSummary = Option.none<string>()
     // `inputTokens.total` from the most recent finish part; undefined until
     // the first response and after every compaction.
@@ -217,7 +226,10 @@ ${content}
     // the Prompt as a user message once the tool result has been recorded.
     const pendingImages: Array<ImageAttachment> = []
 
-    const output = yield* Queue.make<Output, AgentFinished | AiError.AiError>()
+    const output = yield* Queue.make<
+      Output,
+      AgentFinished | AiError.AiError | RetriesExhausted
+    >()
     let inputTokens = 0
     let outputTokens = 0
     let cacheRead = 0
@@ -225,6 +237,30 @@ ${content}
     const prompt = opts.history
     const mailbox = opts.mailbox
 
+    // Every change to `prompt` after the system message is set goes through
+    // these two, so the history events always add up to the history.
+    const appendHistory = (input: Prompt.Prompt) => {
+      MutableRef.update(prompt, Prompt.concat(input))
+      if (!opts.historyEvents) return
+      const messages = input.content.filter(
+        (message) => message.role !== "system",
+      )
+      if (messages.length > 0) {
+        Queue.offerUnsafe(output, new HistoryAppended({ messages }))
+      }
+    }
+    const replaceHistory = (next: Prompt.Prompt) => {
+      MutableRef.set(prompt, next)
+      if (!opts.historyEvents) return
+      Queue.offerUnsafe(
+        output,
+        new HistoryReplaced({
+          messages: next.content.filter((message) => message.role !== "system"),
+        }),
+      )
+    }
+
+    // Committed now, emitted after AgentStart below.
     MutableRef.update(prompt, Prompt.concat(opts.prompt))
 
     const generateSystem =
@@ -348,6 +384,7 @@ ${content}
         history: child.history,
         mailbox: child.mailbox,
         display,
+        historyEvents: false,
       })
       turn.fiber = yield* Effect.gen(function* () {
         maybeSend({
@@ -366,6 +403,8 @@ ${content}
             for (const part of parts) {
               switch (part._tag) {
                 case "AgentStart":
+                case "HistoryAppended":
+                case "HistoryReplaced":
                   break
                 case "SubagentStart":
                 case "SubagentComplete":
@@ -586,7 +625,7 @@ ${prompt}`,
             let tokensBefore: number
             let tokensAfter: number
             if (Option.isSome(result)) {
-              MutableRef.set(prompt, result.value.prompt)
+              replaceHistory(result.value.prompt)
               lastContextTokens = undefined
               tokensBefore = result.value.tokensBefore
               tokensAfter = result.value.tokensAfter
@@ -640,6 +679,24 @@ ${prompt}`,
       MutableRef.update(prompt, Prompt.setSystem(system))
     }
 
+    yield* Queue.offer(
+      output,
+      new AgentStart({
+        id: opts.agentId,
+        prompt: opts.prompt,
+        provider: yield* Model.ProviderName,
+        model: yield* Model.ModelName,
+      }),
+    )
+    if (opts.historyEvents) {
+      const messages = opts.prompt.content.filter(
+        (message) => message.role !== "system",
+      )
+      if (messages.length > 0) {
+        yield* Queue.offer(output, new HistoryAppended({ messages }))
+      }
+    }
+
     yield* Effect.gen(function* () {
       while (true) {
         if (Option.isSome(finalSummary)) {
@@ -651,9 +708,8 @@ ${prompt}`,
         }
 
         if (mailbox.messages.size > 0) {
-          MutableRef.update(
-            prompt,
-            Prompt.concat(
+          appendHistory(
+            Prompt.make(
               Array.Array.from(mailbox.messages, ({ message, resume }) => {
                 resume(Effect.void)
                 return {
@@ -675,9 +731,8 @@ ${prompt}`,
             return true
           })
           if (pushes.length > 0) {
-            MutableRef.update(
-              prompt,
-              Prompt.concat(
+            appendHistory(
+              Prompt.make(
                 pushes.map((turn) => ({
                   role: "user" as const,
                   content: `<subagent id="${turn.agentId}" status="${turn.status}">
@@ -715,6 +770,19 @@ ${Compaction.capOutput(turn.output ?? "").output}
         let reasoningStarted = false
         let hadReasoningDelta = false
         let hadToolCall = false
+        // Retries of this model call so far, and the error that used up the
+        // last one.
+        let retries = 0
+        let exhaustedBy: AiError.AiError | undefined
+        const retryOrExhaust = (error: AiError.AiError) => {
+          if (retries >= maxRetries) {
+            exhaustedBy = error
+            return false
+          }
+          retries++
+          maybeSend({ agentId, part: new ErrorRetry({ error }) })
+          return true
+        }
         const runModel = pipe(
           Stream.suspend(() =>
             ai.streamText({
@@ -814,26 +882,17 @@ ${Compaction.capOutput(turn.output ?? "").output}
           Effect.retry({
             while(err) {
               if (err._tag === "TimeoutError") {
-                maybeSend({
-                  agentId,
-                  part: new ErrorRetry({
-                    error: AiError.make({
-                      module: "clanka/Agent",
-                      method: "send",
-                      reason: new AiError.UnknownError({
-                        description: "TurnTimeout was reached",
-                      }),
-                    }),
-                  }),
-                })
                 discardAttempt()
-                return true
+                return retryOrExhaust(turnTimeoutError)
               }
               // Never retry a context-length error as is: the overflow
               // handler below compacts first.
               if (Compaction.isContextLengthError(err)) return false
               if (err.isRetryable) {
-                maybeSend({ agentId, part: new ErrorRetry({ error: err }) })
+                if (!retryOrExhaust(err)) {
+                  discardAttempt()
+                  return false
+                }
                 switch (err.reason._tag) {
                   case "ToolNotFoundError":
                   case "InvalidOutputError": {
@@ -842,7 +901,7 @@ ${Compaction.capOutput(turn.output ?? "").output}
                         `There was an error, please try again using the "execute" tool:\n\n${Cause.pretty(Cause.fail(err))}`,
                       ),
                     )
-                    MutableRef.update(prompt, Prompt.concat(toAppend))
+                    appendHistory(toAppend)
                   }
                 }
               }
@@ -851,6 +910,13 @@ ${Compaction.capOutput(turn.output ?? "").output}
             },
             schedule: retryPolicy,
           }),
+          Effect.catchIf(
+            () => exhaustedBy !== undefined,
+            () =>
+              Effect.fail(
+                new RetriesExhausted({ retries, error: exhaustedBy! }),
+              ),
+          ),
           Effect.catchTag("TimeoutError", Effect.die),
         )
         // Unsupported images: drop them from the request and retry once.
@@ -858,6 +924,7 @@ ${Compaction.capOutput(turn.output ?? "").output}
         const attemptWithImageFallback = attempt.pipe(
           Effect.catchIf(
             (err): err is AiError.AiError =>
+              err._tag === "AiError" &&
               sendImages &&
               Image.hasImages(prompt.current) &&
               Image.isUnsupportedImageError(err),
@@ -873,7 +940,7 @@ ${Compaction.capOutput(turn.output ?? "").output}
         yield* attemptWithImageFallback.pipe(
           Effect.catchIf(
             (err): err is AiError.AiError =>
-              Compaction.isContextLengthError(err),
+              err._tag === "AiError" && Compaction.isContextLengthError(err),
             (err) =>
               Effect.gen(function* () {
                 discardAttempt()
@@ -898,18 +965,10 @@ ${Compaction.capOutput(turn.output ?? "").output}
               }),
           ),
         )
-        MutableRef.update(
-          prompt,
-          Prompt.concat(Prompt.fromResponseParts(response)),
-        )
+        appendHistory(Prompt.fromResponseParts(response))
         if (pendingImages.length > 0) {
           // After the tool result, so call / result pairing stays intact.
-          MutableRef.update(
-            prompt,
-            Prompt.concat(
-              Prompt.fromMessages([Image.userMessage(pendingImages)]),
-            ),
-          )
+          appendHistory(Prompt.fromMessages([Image.userMessage(pendingImages)]))
           pendingImages.length = 0
         }
         if (conversationMode && !hadToolCall && mailbox.messages.size === 0) {
@@ -933,16 +992,6 @@ ${Compaction.capOutput(turn.output ?? "").output}
       Effect.forkScoped,
     )
 
-    yield* Queue.offer(
-      output,
-      new AgentStart({
-        id: opts.agentId,
-        prompt: opts.prompt,
-        provider: yield* Model.ProviderName,
-        model: yield* Model.ModelName,
-      }),
-    )
-
     return Stream.fromQueue(output)
   }, Stream.unwrap)
 
@@ -959,6 +1008,7 @@ ${Compaction.capOutput(turn.output ?? "").output}
         history,
         mailbox: rootMailbox,
         display: true,
+        historyEvents: true,
       }).pipe(
         Stream.broadcast({ capacity: "unbounded", replay: 1 }),
         sendLock.withPermit,
@@ -1004,7 +1054,7 @@ interface Turn {
   /** Whether the model has seen this result. Undelivered results are pushed. */
   delivered: boolean
   readonly done: Deferred.Deferred<void>
-  fiber: Fiber.Fiber<string, AiError.AiError> | undefined
+  fiber: Fiber.Fiber<string, AiError.AiError | RetriesExhausted> | undefined
 }
 
 const makeTurn = (agentId: number, background: boolean): Turn => ({
@@ -1021,6 +1071,14 @@ const causeMessage = (cause: Cause.Cause<unknown>): string => {
   const error = Cause.squash(cause)
   return error instanceof Error ? error.message : String(error)
 }
+
+const turnTimeoutError = AiError.make({
+  module: "clanka/Agent",
+  method: "send",
+  reason: new AiError.UnknownError({
+    description: "TurnTimeout was reached",
+  }),
+})
 
 const retryPolicy = Schedule.min([
   Schedule.exponential(100, 1.5),
@@ -1142,6 +1200,7 @@ export const layer: Layer.Layer<Agent, never, AgentExecutor.AgentExecutor> =
 export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
   readonly directory: string
   readonly tools?: Toolkit | undefined
+  readonly limits?: AgentExecutor.Limits | undefined
 }): Layer.Layer<
   Agent,
   never,
@@ -1221,6 +1280,24 @@ export class TurnTimeout extends Context.Reference<Duration.Duration>(
 ) {
   static readonly layer = (timeout: Duration.Input) =>
     Layer.succeed(TurnTimeout, Duration.fromInputUnsafe(timeout))
+}
+
+/**
+ * The number of times in a row a model call is retried, after a retryable
+ * error or after reaching `TurnTimeout`, before `send` fails with
+ * `RetriesExhausted`. The count resets after a model call succeeds.
+ *
+ * @since 1.0.0
+ * @category Retries
+ */
+export class MaxRetries extends Context.Reference<number>(
+  "clanka/Agent/MaxRetries",
+  {
+    defaultValue: () => 20,
+  },
+) {
+  static readonly layer = (retries: number) =>
+    Layer.succeed(MaxRetries, retries)
 }
 
 /**

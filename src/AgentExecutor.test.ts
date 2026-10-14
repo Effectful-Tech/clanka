@@ -6,6 +6,8 @@ import * as Effect from "effect/Effect"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
 import * as Stream from "effect/Stream"
+import * as FetchHttpClient from "effect/http/FetchHttpClient"
+import * as HttpEffect from "effect/http/HttpEffect"
 import * as HttpServer from "effect/http/HttpServer"
 import * as RpcClient from "effect/rpc/RpcClient"
 import * as RpcSerialization from "effect/rpc/RpcSerialization"
@@ -164,3 +166,125 @@ describe("RPC subagent executor", () => {
       ),
   )
 })
+
+// Both executor modes with the same limits. The RPC mode serves
+// `layerRpcServer` through an in-memory web handler, so requests go through
+// the real serialization without opening a socket.
+const executorModes = {
+  local: (limits: AgentExecutor.Limits) =>
+    Layer.unwrap(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const directory = yield* fs.makeTempDirectoryScoped()
+        return AgentExecutor.layerLocal({ directory, limits })
+      }),
+    ).pipe(
+      Layer.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
+    ),
+  rpc: (limits: AgentExecutor.Limits) =>
+    Layer.unwrap(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const directory = yield* fs.makeTempDirectoryScoped()
+        const { protocol, httpEffect } =
+          yield* RpcServer.makeProtocolWithHttpEffect()
+        yield* Layer.build(
+          AgentExecutor.layerRpcServer({ directory, limits }).pipe(
+            Layer.provide(Layer.succeed(RpcServer.Protocol, protocol)),
+            Layer.provide(FetchHttpClient.layer),
+          ),
+        )
+        const handler = HttpEffect.toWebHandler(httpEffect)
+        return AgentExecutor.layerRpc.pipe(
+          Layer.provide(
+            RpcClient.layerProtocolHttp({ url: "http://executor.test/" }),
+          ),
+          Layer.provide(FetchHttpClient.layer),
+          Layer.provide(
+            Layer.succeed(FetchHttpClient.Fetch, (input, init) =>
+              handler(new Request(input, init)),
+            ),
+          ),
+        )
+      }),
+    ).pipe(
+      Layer.provide(
+        Layer.mergeAll(NodeServices.layer, RpcSerialization.layerNdjson),
+      ),
+    ),
+}
+
+const runScript = (script: string) =>
+  AgentExecutor.AgentExecutor.use((executor) =>
+    executor
+      .execute({
+        script,
+        onTaskComplete: () => Effect.void,
+        subagents: subagentsUnavailable,
+        onImage: () => Effect.void,
+      })
+      .pipe(Stream.mkString),
+  )
+
+for (const [mode, executorLayer] of Object.entries(executorModes)) {
+  describe(`${mode} executor limits`, () => {
+    it.live("stops a bash command at the caller's command timeout", () =>
+      Effect.gen(function* () {
+        const output = yield* runScript(`
+try {
+  await bash({ command: 'sleep 10 && echo fini""shed', timeoutMs: 60000 })
+} catch (error) {
+  console.log("REJECTED:", String(error))
+}`)
+        assert.include(output, "REJECTED:")
+        assert.match(output, /timed out/i)
+        assert.notInclude(output, "finished")
+      }).pipe(
+        Effect.timeout("3 seconds"),
+        Effect.provide(executorLayer({ commandTimeout: "300 millis" })),
+      ),
+    )
+
+    it.live("describes the caller's command timeout to the model", () =>
+      Effect.gen(function* () {
+        const executor = yield* AgentExecutor.AgentExecutor
+        const { toolsDts } = yield* executor.capabilities
+        assert.include(toolsDts, "180000")
+        assert.notInclude(toolsDts, "120000")
+        assert.notInclude(toolsDts, "4 minutes")
+      }).pipe(Effect.provide(executorLayer({ commandTimeout: "3 minutes" }))),
+    )
+
+    it.live("ends a script at the caller's script timeout", () =>
+      Effect.gen(function* () {
+        const output = yield* runScript(`
+console.log("before")
+await sleep(10000)
+console.log("after")`)
+        assert.include(output, "before")
+        assert.notInclude(output, "after")
+        assert.match(output, /timed out/i)
+      }).pipe(
+        Effect.timeout("3 seconds"),
+        Effect.provide(executorLayer({ scriptTimeout: "300 millis" })),
+      ),
+    )
+
+    it.live("keeps the start and end of long bash output", () =>
+      Effect.gen(function* () {
+        const executor = yield* AgentExecutor.AgentExecutor
+        const output = yield* executor.executeUnsafe({
+          tool: "bash",
+          params: { command: "seq 1 1000000" },
+        })
+        assert(typeof output === "string")
+        assert.isBelow(output.length, 10_000 + 500)
+        assert.isTrue(output.startsWith("1\n2\n3\n"), "start kept")
+        assert.isTrue(output.trimEnd().endsWith("999999\n1000000"), "end kept")
+      }).pipe(
+        Effect.timeout("10 seconds"),
+        Effect.provide(executorLayer({ commandOutputChars: 10_000 })),
+      ),
+    )
+  })
+}

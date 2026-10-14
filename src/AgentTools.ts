@@ -7,6 +7,7 @@ import * as ExaSearch from "./ExaSearch.ts"
 import * as WebToMarkdown from "./WebToMarkdown.ts"
 import type * as HttpClient from "effect/http/HttpClient"
 import * as Context from "effect/Context"
+import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Toolkit from "effect/ai/Toolkit"
 import * as Tool from "effect/ai/Tool"
@@ -198,6 +199,46 @@ export class ImageAttacher extends Context.Service<
   (image: ImageAttachment) => Effect.Effect<void>
 >()("clanka/AgentTools/ImageAttacher") {}
 
+/**
+ * The limits the `bash` and `gh` handlers apply to a single command. The
+ * executor sets them from its `limits` option.
+ *
+ * @since 1.0.0
+ * @category Context
+ */
+export class CommandLimits extends Context.Reference<{
+  /** The longest a `bash` command may run, and its default timeout. */
+  readonly timeout: Duration.Duration
+  /** The most characters of output held per command. */
+  readonly outputChars: number | undefined
+}>("clanka/AgentTools/CommandLimits", {
+  defaultValue: () => ({
+    timeout: Duration.minutes(10),
+    outputChars: undefined,
+  }),
+}) {}
+
+/**
+ * The `bash` tool, with a description that states the timeout that applies.
+ *
+ * @since 1.0.0
+ * @category Toolkit
+ */
+export const makeBashTool = (timeout: Duration.Duration) =>
+  Tool.make("bash", {
+    description: "Run a bash command and return the output",
+    parameters: Schema.Struct({
+      command: Schema.String,
+      timeoutMs: Schema.optional(Schema.Finite).annotate({
+        documentation: `Timeout in ms (default and max: ${Duration.toMillis(timeout)})`,
+      }),
+    }).annotate({
+      identifier: "command",
+    }),
+    success: Schema.String,
+    dependencies: [CurrentDirectory],
+  })
+
 const globNamesDirectory = (glob: string) =>
   glob
     .split("/")
@@ -323,19 +364,7 @@ export const AgentTools = Toolkit.make(
     success: Schema.String,
     dependencies: [CurrentDirectory],
   }),
-  Tool.make("bash", {
-    description: "Run a bash command and return the output",
-    parameters: Schema.Struct({
-      command: Schema.String,
-      timeoutMs: Schema.optional(Schema.Finite).annotate({
-        documentation: "Timeout in ms (default: 120000, max 4 minutes)",
-      }),
-    }).annotate({
-      identifier: "command",
-    }),
-    success: Schema.String,
-    dependencies: [CurrentDirectory],
-  }),
+  makeBashTool(CommandLimits.defaultValue().timeout),
   Tool.make("applyPatch", {
     description:
       "Add, update or remove multiple files with a git diff / unified diff / wrapped patch.",
@@ -437,10 +466,13 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     const webSearch = yield* ExaSearch.ExaSearch
     const fetchMarkdown = yield* WebToMarkdown.WebToMarkdown
     const execute = Effect.fn(function* (command: ChildProcess.Command) {
+      const { outputChars } = yield* CommandLimits
       const handle = yield* spawner.spawn(command)
       return yield* handle.all.pipe(
         Stream.decodeText,
-        Stream.mkString,
+        outputChars === undefined
+          ? Stream.mkString
+          : collectBounded(outputChars),
         Effect.flatMap(
           Effect.fnUntraced(function* (output) {
             const exitCode = yield* handle.exitCode
@@ -645,7 +677,9 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         )
       }),
       bash: Effect.fn("AgentTools.bash")(function* (options) {
-        const timeoutMs = Math.min(options.timeoutMs ?? 600_000, 600_000)
+        const limits = yield* CommandLimits
+        const maxMs = Duration.toMillis(limits.timeout)
+        const timeoutMs = Math.min(options.timeoutMs ?? maxMs, maxMs)
         yield* Effect.logInfo(`Calling "bash"`).pipe(
           Effect.annotateLogs({
             ...options,
@@ -938,6 +972,42 @@ const decodeStopAgent = decodeParams(
   AgentTools.tools.stopAgent.parametersSchema,
   'stopAgent requires an agent id, for example: stopAgent("3").',
 )
+
+/**
+ * Collects text output keeping at most `maxChars` characters: the start, the
+ * end, and a marker in place of the middle. Only the kept text is held in
+ * memory while the stream runs.
+ */
+const collectBounded =
+  (maxChars: number) =>
+  <E, R>(stream: Stream.Stream<string, E, R>): Effect.Effect<string, E, R> => {
+    const headChars = Math.floor(maxChars / 2)
+    const tailChars = maxChars - headChars
+    let head = ""
+    let tail = ""
+    let total = 0
+    return stream.pipe(
+      Stream.runForEach((chunk) =>
+        Effect.sync(() => {
+          total += chunk.length
+          let rest = chunk
+          if (head.length < headChars) {
+            const take = headChars - head.length
+            head += rest.slice(0, take)
+            rest = rest.slice(take)
+          }
+          if (rest.length > 0 && tailChars > 0) {
+            tail = (tail + rest).slice(-tailChars)
+          }
+        }),
+      ),
+      Effect.map(() => {
+        const omitted = total - head.length - tail.length
+        if (omitted <= 0) return head + tail
+        return `${head}\n\n[... ${omitted} of ${total} chars omitted from the middle of the output ...]\n\n${tail}`
+      }),
+    )
+  }
 
 class ApplyPatchError extends Data.TaggedClass("ApplyPatchError")<{
   readonly message: string

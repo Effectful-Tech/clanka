@@ -521,6 +521,11 @@ describe("AgentSkills", () => {
   it("defaults skills when constructing capabilities without the new field", () => {
     const capabilities = new AgentExecutor.Capabilities({
       toolsDts: "",
+      environment: new AgentExecutor.ExecutionEnvironment({
+        cwd: "/",
+        baseline: [],
+        seen: [],
+      }),
       agentsMd: Option.none(),
       supportsSearch: false,
       tools: [],
@@ -835,6 +840,11 @@ const makeExecutor = (skills: ReadonlyArray<AgentSkills.Skill>) =>
     capabilities: Effect.succeed(
       new AgentExecutor.Capabilities({
         toolsDts: "",
+        environment: new AgentExecutor.ExecutionEnvironment({
+          cwd: "/",
+          baseline: [],
+          seen: [],
+        }),
         agentsMd: Option.none(),
         supportsSearch: false,
         tools: [],

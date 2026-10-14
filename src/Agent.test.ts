@@ -24,6 +24,11 @@ import * as Compaction from "./Compaction.ts"
 
 const capabilities = new AgentExecutor.Capabilities({
   toolsDts: "",
+  environment: new AgentExecutor.ExecutionEnvironment({
+    cwd: "/",
+    baseline: [],
+    seen: [],
+  }),
   agentsMd: Option.none(),
   supportsSearch: false,
   tools: [],
@@ -476,8 +481,11 @@ it.layer(localExecutorLayer, { excludeTestServices: true })(
         AgentExecutor.AgentExecutor.use((executor) =>
           Effect.gen(function* () {
             const summaries: Array<string> = []
+            const { environment } = yield* executor.capabilities
             const output = yield* executor
               .execute({
+                environment,
+                onEnvironment: () => Effect.void,
                 script: `try { await ${invocation}; console.log("ACCEPTED") } catch (error) { console.log("REJECTED:", String(error)) } console.log("SCRIPT_SURVIVED")`,
                 onTaskComplete: (summary) =>
                   Effect.sync(() => {

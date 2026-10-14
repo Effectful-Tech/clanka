@@ -59,12 +59,15 @@ describe("RPC subagent executor", () => {
   it.live("routes concurrent delegates to their originating scripts", () =>
     withRpc((executor) =>
       Effect.gen(function* () {
+        const { environment } = yield* executor.capabilities
         const firstStarted = yield* Deferred.make<void>()
         const secondStarted = yield* Deferred.make<void>()
         const outputs = yield* Effect.all(
           [
             executor
               .execute({
+                environment,
+                onEnvironment: () => Effect.void,
                 script:
                   'console.log("first:" + (await delegate({ prompt: "first" })).output)',
                 onTaskComplete: () => Effect.void,
@@ -87,6 +90,8 @@ describe("RPC subagent executor", () => {
               .pipe(Stream.runCollect),
             executor
               .execute({
+                environment,
+                onEnvironment: () => Effect.void,
                 script:
                   'console.log("second:" + (await delegate({ prompt: "second" })).output)',
                 onTaskComplete: () => Effect.void,
@@ -121,8 +126,11 @@ describe("RPC subagent executor", () => {
     () =>
       withRpc((executor) =>
         Effect.gen(function* () {
+          const { environment } = yield* executor.capabilities
           const output = yield* executor
             .execute({
+              environment,
+              onEnvironment: () => Effect.void,
               script:
                 'console.log("parent:" + (await delegate({ prompt: "outer" })).output)',
               onTaskComplete: () => Effect.void,
@@ -134,6 +142,8 @@ describe("RPC subagent executor", () => {
                     assert.strictEqual(prompt, "outer")
                     const childOutput = yield* executor
                       .execute({
+                        environment,
+                        onEnvironment: () => Effect.void,
                         script:
                           'console.log("child:" + (await delegate({ prompt: "inner" })).output)',
                         onTaskComplete: () => Effect.void,
@@ -218,16 +228,20 @@ const executorModes = {
 }
 
 const runScript = (script: string) =>
-  AgentExecutor.AgentExecutor.use((executor) =>
-    executor
+  Effect.gen(function* () {
+    const executor = yield* AgentExecutor.AgentExecutor
+    const { environment } = yield* executor.capabilities
+    return yield* executor
       .execute({
+        environment,
+        onEnvironment: () => Effect.void,
         script,
         onTaskComplete: () => Effect.void,
         subagents: subagentsUnavailable,
         onImage: () => Effect.void,
       })
-      .pipe(Stream.mkString),
-  )
+      .pipe(Stream.mkString)
+  })
 
 // Puts a `gh` that only sleeps first on PATH, so the test needs neither the
 // real CLI nor the network.
@@ -354,8 +368,11 @@ console.log("MAIN" + "_DONE")`)
       () =>
         Effect.gen(function* () {
           const executor = yield* AgentExecutor.AgentExecutor
+          const { environment } = yield* executor.capabilities
           const output = yield* executor
             .execute({
+              environment,
+              onEnvironment: () => Effect.void,
               // `delegate` never finishes. The worker then exits through
               // the host's `process`, the way a crashed worker would.
               script: `

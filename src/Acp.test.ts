@@ -28,6 +28,11 @@ type Message = {
 
 const capabilities = new AgentExecutor.Capabilities({
   toolsDts: "",
+  environment: new AgentExecutor.ExecutionEnvironment({
+    cwd: "/",
+    baseline: [],
+    seen: [],
+  }),
   agentsMd: Option.none(),
   supportsSearch: false,
   tools: [],
@@ -454,9 +459,16 @@ describe("Acp", () => {
                 : assistantSays(summary),
             {
               ...executor,
-              execute: ({ subagents }) =>
+              execute: ({ subagents, environment }) =>
                 Stream.fromEffect(
-                  subagents.delegate({ prompt, background: false }),
+                  subagents.delegate({
+                    prompt,
+                    background: false,
+                    environment: new AgentExecutor.EnvironmentUpdate({
+                      environment,
+                      update: Option.none(),
+                    }),
+                  }),
                 ).pipe(
                   Stream.map((result) => result.output ?? ""),
                   Stream.orDie,
@@ -539,11 +551,18 @@ describe("Acp", () => {
                 ...executor,
                 // The first script starts a background child; the second
                 // resumes it once its first result has been delivered.
-                execute: ({ subagents }) =>
+                execute: ({ subagents, environment }) =>
                   Stream.fromEffect(
                     executions++ === 0
                       ? subagents
-                          .delegate({ prompt: "TASK-CHILD", background: true })
+                          .delegate({
+                            prompt: "TASK-CHILD",
+                            background: true,
+                            environment: new AgentExecutor.EnvironmentUpdate({
+                              environment,
+                              update: Option.none(),
+                            }),
+                          })
                           .pipe(
                             Effect.map((result) => {
                               childId = result.id

@@ -67,9 +67,11 @@ export const discover = Effect.fnUntraced(function* (options: {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const relative = path.relative(options.startup, options.cwd)
+  // `..pkg` is a child, so compare the first path segment, not a prefix.
   const inside =
-    relative === "" ||
-    (!relative.startsWith("..") && !path.isAbsolute(relative))
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
 
   const directories: Array<string> = []
   let directory = options.cwd

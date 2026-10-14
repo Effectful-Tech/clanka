@@ -94,6 +94,19 @@ export class AgentExecutor extends Context.Service<
           environment: ExecutionEnvironment,
         ) => Effect.Effect<EnvironmentUpdate>)
       | undefined
+    /**
+     * Render the AGENTS.md files and skills that apply to the environment's
+     * directory and that the model has not seen yet. The agent calls it once
+     * after the scripts of a model response, so one update covers all of
+     * them. `execute` itself never renders one.
+     *
+     * Optional: without it the agent sends no updates after a script.
+     */
+    readonly renderEnvironment?:
+      | ((
+          environment: ExecutionEnvironment,
+        ) => Effect.Effect<EnvironmentUpdate>)
+      | undefined
   }
 >()("clanka/AgentExecutor") {}
 
@@ -113,7 +126,8 @@ export interface ExecuteOptions {
    * Receives the environment the script left behind, once, when the script
    * ends. It is also called when the script fails, times out or is
    * interrupted. Pass its `environment` to the next `execute` of the same
-   * agent.
+   * agent. Its `update` is always `None`: `renderEnvironment` renders
+   * updates.
    */
   readonly onEnvironment: (update: EnvironmentUpdate) => Effect.Effect<void>
   /**
@@ -350,6 +364,9 @@ const makeLocalWith = Effect.fnUntraced(function* <
       onChange: (update: EnvironmentUpdate) => Effect.Effect<void>,
     ) => Stream.Stream<string>
     readonly refreshEnvironment: (
+      environment: ExecutionEnvironment,
+    ) => Effect.Effect<EnvironmentUpdate>
+    readonly renderEnvironment: (
       environment: ExecutionEnvironment,
     ) => Effect.Effect<EnvironmentUpdate>
   },
@@ -661,8 +678,13 @@ const makeLocalWith = Effect.fnUntraced(function* <
       Effect.provideService(Console.Console, console),
       // Before the output ends, so the caller has it once the stream is done.
       Effect.ensuring(
-        Effect.suspend(() => render(currentEnvironment())).pipe(
-          Effect.flatMap(opts.onEnvironment),
+        Effect.suspend(() =>
+          opts.onEnvironment(
+            new EnvironmentUpdate({
+              environment: currentEnvironment(),
+              update: Option.none(),
+            }),
+          ),
         ),
       ),
       Effect.ensuring(Queue.end(output)),
@@ -713,6 +735,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
     }),
     execute: (opts) => execute(opts),
     refreshEnvironment,
+    renderEnvironment: render,
     executeUnsafe: (opts) =>
       Effect.suspend(() => {
         const tool = tools.tools[opts.tool as keyof typeof tools.tools]
@@ -753,7 +776,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
       }),
   })
 
-  return { executor, execute, refreshEnvironment }
+  return { executor, execute, refreshEnvironment, renderEnvironment: render }
 })
 
 /**
@@ -831,6 +854,8 @@ export const makeRpc = Effect.gen(function* () {
       }).pipe(Stream.unwrap),
     refreshEnvironment: (environment) =>
       client.refreshEnvironment({ environment }).pipe(Effect.orDie),
+    renderEnvironment: (environment) =>
+      client.renderEnvironment({ environment }).pipe(Effect.orDie),
     executeUnsafe({ environment, ...options }) {
       return client
         .executeUnsafe(
@@ -926,6 +951,8 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
             capabilities: () => local.executor.capabilities,
             refreshEnvironment: ({ environment }) =>
               local.refreshEnvironment(environment),
+            renderEnvironment: ({ environment }) =>
+              local.renderEnvironment(environment),
             respond: ({ id, response }) => {
               const resume = requestResumes.get(id)
               if (resume) {
@@ -1148,6 +1175,10 @@ export class Rpcs extends RpcGroup.make(
     stream: true,
   }),
   Rpc.make("refreshEnvironment", {
+    payload: { environment: ExecutionEnvironment },
+    success: EnvironmentUpdate,
+  }),
+  Rpc.make("renderEnvironment", {
     payload: { environment: ExecutionEnvironment },
     success: EnvironmentUpdate,
   }),

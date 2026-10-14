@@ -242,6 +242,8 @@ export const makeWith = Effect.fnUntraced(function* <
   const spawn: (opts: {
     readonly agentId: number
     readonly prompt: Prompt.Prompt
+    /** AGENTS.md files and skills added after the prompt. */
+    readonly environmentUpdate?: string | undefined
     readonly system?:
       | string
       | ((options: {
@@ -286,10 +288,9 @@ export const makeWith = Effect.fnUntraced(function* <
     // Images attached by `readFile` during the current script, spliced onto
     // the Prompt as a user message once the tool result has been recorded.
     const pendingImages: Array<ImageAttachment> = []
-    // Environment updates from the scripts of the current response, added
-    // after their tool results. One that is never added is not counted as
-    // seen, so the executor renders it again.
-    const pendingUpdates: Array<AgentExecutor.RenderedUpdate> = []
+    // Whether a script ran in the current response. Their environment
+    // update is rendered once, after all of their tool results.
+    let scriptsRan = false
 
     const output = yield* Queue.make<
       Output,
@@ -326,7 +327,22 @@ export const makeWith = Effect.fnUntraced(function* <
     }
 
     // Committed now, emitted after AgentStart below.
-    MutableRef.update(prompt, Prompt.concat(opts.prompt))
+    MutableRef.update(
+      prompt,
+      Prompt.concat(
+        opts.environmentUpdate === undefined
+          ? opts.prompt
+          : Prompt.concat(
+              opts.prompt,
+              Prompt.make([
+                {
+                  role: "user",
+                  content: wrapEnvironmentUpdate(opts.environmentUpdate),
+                },
+              ]),
+            ),
+      ),
+    )
 
     const generateSystem =
       typeof opts.system === "function" ? opts.system : defaultSystem
@@ -455,16 +471,8 @@ export const makeWith = Effect.fnUntraced(function* <
       const display = opts.display && !options.background
       const stream = spawn({
         agentId: child.id,
-        prompt:
-          options.environmentUpdate === undefined
-            ? Prompt.make(options.prompt)
-            : Prompt.make([
-                { role: "user", content: options.prompt },
-                {
-                  role: "user",
-                  content: wrapEnvironmentUpdate(options.environmentUpdate),
-                },
-              ]),
+        prompt: Prompt.make(options.prompt),
+        environmentUpdate: options.environmentUpdate,
         system: opts.system,
         history: child.history,
         environment: child.environment,
@@ -718,20 +726,35 @@ ${prompt}`,
       })
     }
 
+    const applyEnvironmentUpdate = (
+      update: AgentExecutor.EnvironmentUpdate,
+    ) => {
+      MutableRef.set(opts.environment, update.environment)
+      if (Option.isSome(update.update)) {
+        appendEnvironmentUpdate(update.update.value)
+      }
+    }
+
     // Any operation that rewrites the history must call this: the rewrite
     // drops earlier updates, so the environment must stop counting them as
     // seen, and what applies to the current directory is sent again.
     const refreshEnvironment = Effect.suspend(() =>
       executor.refreshEnvironment === undefined
         ? Effect.void
-        : executor.refreshEnvironment(opts.environment.current).pipe(
-            Effect.map((update) => {
-              MutableRef.set(opts.environment, update.environment)
-              if (Option.isSome(update.update)) {
-                appendEnvironmentUpdate(update.update.value)
-              }
-            }),
-          ),
+        : executor
+            .refreshEnvironment(opts.environment.current)
+            .pipe(Effect.map(applyEnvironmentUpdate)),
+    )
+
+    // One update for every script of a response, rendered against the
+    // environment they left behind. Nothing counts as seen before it is in
+    // the history, so an interrupted response is covered by the next one.
+    const renderEnvironment = Effect.suspend(() =>
+      executor.renderEnvironment === undefined
+        ? Effect.void
+        : executor
+            .renderEnvironment(opts.environment.current)
+            .pipe(Effect.map(applyEnvironmentUpdate)),
     )
 
     const compactWithEvents = <E, R>(
@@ -788,6 +811,7 @@ ${prompt}`,
       yield* toolLatchAcquire
       maybeSend({ agentId, part: new ScriptEnd(), release: true })
       const normalizedScript = stripWrappingCodeFence(script)
+      scriptsRan = true
       const output = yield* pipe(
         executor.execute({
           script: normalizedScript,
@@ -795,9 +819,6 @@ ${prompt}`,
           onEnvironment: (update) =>
             Effect.sync(() => {
               MutableRef.set(opts.environment, update.environment)
-              if (Option.isSome(update.update)) {
-                pendingUpdates.push(update.update.value)
-              }
             }),
           subagents,
           onTaskComplete,
@@ -838,6 +859,12 @@ ${prompt}`,
         model: yield* Model.ModelName,
       }),
     )
+    if (opts.environmentUpdate !== undefined) {
+      maybeSend({
+        agentId,
+        part: new EnvironmentUpdated({ update: opts.environmentUpdate }),
+      })
+    }
     if (opts.historyEvents) {
       const messages = opts.prompt.content.filter(
         (message) => message.role !== "system",
@@ -916,7 +943,6 @@ ${Compaction.capOutput(turn.output ?? "").output}
         const discardAttempt = () => {
           response = []
           pendingImages.length = 0
-          pendingUpdates.length = 0
         }
         let reasoningStarted = false
         let hadReasoningDelta = false
@@ -1123,10 +1149,10 @@ ${Compaction.capOutput(turn.output ?? "").output}
           pendingImages.length = 0
         }
         // After the tool results too, and before any steering messages.
-        for (const update of pendingUpdates) {
-          appendEnvironmentUpdate(update)
+        if (scriptsRan) {
+          scriptsRan = false
+          yield* renderEnvironment
         }
-        pendingUpdates.length = 0
         if (conversationMode && !hadToolCall && mailbox.messages.size === 0) {
           // The run is not over while children are running or their results
           // have not been seen yet.

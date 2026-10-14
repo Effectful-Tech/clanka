@@ -24,7 +24,7 @@ import * as RpcSerialization from "effect/rpc/RpcSerialization"
 import * as RpcServer from "effect/rpc/RpcServer"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
-import { subagentsUnavailable } from "./AgentTools.ts"
+import { type ExcludableTool, subagentsUnavailable } from "./AgentTools.ts"
 
 // =============================================================================
 // Caller-selected tools, instructions, skills and loop-side tools.
@@ -42,8 +42,7 @@ type Mode = "local" | "rpc"
 const modes: ReadonlyArray<Mode> = ["local", "rpc"]
 
 interface ExecutorOptions {
-  readonly excludeTools?:
-    ReadonlyArray<"gh" | "webSearch" | "fetchMarkdown" | "delegate"> | undefined
+  readonly excludeTools?: ReadonlyArray<ExcludableTool> | undefined
 }
 
 // The executor's checkout carries instructions and a skill a caller may
@@ -260,6 +259,19 @@ await taskComplete(missing + " " + call)`,
           assert.include(system, "declare function readFile(")
           assert.include(system, "declare function taskComplete(")
         }),
+    )
+
+    it.live("a left-out sub-agent helper is not mentioned to the model", () =>
+      Effect.gen(function* () {
+        const { system, summary } = yield* runAgent({
+          mode,
+          executor: { excludeTools: ["messageAgent"] },
+          script: `await taskComplete([typeof delegate, typeof messageAgent].join(","))`,
+        })
+        assert.strictEqual(summary, "function,undefined")
+        assert.include(system, "declare function delegate(")
+        assert.notMatch(system, /\bmessageAgent\b/)
+      }),
     )
   })
 

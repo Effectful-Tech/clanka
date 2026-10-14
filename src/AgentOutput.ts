@@ -214,6 +214,21 @@ export class CompactionEnded extends Schema.TaggedClass<CompactionEnded>()(
   },
 ) {}
 
+/**
+ * Emitted when AGENTS.md files or skills the model has not seen yet are
+ * added to the history, after a directory change or a compaction. `update`
+ * is the text the model receives.
+ *
+ * @since 1.0.0
+ * @category Output
+ */
+export class EnvironmentUpdated extends Schema.TaggedClass<EnvironmentUpdated>()(
+  "EnvironmentUpdated",
+  {
+    update: Schema.String,
+  },
+) {}
+
 export type ContentPart =
   | ReasoningStart
   | ReasoningDelta
@@ -227,6 +242,7 @@ export type ContentPart =
   | ExecuteOutputCapped
   | CompactionStarted
   | CompactionEnded
+  | EnvironmentUpdated
 
 export const ContentPart = Schema.Union([
   ReasoningStart,
@@ -241,6 +257,7 @@ export const ContentPart = Schema.Union([
   ExecuteOutputCapped,
   CompactionStarted,
   CompactionEnded,
+  EnvironmentUpdated,
 ])
 
 /**

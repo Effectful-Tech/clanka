@@ -68,6 +68,7 @@ import {
   ExecuteOutputCapped,
   CompactionStarted,
   CompactionEnded,
+  EnvironmentUpdated,
   HistoryAppended,
   HistoryReplaced,
   RetriesExhausted,
@@ -96,9 +97,10 @@ export interface Agent {
 
   /**
    * The executor environment the next script runs in, such as its working
-   * directory. Opaque to the agent: it is passed to the executor and replaced
-   * with what the executor returns. Store it next to `history` to resume a
-   * session where it left off.
+   * directory and which AGENTS.md files and skills the history already has.
+   * Opaque to the agent: it is passed to the executor and replaced with what
+   * the executor returns. Store it next to `history` to resume a session
+   * where it left off.
    */
   readonly environment: MutableRef.MutableRef<AgentExecutor.ExecutionEnvironment>
 
@@ -224,7 +226,9 @@ export const makeWith = Effect.fnUntraced(function* <
 
   const agentsMd =
     options.instructions === undefined
-      ? Option.map(capabilities.agentsMd, renderAgentsMd)
+      ? capabilities.instructions === undefined
+        ? Option.map(capabilities.agentsMd, renderAgentsMd)
+        : Option.some(capabilities.instructions)
       : Option.map(options.instructions, renderInstructions)
 
   let agentCounter = 0
@@ -282,6 +286,10 @@ export const makeWith = Effect.fnUntraced(function* <
     // Images attached by `readFile` during the current script, spliced onto
     // the Prompt as a user message once the tool result has been recorded.
     const pendingImages: Array<ImageAttachment> = []
+    // Environment updates from the scripts of the current response, added
+    // after their tool results. One that is never added is not counted as
+    // seen, so the executor renders it again.
+    const pendingUpdates: Array<AgentExecutor.RenderedUpdate> = []
 
     const output = yield* Queue.make<
       Output,
@@ -436,6 +444,8 @@ export const makeWith = Effect.fnUntraced(function* <
     const startTurn = Effect.fnUntraced(function* (options: {
       readonly child: Child
       readonly prompt: string
+      /** AGENTS.md files and skills for the child's directory. */
+      readonly environmentUpdate?: string | undefined
       /** Shown in the start event: the task, or the follow-up message. */
       readonly label: string
       readonly background: boolean
@@ -445,7 +455,16 @@ export const makeWith = Effect.fnUntraced(function* <
       const display = opts.display && !options.background
       const stream = spawn({
         agentId: child.id,
-        prompt: Prompt.make(options.prompt),
+        prompt:
+          options.environmentUpdate === undefined
+            ? Prompt.make(options.prompt)
+            : Prompt.make([
+                { role: "user", content: options.prompt },
+                {
+                  role: "user",
+                  content: wrapEnvironmentUpdate(options.environmentUpdate),
+                },
+              ]),
         system: opts.system,
         history: child.history,
         environment: child.environment,
@@ -526,11 +545,17 @@ export const makeWith = Effect.fnUntraced(function* <
         environment,
       }) {
         const agentId = agentCounter++
+        // The update goes into the child's first prompt.
+        const update = environment.update
         const child: Child = {
           id: agentId,
           prompt,
           history: MutableRef.make(Prompt.empty),
-          environment: MutableRef.make(environment.environment),
+          environment: MutableRef.make(
+            Option.isSome(update)
+              ? update.value.environment
+              : environment.environment,
+          ),
           mailbox: makeMailbox(),
           turn: makeTurn(agentId, background),
         }
@@ -543,6 +568,9 @@ export const makeWith = Effect.fnUntraced(function* <
           prompt: `You have been asked using the "delegate" function to complete the following task. Try to avoid using the "delegate" function yourself unless strictly necessary:
 
 ${prompt}`,
+          environmentUpdate: Option.isSome(update)
+            ? update.value.text
+            : undefined,
           background,
         })
         if (background) {
@@ -677,6 +705,35 @@ ${prompt}`,
         compactionStarted = true
         maybeSend({ agentId, part: new CompactionStarted({ reason }) })
       })
+    const appendEnvironmentUpdate = (update: AgentExecutor.RenderedUpdate) => {
+      appendHistory(
+        Prompt.make([
+          { role: "user", content: wrapEnvironmentUpdate(update.text) },
+        ]),
+      )
+      MutableRef.set(opts.environment, update.environment)
+      maybeSend({
+        agentId,
+        part: new EnvironmentUpdated({ update: update.text }),
+      })
+    }
+
+    // Any operation that rewrites the history must call this: the rewrite
+    // drops earlier updates, so the environment must stop counting them as
+    // seen, and what applies to the current directory is sent again.
+    const refreshEnvironment = Effect.suspend(() =>
+      executor.refreshEnvironment === undefined
+        ? Effect.void
+        : executor.refreshEnvironment(opts.environment.current).pipe(
+            Effect.map((update) => {
+              MutableRef.set(opts.environment, update.environment)
+              if (Option.isSome(update.update)) {
+                appendEnvironmentUpdate(update.update.value)
+              }
+            }),
+          ),
+    )
+
     const compactWithEvents = <E, R>(
       reason: Compaction.CompactionReason,
       compaction: Effect.Effect<
@@ -696,7 +753,17 @@ ${prompt}`,
             let tokensBefore: number
             let tokensAfter: number
             if (Option.isSome(result)) {
-              replaceHistory(result.value.prompt)
+              // Updates in the kept messages are sent again by the refresh
+              // below, so they are dropped here to appear once.
+              replaceHistory(
+                executor.refreshEnvironment === undefined
+                  ? result.value.prompt
+                  : Prompt.fromMessages(
+                      result.value.prompt.content.filter(
+                        (message) => !isEnvironmentUpdate(message),
+                      ),
+                    ),
+              )
               lastContextTokens = undefined
               tokensBefore = result.value.tokensBefore
               tokensAfter = result.value.tokensAfter
@@ -710,6 +777,9 @@ ${prompt}`,
               part: new CompactionEnded({ reason, tokensBefore, tokensAfter }),
             })
           }),
+        ),
+        Effect.tap((result) =>
+          Option.isSome(result) ? refreshEnvironment : Effect.void,
         ),
       )
 
@@ -725,6 +795,9 @@ ${prompt}`,
           onEnvironment: (update) =>
             Effect.sync(() => {
               MutableRef.set(opts.environment, update.environment)
+              if (Option.isSome(update.update)) {
+                pendingUpdates.push(update.update.value)
+              }
             }),
           subagents,
           onTaskComplete,
@@ -843,6 +916,7 @@ ${Compaction.capOutput(turn.output ?? "").output}
         const discardAttempt = () => {
           response = []
           pendingImages.length = 0
+          pendingUpdates.length = 0
         }
         let reasoningStarted = false
         let hadReasoningDelta = false
@@ -1048,6 +1122,11 @@ ${Compaction.capOutput(turn.output ?? "").output}
           appendHistory(Prompt.fromMessages([Image.userMessage(pendingImages)]))
           pendingImages.length = 0
         }
+        // After the tool results too, and before any steering messages.
+        for (const update of pendingUpdates) {
+          appendEnvironmentUpdate(update)
+        }
+        pendingUpdates.length = 0
         if (conversationMode && !hadToolCall && mailbox.messages.size === 0) {
           // The run is not over while children are running or their results
           // have not been seen yet.
@@ -1177,16 +1256,56 @@ const retryPolicy = Schedule.min([
   Schedule.spaced(5000),
 ]).pipe(Schedule.jittered)
 
+// For executors that do not render `Capabilities.instructions`.
 const renderAgentsMd = (content: string) => `# AGENTS.md
 
-The following instructions are from ./AGENTS.md in the current directory.
-You do not need to read this file again.
+The following instructions are from AGENTS.md in the directory the agent
+started in. You do not need to read this file again.
 
 **ALWAYS follow these instructions when completing tasks**:
 
 <!-- AGENTS.md start -->
 ${content}
 <!-- AGENTS.md end -->`
+
+const environmentUpdateOpen = "<environment-update>"
+const environmentUpdateClose = "</environment-update>"
+
+const wrapEnvironmentUpdate = (text: string) =>
+  `${environmentUpdateOpen}\n${text}\n${environmentUpdateClose}`
+
+const injectedText = (message: Prompt.Message): string | undefined => {
+  if (message.role !== "user" || message.content.length !== 1) return
+  const part = message.content[0]!
+  return part.type === "text" ? part.text.trim() : undefined
+}
+
+const isEnvironmentUpdate = (message: Prompt.Message): boolean => {
+  const text = injectedText(message)
+  return (
+    text !== undefined &&
+    text.startsWith(environmentUpdateOpen) &&
+    text.endsWith(environmentUpdateClose)
+  )
+}
+
+/**
+ * Whether a user message was added by the agent rather than typed: an
+ * `<environment-update>` or a `<subagent>` result. Surfaces that replay
+ * history (ACP) skip them.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export const isInjectedMessage = (message: Prompt.Message): boolean => {
+  if (isEnvironmentUpdate(message)) return true
+  const text = injectedText(message)
+  return (
+    text !== undefined &&
+    text.startsWith("<subagent ") &&
+    text.endsWith("</subagent>")
+  )
+}
 
 const renderInstructions = (content: string) => `# Project instructions
 

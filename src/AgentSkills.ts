@@ -56,7 +56,6 @@ export const discover: (options: {
   never,
   FileSystem.FileSystem | Path.Path
 > = Effect.fnUntraced(function* (options) {
-  const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
 
   const roots: Array<{ readonly root: string; readonly source: SkillSource }> =
@@ -84,36 +83,68 @@ export const discover: (options: {
   }
 
   const byName = new Map<string, Skill>()
-  for (const { root: skillsDir, source } of roots) {
-    const entries = yield* fs
-      .readDirectory(skillsDir)
-      .pipe(Effect.orElseSucceed(() => []))
-    entries.sort()
-    for (const entry of entries) {
-      const files = yield* fs
-        .readDirectory(path.join(skillsDir, entry))
-        .pipe(Effect.orElseSucceed((): Array<string> => []))
-      if (!files.includes("SKILL.md")) continue
-      const location = path.join(skillsDir, entry, "SKILL.md")
-      const content = yield* Effect.option(
-        fs.stat(location).pipe(
-          Effect.filterOrFail((info) => info.type === "File"),
-          Effect.andThen(() => fs.readFileString(location)),
-        ),
-      )
-      if (Option.isNone(content)) continue
-      const frontmatter = parseFrontmatter(content.value)
-      if (Option.isNone(frontmatter)) continue
-      const description = singleLine(frontmatter.value.description)
-      if (description === "") continue
-      const name = Predicate.isString(frontmatter.value.name)
-        ? singleLine(frontmatter.value.name) || singleLine(entry)
-        : singleLine(entry)
-      if (byName.has(name)) continue
-      byName.set(name, new Skill({ name, description, location, source }))
+  for (const { root, source } of roots) {
+    for (const skill of yield* scan(root, source)) {
+      if (!byName.has(skill.name)) byName.set(skill.name, skill)
     }
   }
 
+  return Array.from(byName.values())
+})
+
+/**
+ * Scan only `<directory>/.agents/skills/<dir>/SKILL.md`, as `discover` does
+ * for the project.
+ *
+ * @since 1.0.0
+ * @category Discovery
+ */
+export const discoverProject: (
+  directory: string,
+) => Effect.Effect<
+  ReadonlyArray<Skill>,
+  never,
+  FileSystem.FileSystem | Path.Path
+> = Effect.fnUntraced(function* (directory) {
+  const path = yield* Path.Path
+  return yield* scan(path.resolve(directory, ".agents", "skills"), "project")
+})
+
+// The skills in one `skills` directory. The first name wins.
+const scan = Effect.fnUntraced(function* (
+  skillsDir: string,
+  source: SkillSource,
+) {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const byName = new Map<string, Skill>()
+  const entries = yield* fs
+    .readDirectory(skillsDir)
+    .pipe(Effect.orElseSucceed(() => []))
+  entries.sort()
+  for (const entry of entries) {
+    const files = yield* fs
+      .readDirectory(path.join(skillsDir, entry))
+      .pipe(Effect.orElseSucceed((): Array<string> => []))
+    if (!files.includes("SKILL.md")) continue
+    const location = path.join(skillsDir, entry, "SKILL.md")
+    const content = yield* Effect.option(
+      fs.stat(location).pipe(
+        Effect.filterOrFail((info) => info.type === "File"),
+        Effect.andThen(() => fs.readFileString(location)),
+      ),
+    )
+    if (Option.isNone(content)) continue
+    const frontmatter = parseFrontmatter(content.value)
+    if (Option.isNone(frontmatter)) continue
+    const description = singleLine(frontmatter.value.description)
+    if (description === "") continue
+    const name = Predicate.isString(frontmatter.value.name)
+      ? singleLine(frontmatter.value.name) || singleLine(entry)
+      : singleLine(entry)
+    if (byName.has(name)) continue
+    byName.set(name, new Skill({ name, description, location, source }))
+  }
   return Array.from(byName.values())
 })
 
@@ -127,12 +158,7 @@ export const renderCatalog = (
   skills: ReadonlyArray<Skill>,
 ): Option.Option<string> => {
   if (skills.length === 0) return Option.none()
-  const entries = skills
-    .map(
-      (skill) => `- ${skill.name}: ${skill.description}
-  location: ${renderLocation(skill.location)}`,
-    )
-    .join("\n")
+  const entries = renderEntries(skills)
   return Option.some(`# Skills
 
 The following skills are available. Each one is a folder with instructions for
@@ -148,6 +174,20 @@ paths when accessing them.
 
 ${entries}`)
 }
+
+/**
+ * One catalog line, plus its location, per skill.
+ *
+ * @since 1.0.0
+ * @category Rendering
+ */
+export const renderEntries = (skills: ReadonlyArray<Skill>): string =>
+  skills
+    .map(
+      (skill) => `- ${skill.name}: ${skill.description}
+  location: ${renderLocation(skill.location)}`,
+    )
+    .join("\n")
 
 /**
  * A skill supplied by the caller instead of discovered on the executor. Its

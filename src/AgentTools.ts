@@ -275,7 +275,7 @@ export const makeContextNoop = (cwd?: string) =>
 export const AgentTools = Toolkit.make(
   Tool.make("changeDirectory", {
     description:
-      "Change the executor's working directory to an existing directory and return its absolute path. Relative paths resolve from the current directory without shell expansion. Await this before dependent tools. The change persists across your scripts. A sub-agent starts in your directory at the time it is created, and its changes do not affect yours. Startup AGENTS.md, skills, and the semantic-search index root remain fixed.",
+      "Change the executor's working directory to an existing directory and return its absolute path. Relative paths resolve from the current directory without shell expansion. Await this before dependent tools. The change persists across your scripts. A sub-agent starts in your directory at the time it is created, and its changes do not affect yours. AGENTS.md files and skills that apply to the new directory are sent to you after the script ends. The semantic-search index root stays fixed.",
     parameters: Schema.String.annotate({ identifier: "directory" }),
     success: Schema.String,
     dependencies: [DirectoryChanger],

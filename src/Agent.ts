@@ -15,6 +15,9 @@ import type {
   ImageAttacher,
   ImageAttachment,
   SubagentExecutor,
+  SubagentResult,
+  SubagentStatus,
+  Subagents,
   TaskCompleter,
 } from "./AgentTools.ts"
 import * as Image from "./Image.ts"
@@ -22,7 +25,6 @@ import type * as FileSystem from "effect/FileSystem"
 import * as Prompt from "effect/ai/Prompt"
 import * as Effect from "effect/Effect"
 import * as Stream from "effect/Stream"
-import type * as Scope from "effect/Scope"
 import * as LanguageModel from "effect/ai/LanguageModel"
 import * as AiError from "effect/ai/AiError"
 import * as Context from "effect/Context"
@@ -42,6 +44,9 @@ import * as Cause from "effect/Cause"
 import * as Latch from "effect/Latch"
 import * as Clock from "effect/Clock"
 import * as Exit from "effect/Exit"
+import * as Deferred from "effect/Deferred"
+import * as Fiber from "effect/Fiber"
+import * as Scope from "effect/Scope"
 import * as Compaction from "./Compaction.ts"
 import {
   ScriptEnd,
@@ -145,10 +150,8 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
   const singleTool = yield* SingleTools.pipe(Effect.provide(SingleToolHandlers))
   const capabilities = yield* executor.capabilities
 
-  const pendingMessages = new Set<{
-    readonly message: string
-    readonly resume: (effect: Effect.Effect<void>) => void
-  }>()
+  // Steering messages for the root agent. Sub-agents get their own mailbox.
+  const rootMailbox = makeMailbox()
 
   const agentsMd = Option.map(
     capabilities.agentsMd,
@@ -181,7 +184,13 @@ ${content}
           readonly agentsMd: string
         }) => string)
       | undefined
-    readonly disableHistory?: boolean | undefined
+    readonly history: MutableRef.MutableRef<Prompt.Prompt>
+    readonly mailbox: Mailbox
+    /**
+     * Whether this agent's output is streamed for display. Background agents
+     * and everything under them are not, so they never hold the output lock.
+     */
+    readonly display: boolean
   }) => Stream.Stream<
     Output,
     AgentFinished | AiError.AiError,
@@ -213,7 +222,8 @@ ${content}
     let outputTokens = 0
     let cacheRead = 0
     let cacheWrite = 0
-    const prompt = opts.disableHistory ? MutableRef.make(Prompt.empty) : history
+    const prompt = opts.history
+    const mailbox = opts.mailbox
 
     MutableRef.update(prompt, Prompt.concat(opts.prompt))
 
@@ -235,6 +245,10 @@ ${content}
       readonly acquire?: boolean
       readonly release?: boolean
     }) {
+      if (!opts.display) {
+        Queue.offerUnsafe(output, options.part)
+        return
+      }
       if (currentOutputAgent === null || currentOutputAgent === opts.agentId) {
         Queue.offerUnsafe(output, options.part)
         if (options.acquire) {
@@ -266,20 +280,85 @@ ${content}
       return
     }
 
-    const spawnSubagent = Effect.fnUntraced(
-      function* (prompt: string) {
-        let id = agentCounter++
-        const stream = spawn({
-          agentId: id,
-          prompt: Prompt.make(prompt),
-          system: opts.system,
-          disableHistory: true,
-        })
-        const provider = yield* Model.ProviderName
-        const model = yield* Model.ModelName
+    // Sub-agents. Every agent tracks only the children it spawned. They are
+    // forked into a scope owned by this run, so none of them outlive it.
+    const runScope = yield* Scope.make()
+    const runContext = yield* Effect.context<
+      LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName
+    >()
+    const children = new Map<string, Child>()
+    // Finished turns waiting to be pushed to the model.
+    const completions: Array<Turn> = []
+    let wakeUp: (() => void) | undefined
+    const notify = () => {
+      const resume = wakeUp
+      wakeUp = undefined
+      resume?.()
+    }
+    mailbox.notify = notify
+
+    const runningChildren = () =>
+      Array.Array.from(children.values()).filter(
+        (child) => child.turn.status === "running",
+      )
+    const hasUndelivered = () => completions.some((turn) => !turn.delivered)
+
+    const finishTurn = (turn: Turn, exit: Exit.Exit<string, unknown>) =>
+      Effect.sync(() => {
+        if (Exit.isSuccess(exit)) {
+          turn.status = "completed"
+          turn.output = exit.value
+        } else if (Cause.hasInterruptsOnly(exit.cause)) {
+          turn.status = "cancelled"
+        } else {
+          turn.status = "failed"
+          turn.output = causeMessage(exit.cause)
+        }
+        Queue.offerUnsafe(
+          output,
+          new SubagentComplete({
+            id: turn.agentId,
+            summary: turn.output ?? "",
+            status: turn.status,
+          }),
+        )
+        if (!turn.delivered) {
+          completions.push(turn)
+        }
+        Deferred.doneUnsafe(turn.done, Effect.void)
+        notify()
+      })
+
+    // Runs the child's current turn in its own fiber, with this run's
+    // services and the sub-agent model.
+    const startTurn = Effect.fnUntraced(function* (options: {
+      readonly child: Child
+      readonly prompt: string
+      /** Shown in the start event: the task, or the follow-up message. */
+      readonly label: string
+      readonly background: boolean
+    }) {
+      const { child } = options
+      const turn = child.turn
+      const display = opts.display && !options.background
+      const stream = spawn({
+        agentId: child.id,
+        prompt: Prompt.make(options.prompt),
+        system: opts.system,
+        history: child.history,
+        mailbox: child.mailbox,
+        display,
+      })
+      turn.fiber = yield* Effect.gen(function* () {
         maybeSend({
           agentId: opts.agentId,
-          part: new SubagentStart({ id, prompt, model, provider }),
+          part: new SubagentStart({
+            id: child.id,
+            prompt: options.label,
+            model: yield* Model.ModelName,
+            provider: yield* Model.ProviderName,
+            background: options.background,
+          }),
           release: true,
         })
         return yield* stream.pipe(
@@ -290,31 +369,170 @@ ${content}
                   break
                 case "SubagentStart":
                 case "SubagentComplete":
-                case "SubagentPart":
                   Queue.offerUnsafe(output, part)
                   break
-
                 default:
-                  Queue.offerUnsafe(output, new SubagentPart({ id, part }))
-                  break
+                  // Background agents only report start and completion.
+                  if (!display) break
+                  Queue.offerUnsafe(
+                    output,
+                    part._tag === "SubagentPart"
+                      ? part
+                      : new SubagentPart({ id: child.id, part }),
+                  )
               }
             }
             return Effect.void
           }),
           Effect.as(""),
-          Effect.catchTag("AgentFinished", (finished) => {
-            Queue.offerUnsafe(
-              output,
-              new SubagentComplete({ id, summary: finished.summary }),
-            )
-            return Effect.succeed(finished.summary)
-          }),
-          Effect.orDie,
+          Effect.catchTag("AgentFinished", (finished) =>
+            Effect.succeed(finished.summary),
+          ),
         )
-      },
-      Effect.provide(subagentModel),
-      Effect.provideService(SubagentModel, subagentModel),
-    )
+      }).pipe(
+        Effect.onExit((exit) => finishTurn(turn, exit)),
+        Effect.provide(subagentModel),
+        Effect.provideService(SubagentModel, subagentModel),
+        Effect.provideContext(runContext),
+        Effect.forkIn(runScope, { startImmediately: true }),
+      )
+    })
+
+    // Leaves `output` out when unset, so the result stays JSON for RPC.
+    const childResult = ({ id, turn }: Child): SubagentResult =>
+      turn.output === undefined
+        ? { id: String(id), status: turn.status }
+        : { id: String(id), status: turn.status, output: turn.output }
+
+    const lookupChild = (id: string) =>
+      Effect.suspend(() => {
+        const child = children.get(id)
+        return child
+          ? Effect.succeed(child)
+          : Effect.fail(
+              `Unknown agent id ${JSON.stringify(id)}. You can only address agents you started; call listAgents() to see them.`,
+            )
+      })
+
+    const subagents: Subagents = {
+      delegate: Effect.fnUntraced(function* ({ prompt, background }) {
+        const agentId = agentCounter++
+        const child: Child = {
+          id: agentId,
+          prompt,
+          history: MutableRef.make(Prompt.empty),
+          mailbox: makeMailbox(),
+          turn: makeTurn(agentId, background),
+        }
+        const id = String(child.id)
+        children.set(id, child)
+        const turn = child.turn
+        yield* startTurn({
+          child,
+          label: prompt,
+          prompt: `You have been asked using the "delegate" function to complete the following task. Try to avoid using the "delegate" function yourself unless strictly necessary:
+
+${prompt}`,
+          background,
+        })
+        if (background) {
+          return { id, status: "running" }
+        }
+        // Foreground: a failure crashes the script, as before. Interrupting
+        // the script stops the agent.
+        yield* Deferred.await(turn.done).pipe(
+          Effect.onInterrupt(() => Fiber.interrupt(turn.fiber!)),
+        )
+        if (turn.status !== "completed") {
+          return yield* Effect.die(
+            new Error(
+              `Sub-agent ${child.id} ${turn.status}${turn.output ? `: ${turn.output}` : ""}`,
+            ),
+          )
+        }
+        return { id, status: "completed", output: turn.output ?? "" }
+      }),
+      waitAgents: Effect.fnUntraced(function* (ids) {
+        const targets =
+          ids === undefined
+            ? Array.Array.from(children.values())
+            : yield* Effect.forEach(ids, lookupChild)
+        // A turn started by messageAgent while waiting is waited for too.
+        while (true) {
+          const running = targets.find(
+            (child) => child.turn.status === "running",
+          )
+          if (!running) break
+          yield* Deferred.await(running.turn.done)
+        }
+        return targets.map((child) => {
+          child.turn.delivered = true
+          return childResult(child)
+        })
+      }),
+      messageAgent: Effect.fnUntraced(function* ({ id, message }) {
+        const child = yield* lookupChild(id)
+        if (child.turn.status === "running") {
+          child.mailbox.messages.add({ message, resume: () => {} })
+          child.mailbox.notify()
+          return childResult(child)
+        }
+        child.turn = makeTurn(child.id, true)
+        yield* startTurn({
+          child,
+          prompt: message,
+          label: message,
+          background: true,
+        })
+        return childResult(child)
+      }),
+      stopAgent: Effect.fnUntraced(function* (id) {
+        const child = yield* lookupChild(id)
+        const turn = child.turn
+        turn.delivered = true
+        if (turn.status === "running") {
+          yield* Fiber.interrupt(turn.fiber!)
+        }
+        return childResult(child)
+      }),
+      listAgents: Effect.sync(() =>
+        Array.Array.from(children.values(), (child) => ({
+          id: String(child.id),
+          status: child.turn.status,
+          prompt: child.prompt,
+        })),
+      ),
+    }
+
+    const onTaskComplete = (summary: string) =>
+      Effect.suspend(() => {
+        const running = runningChildren()
+        if (running.length > 0) {
+          const ids = running.map((child) => JSON.stringify(String(child.id)))
+          return Effect.fail(
+            `taskComplete was rejected: sub-agents ${ids.join(", ")} are still running. Call waitAgents() to wait for them, or stopAgent(id) to stop them, before calling taskComplete.`,
+          )
+        }
+        finalSummary = Option.some(summary)
+        return Effect.void
+      })
+
+    // Blocks an idle conversation turn until a child finishes or a message
+    // arrives.
+    const waitForActivity = Effect.callback<void>((resume) => {
+      if (
+        mailbox.messages.size > 0 ||
+        hasUndelivered() ||
+        runningChildren().length === 0
+      ) {
+        resume(Effect.void)
+        return
+      }
+      wakeUp = () => resume(Effect.void)
+      return Effect.sync(() => {
+        wakeUp = undefined
+      })
+    })
 
     // Turn timeout
     const clock = yield* Clock.Clock
@@ -393,11 +611,8 @@ ${content}
       const output = yield* pipe(
         executor.execute({
           script: normalizedScript,
-          onSubagent: spawnSubagent,
-          onTaskComplete: (summary) =>
-            Effect.sync(() => {
-              finalSummary = Option.some(summary)
-            }),
+          subagents,
+          onTaskComplete,
           onImage: (image) =>
             Effect.sync(() => {
               pendingImages.push(image)
@@ -435,11 +650,11 @@ ${content}
           return
         }
 
-        if (pendingMessages.size > 0) {
+        if (mailbox.messages.size > 0) {
           MutableRef.update(
             prompt,
             Prompt.concat(
-              Array.Array.from(pendingMessages, ({ message, resume }) => {
+              Array.Array.from(mailbox.messages, ({ message, resume }) => {
                 resume(Effect.void)
                 return {
                   role: "user",
@@ -448,7 +663,30 @@ ${content}
               }),
             ),
           )
-          pendingMessages.clear()
+          mailbox.messages.clear()
+        }
+
+        // Completion pushes from background sub-agents. These have their own
+        // queue: the steering path above cuts the model stream short.
+        if (completions.length > 0) {
+          const pushes = completions.splice(0).filter((turn) => {
+            if (turn.delivered) return false
+            turn.delivered = true
+            return true
+          })
+          if (pushes.length > 0) {
+            MutableRef.update(
+              prompt,
+              Prompt.concat(
+                pushes.map((turn) => ({
+                  role: "user" as const,
+                  content: `<subagent id="${turn.agentId}" status="${turn.status}">
+${Compaction.capOutput(turn.output ?? "").output}
+</subagent>`,
+                })),
+              ),
+            )
+          }
         }
 
         // Threshold compaction before the next model call
@@ -489,7 +727,7 @@ ${content}
           Stream.takeUntil((part) => {
             if (
               (part.type === "text-end" || part.type === "reasoning-end") &&
-              pendingMessages.size > 0
+              mailbox.messages.size > 0
             ) {
               return true
             }
@@ -674,7 +912,13 @@ ${content}
           )
           pendingImages.length = 0
         }
-        if (conversationMode && !hadToolCall && pendingMessages.size === 0) {
+        if (conversationMode && !hadToolCall && mailbox.messages.size === 0) {
+          // The run is not over while children are running or their results
+          // have not been seen yet.
+          if (runningChildren().length > 0 || hasUndelivered()) {
+            yield* waitForActivity
+            continue
+          }
           finalSummary = Option.some(responseToSummary(response))
         }
       }
@@ -684,6 +928,7 @@ ${content}
         maybeSend({ agentId, part: new ScriptDelta({ delta: script }) })
         return executeScript(script)
       }),
+      Effect.ensuring(Scope.close(runScope, Exit.void)),
       Effect.catchCause((cause) => Queue.failCause(output, cause)),
       Effect.forkScoped,
     )
@@ -711,6 +956,9 @@ ${content}
         agentId: agentCounter++,
         prompt: Prompt.make(options.prompt),
         system: options.system,
+        history,
+        mailbox: rootMailbox,
+        display: true,
       }).pipe(
         Stream.broadcast({ capacity: "unbounded", replay: 1 }),
         sendLock.withPermit,
@@ -718,11 +966,61 @@ ${content}
     steer: (message) =>
       Effect.callback((resume) => {
         const entry = { message, resume }
-        pendingMessages.add(entry)
-        return Effect.sync(() => pendingMessages.delete(entry))
+        rootMailbox.messages.add(entry)
+        rootMailbox.notify()
+        return Effect.sync(() => rootMailbox.messages.delete(entry))
       }),
   })
 })
+
+interface Mailbox {
+  readonly messages: Set<{
+    readonly message: string
+    readonly resume: (effect: Effect.Effect<void>) => void
+  }>
+  /** Wakes the agent's run if it is waiting for activity. */
+  notify: () => void
+}
+
+const makeMailbox = (): Mailbox => ({
+  messages: new Set(),
+  notify: () => {},
+})
+
+interface Child {
+  readonly id: number
+  readonly prompt: string
+  /** Kept for the whole run so `messageAgent` can resume the agent. */
+  readonly history: MutableRef.MutableRef<Prompt.Prompt>
+  readonly mailbox: Mailbox
+  /** The latest turn. Replaced when `messageAgent` resumes the agent. */
+  turn: Turn
+}
+
+interface Turn {
+  readonly agentId: number
+  status: SubagentStatus
+  output: string | undefined
+  /** Whether the model has seen this result. Undelivered results are pushed. */
+  delivered: boolean
+  readonly done: Deferred.Deferred<void>
+  fiber: Fiber.Fiber<string, AiError.AiError> | undefined
+}
+
+const makeTurn = (agentId: number, background: boolean): Turn => ({
+  agentId,
+  status: "running",
+  output: undefined,
+  // Foreground results go straight back to the script.
+  delivered: !background,
+  done: Deferred.makeUnsafe(),
+  fiber: undefined,
+})
+
+const causeMessage = (cause: Cause.Cause<unknown>): string => {
+  const error = Cause.squash(cause)
+  return error instanceof Error ? error.message : String(error)
+}
 
 const retryPolicy = Schedule.min([
   Schedule.exponential(100, 1.5),
@@ -754,13 +1052,15 @@ const generateSystemTools = (
 - You can add / update / remove multiple files in one go with "applyPatch".
 - Avoid passing scripts into the "bash" function, and instead write javascript.
 - Variables are not shared between executions.
-- Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.${
+- Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.
+- "delegate" runs a sub-agent and waits for it. Pass \`background: true\` to keep working while it runs: its result is sent to you later as a \`<subagent id="..." status="...">\` message. Use the returned id with "waitAgents", "messageAgent" and "stopAgent"; "listAgents" shows the agents you started.${
   conversationMode
     ? ""
     : `
 
 When you have fully completed your task, call the "taskComplete" function with the final output.
-Make sure every detail of the task is done before calling "taskComplete".`
+Make sure every detail of the task is done before calling "taskComplete".
+Wait for or stop any running sub-agents first: "taskComplete" fails while they are running.`
 }
 
 Here is how you would read a file and list a directory:

@@ -425,8 +425,13 @@ describe("Acp", () => {
                 : assistantSays(summary),
             {
               ...executor,
-              execute: ({ onSubagent }) =>
-                Stream.fromEffect(onSubagent(prompt)),
+              execute: ({ subagents }) =>
+                Stream.fromEffect(
+                  subagents.delegate({ prompt, background: false }),
+                ).pipe(
+                  Stream.map((result) => result.output ?? ""),
+                  Stream.orDie,
+                ),
             },
           )
           const created = yield* server.request(1, "session/new", {
@@ -466,6 +471,119 @@ describe("Acp", () => {
         }),
       ),
     ),
+  )
+
+  it.effect(
+    "resuming a finished subagent does not create its tool call twice",
+    () =>
+      withStore(
+        Effect.scoped(
+          Effect.gen(function* () {
+            let childId: string | undefined
+            let executions = 0
+            const server = yield* makeServer(
+              ({ prompt }) => {
+                if (JSON.stringify(prompt.content).includes("TASK-CHILD")) {
+                  const resumed = JSON.stringify(prompt.content).includes(
+                    "FOLLOW-UP",
+                  )
+                  return assistantSays(
+                    resumed ? "SECOND-RESULT" : "FIRST-RESULT",
+                  )
+                }
+                const seen = JSON.stringify(prompt.content)
+                if (seen.includes("SECOND-RESULT")) return assistantSays("done")
+                if (
+                  executions === 0 ||
+                  (executions === 1 && seen.includes("FIRST-RESULT"))
+                ) {
+                  return parts({
+                    type: "tool-call",
+                    id: `call-${executions}`,
+                    name: "execute",
+                    params: { script: "await work()" },
+                  })
+                }
+                return assistantSays("waiting")
+              },
+              {
+                ...executor,
+                // The first script starts a background child; the second
+                // resumes it once its first result has been delivered.
+                execute: ({ subagents }) =>
+                  Stream.fromEffect(
+                    executions++ === 0
+                      ? subagents
+                          .delegate({ prompt: "TASK-CHILD", background: true })
+                          .pipe(
+                            Effect.map((result) => {
+                              childId = result.id
+                              return "started"
+                            }),
+                          )
+                      : subagents
+                          .messageAgent({ id: childId!, message: "FOLLOW-UP" })
+                          .pipe(Effect.as("resumed")),
+                  ).pipe(Stream.orDie),
+              },
+            )
+            const created = yield* server.request(1, "session/new", {
+              cwd: "/tmp",
+            })
+            const sessionId: string = created.result.sessionId
+            yield* server.request(2, "session/prompt", {
+              sessionId,
+              prompt: [{ type: "text", text: "delegate and resume" }],
+            })
+
+            assert.strictEqual(executions, 2, "the child was resumed")
+            const tools = server
+              .updates(sessionId)
+              .filter(
+                (u) =>
+                  u.sessionUpdate.startsWith("tool_call") &&
+                  u.toolCallId.startsWith("subagent-"),
+              )
+            const creations = tools
+              .filter((u) => u.sessionUpdate === "tool_call")
+              .map((u) => u.toolCallId)
+            assert.deepStrictEqual(
+              creations,
+              [...new Set(creations)],
+              "ACP tool call IDs must be unique within the session",
+            )
+            for (const u of tools) {
+              assert.include(
+                creations,
+                u.toolCallId,
+                "updates refer to a created tool call",
+              )
+            }
+
+            const firstDone = tools.findIndex(
+              (u) => u.status === "completed" && u.rawOutput === "FIRST-RESULT",
+            )
+            const secondDone = tools.findIndex(
+              (u) =>
+                u.status === "completed" && u.rawOutput === "SECOND-RESULT",
+            )
+            assert.isAbove(firstDone, -1, "first result shown")
+            assert.isAbove(secondDone, firstDone, "second result shown")
+            assert.isTrue(
+              tools
+                .slice(firstDone + 1, secondDone)
+                .some((u) => u.status === "in_progress"),
+              "the resumed turn is shown as running",
+            )
+            assert.deepStrictEqual(tools[secondDone].content, [
+              {
+                type: "content",
+                content: { type: "text", text: "SECOND-RESULT" },
+              },
+            ])
+          }),
+        ),
+      ),
   )
 
   it.effect("reports canonical state for new and loaded sessions", () =>

@@ -12,6 +12,7 @@ import * as RpcClient from "effect/rpc/RpcClient"
 import * as RpcSerialization from "effect/rpc/RpcSerialization"
 import * as RpcServer from "effect/rpc/RpcServer"
 import * as AgentExecutor from "./AgentExecutor.ts"
+import { subagentsUnavailable } from "./AgentTools.ts"
 import type { ImageAttachment } from "./AgentTools.ts"
 import { equalBytes, supportedImages } from "./fixtures/TestImages.ts"
 
@@ -83,7 +84,7 @@ describe("RPC image executor", () => {
                   images.push(image)
                 }),
               onTaskComplete: () => Effect.void,
-              onSubagent: () => Effect.succeed(""),
+              subagents: subagentsUnavailable,
             })
             .pipe(Stream.runCollect, Effect.timeout("5 seconds"))
           assert.strictEqual(images.length, fixtures.length)

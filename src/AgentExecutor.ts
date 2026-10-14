@@ -7,6 +7,9 @@ import * as NodeVm from "node:vm"
 import { Writable } from "node:stream"
 import {
   AgentToolHandlers,
+  type DelegateResult,
+  type SubagentInfo,
+  type SubagentResult,
   AgentTools,
   AgentToolsWithSearch,
   CurrentDirectory,
@@ -14,6 +17,8 @@ import {
   ImageAttacher,
   type ImageAttachment,
   SubagentExecutor,
+  type Subagents,
+  subagentsUnavailable,
   TaskCompleter,
 } from "./AgentTools.ts"
 import * as Image from "./Image.ts"
@@ -55,21 +60,34 @@ export class AgentExecutor extends Context.Service<
   AgentExecutor,
   {
     readonly capabilities: Effect.Effect<Capabilities>
-    execute(options: {
-      readonly script: string
-      readonly onTaskComplete: (summary: string) => Effect.Effect<void>
-      readonly onSubagent: (message: string) => Effect.Effect<string>
-      /**
-       * Receives every image `readFile` attached while the script ran.
-       */
-      readonly onImage: (image: ImageAttachment) => Effect.Effect<void>
-    }): Stream.Stream<string>
+    execute(options: ExecuteOptions): Stream.Stream<string>
     executeUnsafe<Tool extends keyof typeof AgentTools.tools>(options: {
       readonly tool: Tool
       readonly params: (typeof AgentTools.tools)[Tool]["parametersSchema"]["Encoded"]
     }): Effect.Effect<Schema.Json>
   }
 >()("clanka/AgentExecutor") {}
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export interface ExecuteOptions {
+  readonly script: string
+  /**
+   * Fails with a message for the script when the task cannot be completed
+   * yet, for example while sub-agents are still running.
+   */
+  readonly onTaskComplete: (summary: string) => Effect.Effect<void, string>
+  /**
+   * The sub-agents of the agent running the script.
+   */
+  readonly subagents: Subagents
+  /**
+   * Receives every image `readFile` attached while the script ran.
+   */
+  readonly onImage: (image: ImageAttachment) => Effect.Effect<void>
+}
 
 /**
  * @since 1.0.0
@@ -152,12 +170,7 @@ export const makeLocal = Effect.fnUntraced(function* <
     process.on("uncaughtException", () => {})
   }
 
-  const execute = Effect.fnUntraced(function* (opts: {
-    readonly script: string
-    readonly onTaskComplete: (summary: string) => Effect.Effect<void>
-    readonly onSubagent: (message: string) => Effect.Effect<string>
-    readonly onImage: (image: ImageAttachment) => Effect.Effect<void>
-  }) {
+  const execute = Effect.fnUntraced(function* (opts: ExecuteOptions) {
     const output = yield* Queue.unbounded<string, Cause.Done>()
     const console = yield* makeConsole(output)
     const handlerScope = Scope.makeUnsafe("parallel")
@@ -166,7 +179,7 @@ export const makeLocal = Effect.fnUntraced(function* <
     const taskServices = Context.empty().pipe(
       Context.add(TaskCompleter, opts.onTaskComplete),
       Context.add(DirectoryChanger, changeDirectory),
-      Context.add(SubagentExecutor, opts.onSubagent),
+      Context.add(SubagentExecutor, opts.subagents),
       Context.add(ImageAttacher, opts.onImage),
       Context.add(Console.Console, console),
       Context.add(References.CurrentLogAnnotations, {}),
@@ -266,7 +279,7 @@ export const makeLocal = Effect.fnUntraced(function* <
           Context.add(TaskCompleter, () => Effect.void),
           Context.add(CurrentDirectory, currentDirectory),
           Context.add(DirectoryChanger, changeDirectory),
-          Context.add(SubagentExecutor, () => Effect.succeed("")),
+          Context.add(SubagentExecutor, subagentsUnavailable),
           // Direct tool calls have no model turn to attach images to.
           Context.add(ImageAttacher, () => Effect.void),
           Context.add(References.CurrentLogAnnotations, {}),
@@ -307,15 +320,13 @@ export const makeRpc = Effect.gen(function* () {
               case "Text": {
                 return Effect.void
               }
-              case "TaskComplete": {
-                return opts.onTaskComplete(part.summary)
-              }
-              case "Subagent": {
+              case "Request": {
                 const id = part.id
                 return pipe(
-                  opts.onSubagent(part.prompt),
-                  Effect.flatMap((output) =>
-                    client.subagentOutput({ id, output }),
+                  handleRequest(opts, part.request),
+                  Effect.exit,
+                  Effect.flatMap((exit) =>
+                    client.respond({ id, response: exitToResponse(exit) }),
                   ),
                   Effect.forkIn(scope),
                 )
@@ -418,19 +429,23 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
       Rpcs.toLayer(
         Effect.gen(function* () {
           const local = yield* makeLocal(options)
-          const subagentResumes = new Map<
+          const requestResumes = new Map<
             number,
-            (effect: Effect.Effect<string>) => void
+            (effect: Effect.Effect<unknown, string>) => void
           >()
-          let subagentId = 0
+          let requestId = 0
 
           return Rpcs.of({
             capabilities: () => local.capabilities,
-            subagentOutput: ({ id, output }) => {
-              const resume = subagentResumes.get(id)
+            respond: ({ id, response }) => {
+              const resume = requestResumes.get(id)
               if (resume) {
-                resume(Effect.succeed(output))
-                subagentResumes.delete(id)
+                requestResumes.delete(id)
+                resume(
+                  response._tag === "Success"
+                    ? Effect.succeed(response.value)
+                    : Effect.fail(response.message),
+                )
               }
               return Effect.void
             },
@@ -439,28 +454,52 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
                 typeof ExecuteOutput.Type,
                 Cause.Done
               >()
+              // Sends a request to the client and waits for its response.
+              // IDs come from a server-wide counter, so concurrent and nested
+              // execute streams never collide.
+              // The client answers with the value of the matching callback.
+              const request = <A>(request: typeof AgentRequest.Type) =>
+                Effect.callback<A, string>((resume) => {
+                  const id = requestId++
+                  requestResumes.set(
+                    id,
+                    resume as (effect: Effect.Effect<unknown, string>) => void,
+                  )
+                  Queue.offerUnsafe(queue, { _tag: "Request", id, request })
+                  return Effect.sync(() => {
+                    requestResumes.delete(id)
+                  })
+                })
               yield* pipe(
                 local.execute({
                   script,
-                  onTaskComplete(summary) {
-                    return Queue.offer(queue, {
-                      _tag: "TaskComplete",
-                      summary,
-                    })
-                  },
-                  onSubagent(prompt) {
-                    const id = subagentId++
-                    return Effect.callback((resume) => {
-                      subagentResumes.set(id, resume)
-                      Queue.offerUnsafe(queue, {
-                        _tag: "Subagent",
-                        id,
-                        prompt,
-                      })
-                      return Effect.sync(() => {
-                        subagentResumes.delete(id)
-                      })
-                    })
+                  onTaskComplete: (summary) =>
+                    request<void>({ _tag: "TaskComplete", summary }),
+                  subagents: {
+                    delegate: (options) =>
+                      Effect.orDie(
+                        request<DelegateResult>({
+                          _tag: "Delegate",
+                          ...options,
+                        }),
+                      ),
+                    waitAgents: (ids) =>
+                      request<ReadonlyArray<SubagentResult>>({
+                        _tag: "WaitAgents",
+                        ids,
+                      }),
+                    messageAgent: (options) =>
+                      request<SubagentResult>({
+                        _tag: "MessageAgent",
+                        ...options,
+                      }),
+                    stopAgent: (id) =>
+                      request<SubagentResult>({ _tag: "StopAgent", id }),
+                    listAgents: Effect.orDie(
+                      request<ReadonlyArray<SubagentInfo>>({
+                        _tag: "ListAgents",
+                      }),
+                    ),
                   },
                   onImage(image) {
                     return Queue.offer(queue, {
@@ -504,10 +543,34 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
  * @since 1.0.0
  * @category Rpcs
  */
+export const AgentRequest = Schema.TaggedUnion({
+  TaskComplete: { summary: Schema.String },
+  Delegate: { prompt: Schema.String, background: Schema.Boolean },
+  WaitAgents: { ids: Schema.UndefinedOr(Schema.Array(Schema.String)) },
+  MessageAgent: { id: Schema.String, message: Schema.String },
+  StopAgent: { id: Schema.String },
+  ListAgents: {},
+})
+
+/**
+ * The client's answer to a `Request`. `Failure` carries a message for the
+ * script; a failed foreground `delegate` is raised there as a defect.
+ *
+ * @since 1.0.0
+ * @category Rpcs
+ */
+export const AgentResponse = Schema.TaggedUnion({
+  Success: { value: Schema.Json },
+  Failure: { message: Schema.String },
+})
+
+/**
+ * @since 1.0.0
+ * @category Rpcs
+ */
 export const ExecuteOutput = Schema.TaggedUnion({
   Text: { text: Schema.String },
-  TaskComplete: { summary: Schema.String },
-  Subagent: { id: Schema.Finite, prompt: Schema.String },
+  Request: { id: Schema.Finite, request: AgentRequest },
   Image: {
     fileName: Schema.String,
     mediaType: Image.ImageMediaType,
@@ -523,10 +586,10 @@ export class Rpcs extends RpcGroup.make(
   Rpc.make("capabilities", {
     success: Capabilities,
   }),
-  Rpc.make("subagentOutput", {
+  Rpc.make("respond", {
     payload: {
       id: Schema.Finite,
-      output: Schema.String,
+      response: AgentResponse,
     },
   }),
   Rpc.make("execute", {
@@ -548,6 +611,44 @@ export class Rpcs extends RpcGroup.make(
 // ------------------------------------------
 // Internal
 // -------------------------------------------
+
+const handleRequest = (
+  opts: ExecuteOptions,
+  request: typeof AgentRequest.Type,
+): Effect.Effect<unknown, string> => {
+  switch (request._tag) {
+    case "TaskComplete":
+      return opts.onTaskComplete(request.summary)
+    case "Delegate":
+      return opts.subagents.delegate(request)
+    case "WaitAgents":
+      return opts.subagents.waitAgents(request.ids)
+    case "MessageAgent":
+      return opts.subagents.messageAgent(request)
+    case "StopAgent":
+      return opts.subagents.stopAgent(request.id)
+    case "ListAgents":
+      return opts.subagents.listAgents
+  }
+}
+
+const exitToResponse = (
+  exit: Exit.Exit<unknown, string>,
+): typeof AgentResponse.Type => {
+  if (Exit.isSuccess(exit)) {
+    return { _tag: "Success", value: (exit.value ?? null) as Schema.Json }
+  }
+  const error = Cause.squash(exit.cause)
+  return {
+    _tag: "Failure",
+    message:
+      typeof error === "string"
+        ? error
+        : error instanceof Error
+          ? error.message
+          : String(error),
+  }
+}
 
 interface ScriptSandbox {
   main: () => Promise<void>

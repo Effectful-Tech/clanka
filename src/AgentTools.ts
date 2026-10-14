@@ -48,8 +48,110 @@ export class DirectoryChanger extends Context.Service<
  */
 export class TaskCompleter extends Context.Service<
   TaskCompleter,
-  (output: string) => Effect.Effect<void>
+  (output: string) => Effect.Effect<void, string>
 >()("clanka/AgentTools/TaskCompleter") {}
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export const SubagentStatus = Schema.Literals([
+  "completed",
+  "running",
+  "failed",
+  "cancelled",
+])
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export type SubagentStatus = typeof SubagentStatus.Type
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export const SubagentResult = Schema.Struct({
+  id: Schema.String,
+  status: SubagentStatus,
+  output: Schema.optional(Schema.String),
+})
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export type SubagentResult = typeof SubagentResult.Type
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export const DelegateResult = Schema.Struct({
+  ...SubagentResult.fields,
+  status: Schema.Literals(["completed", "running"]),
+})
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export type DelegateResult = typeof DelegateResult.Type
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export const SubagentInfo = Schema.Struct({
+  id: Schema.String,
+  status: SubagentStatus,
+  prompt: Schema.String,
+})
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export type SubagentInfo = typeof SubagentInfo.Type
+
+/**
+ * Manages the sub-agents of one agent. Every function only sees the agents
+ * spawned by that agent.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export interface Subagents {
+  /**
+   * Start a sub-agent. In the foreground it resolves once the agent has
+   * finished, and dies if the agent failed. In the background it resolves
+   * straight away with `status: "running"`.
+   */
+  readonly delegate: (options: {
+    readonly prompt: string
+    readonly background: boolean
+  }) => Effect.Effect<DelegateResult>
+  /**
+   * Wait for the listed agents, or all of them when `ids` is undefined.
+   * Failures are returned as results, not raised.
+   */
+  readonly waitAgents: (
+    ids: ReadonlyArray<string> | undefined,
+  ) => Effect.Effect<ReadonlyArray<SubagentResult>, string>
+  /**
+   * Steer a running agent, or start a new turn on a finished one.
+   */
+  readonly messageAgent: (options: {
+    readonly id: string
+    readonly message: string
+  }) => Effect.Effect<SubagentResult, string>
+  /**
+   * Interrupt an agent and everything it spawned.
+   */
+  readonly stopAgent: (id: string) => Effect.Effect<SubagentResult, string>
+  readonly listAgents: Effect.Effect<ReadonlyArray<SubagentInfo>>
+}
 
 /**
  * @since 1.0.0
@@ -57,8 +159,22 @@ export class TaskCompleter extends Context.Service<
  */
 export class SubagentExecutor extends Context.Service<
   SubagentExecutor,
-  (prompt: string) => Effect.Effect<string>
+  Subagents
 >()("clanka/AgentTools/SubagentExecutor") {}
+
+/**
+ * A `Subagents` implementation for contexts that cannot spawn agents.
+ *
+ * @since 1.0.0
+ * @category Context
+ */
+export const subagentsUnavailable: Subagents = {
+  delegate: () => Effect.die(new Error("Sub-agents are not available here")),
+  waitAgents: () => Effect.fail("Sub-agents are not available here"),
+  messageAgent: () => Effect.fail("Sub-agents are not available here"),
+  stopAgent: () => Effect.fail("Sub-agents are not available here"),
+  listAgents: Effect.succeed([]),
+}
 
 /**
  * An image read by `readFile`, handed to the Agent so it can be spliced onto
@@ -93,7 +209,7 @@ const globNamesDirectory = (glob: string) =>
  * @category Context
  */
 export const makeContextNoop = (cwd?: string) =>
-  SubagentExecutor.context(() => Effect.die("Not implemented")).pipe(
+  SubagentExecutor.context(subagentsUnavailable).pipe(
     Context.add(CurrentDirectory, cwd ?? "/"),
     Context.add(DirectoryChanger, () => Effect.die("Not implemented")),
     Context.add(TaskCompleter, () => Effect.void),
@@ -143,11 +259,51 @@ export const AgentTools = Toolkit.make(
   }),
   Tool.make("delegate", {
     description:
-      "Delegate a task to another software engineer / sub-agent. Returns the result of the task.",
-    parameters: Schema.String.annotate({
-      identifier: "task",
+      'Delegate a task to another software engineer / sub-agent. By default it waits for the sub-agent and returns its output. With `background: true` it returns straight away with status "running"; the sub-agent keeps working while you take more turns, and its result is sent to you as a <subagent> message when it finishes. Keep the returned id to address the agent later.',
+    parameters: Schema.Struct({
+      prompt: Schema.String,
+      background: Schema.optional(Schema.Boolean),
     }),
-    success: Schema.String,
+    success: DelegateResult,
+    failure: Schema.String,
+    dependencies: [SubagentExecutor],
+  }),
+  Tool.make("waitAgents", {
+    description:
+      'Wait until the given sub-agents have finished, or all of your sub-agents when no ids are passed. A failed agent is returned with status "failed" and its error as the output; it does not throw.',
+    parameters: Schema.UndefinedOr(Schema.Array(Schema.String)).annotate({
+      identifier: "ids",
+    }),
+    success: Schema.Array(SubagentResult),
+    failure: Schema.String,
+    dependencies: [SubagentExecutor],
+  }),
+  Tool.make("messageAgent", {
+    description:
+      "Send a message to one of your sub-agents. A running agent receives it as steering; a finished agent starts a new turn on top of its previous conversation. Returns straight away; the result is sent to you as a <subagent> message.",
+    parameters: Schema.Struct({
+      id: Schema.String,
+      message: Schema.String,
+    }),
+    success: SubagentResult,
+    failure: Schema.String,
+    dependencies: [SubagentExecutor],
+  }),
+  Tool.make("stopAgent", {
+    description:
+      "Stop one of your sub-agents and every agent it started. Returns its final status.",
+    parameters: Schema.String.annotate({
+      identifier: "id",
+    }),
+    success: SubagentResult,
+    failure: Schema.String,
+    dependencies: [SubagentExecutor],
+  }),
+  Tool.make("listAgents", {
+    description:
+      "List the sub-agents you have started in this run, with their status.",
+    parameters: Schema.Void,
+    success: Schema.Array(SubagentInfo),
     dependencies: [SubagentExecutor],
   }),
   Tool.make("glob", {
@@ -674,13 +830,47 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
 
         return `Success. Updated the following files:\n${out.join("\n")}`
       }, Effect.orDie),
-      delegate: Effect.fn("AgentTools.delegate")(function* (prompt) {
-        yield* Effect.logInfo(`Calling "delegate"`)
-        const spawn = yield* SubagentExecutor
-        return yield* spawn(`You have been asked using the "delegate" function to complete the following task. Try to avoid using the "delegate" function yourself unless strictly necessary:
-
-${prompt}`)
-      }, Effect.orDie),
+      delegate: Effect.fn("AgentTools.delegate")(function* (options: unknown) {
+        const { prompt, background = false } = yield* decodeDelegate(options)
+        yield* Effect.logInfo(`Calling "delegate"`).pipe(
+          Effect.annotateLogs({ background }),
+        )
+        const subagents = yield* SubagentExecutor
+        return yield* subagents.delegate({ prompt, background })
+      }),
+      waitAgents: Effect.fn("AgentTools.waitAgents")(function* (
+        input: unknown,
+      ) {
+        const ids = yield* decodeWaitAgents(input)
+        yield* Effect.logInfo(`Calling "waitAgents"`).pipe(
+          Effect.annotateLogs({ ids }),
+        )
+        const subagents = yield* SubagentExecutor
+        return yield* subagents.waitAgents(ids)
+      }),
+      messageAgent: Effect.fn("AgentTools.messageAgent")(function* (
+        input: unknown,
+      ) {
+        const options = yield* decodeMessageAgent(input)
+        yield* Effect.logInfo(`Calling "messageAgent"`).pipe(
+          Effect.annotateLogs({ id: options.id }),
+        )
+        const subagents = yield* SubagentExecutor
+        return yield* subagents.messageAgent(options)
+      }),
+      stopAgent: Effect.fn("AgentTools.stopAgent")(function* (input: unknown) {
+        const id = yield* decodeStopAgent(input)
+        yield* Effect.logInfo(`Calling "stopAgent"`).pipe(
+          Effect.annotateLogs({ id }),
+        )
+        const subagents = yield* SubagentExecutor
+        return yield* subagents.stopAgent(id)
+      }),
+      listAgents: Effect.fn("AgentTools.listAgents")(function* () {
+        yield* Effect.logInfo(`Calling "listAgents"`)
+        const subagents = yield* SubagentExecutor
+        return yield* subagents.listAgents
+      }),
       taskComplete: Effect.fn("AgentTools.taskComplete")(function* (
         message: unknown,
       ) {
@@ -720,6 +910,33 @@ export const AgentToolHandlersTest = AgentToolHandlersNoDeps.pipe(
     Layer.mock(ExaSearch.ExaSearch)({}),
     Layer.mock(WebToMarkdown.WebToMarkdown)({}),
   ]),
+)
+
+// Scripts pass tool arguments undecoded. Invalid input fails with a usage
+// message the model can act on.
+const decodeParams = <S extends Schema.Decoder<unknown>>(
+  schema: S,
+  usage: string,
+) => {
+  const decode = Schema.decodeUnknownEffect(schema)
+  return (input: unknown) => Effect.mapError(decode(input), () => usage)
+}
+
+const decodeDelegate = decodeParams(
+  AgentTools.tools.delegate.parametersSchema,
+  'delegate requires an options object, for example: delegate({ prompt: "..." }) or delegate({ prompt: "...", background: true }).',
+)
+const decodeWaitAgents = decodeParams(
+  AgentTools.tools.waitAgents.parametersSchema,
+  'waitAgents takes an optional array of agent ids, for example: waitAgents(["3", "4"]).',
+)
+const decodeMessageAgent = decodeParams(
+  AgentTools.tools.messageAgent.parametersSchema,
+  'messageAgent requires an options object, for example: messageAgent({ id: "3", message: "..." }).',
+)
+const decodeStopAgent = decodeParams(
+  AgentTools.tools.stopAgent.parametersSchema,
+  'stopAgent requires an agent id, for example: stopAgent("3").',
 )
 
 class ApplyPatchError extends Data.TaggedClass("ApplyPatchError")<{

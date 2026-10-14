@@ -18,6 +18,7 @@ import type * as Response from "effect/ai/Response"
 import * as ResponseIdTracker from "effect/ai/ResponseIdTracker"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
+import { subagentsUnavailable } from "./AgentTools.ts"
 import * as AgentOutput from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
 
@@ -114,7 +115,10 @@ describe("Agent", () => {
         conversationMode: true,
         executor: makeExecutor(({ onTaskComplete }) =>
           Stream.fromEffect(
-            onTaskComplete("done from taskComplete").pipe(Effect.as("")),
+            onTaskComplete("done from taskComplete").pipe(
+              Effect.as(""),
+              Effect.orDie,
+            ),
           ),
         ),
         streamText: () =>
@@ -474,7 +478,7 @@ it.layer(localExecutorLayer, { excludeTestServices: true })(
                   Effect.sync(() => {
                     summaries.push(summary)
                   }),
-                onSubagent: () => Effect.succeed(""),
+                subagents: subagentsUnavailable,
                 onImage: () => Effect.void,
               })
               .pipe(Stream.mkString)

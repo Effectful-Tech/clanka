@@ -60,14 +60,24 @@ export const pretty = (options?: {
             return `${chalkAgentHeading(`${subagentIcon} Agent #${output.id} starting (${output.modelAndProvider})`)}\n\n${promptToString(output.prompt)}\n\n`
           }
           case "SubagentStart": {
-            return `${chalkSubagentHeading(`${subagentIcon} Subagent #${output.id} starting (${output.modelAndProvider})`)}
+            const mode = output.background ? " in the background" : ""
+            return `${chalkSubagentHeading(`${subagentIcon} Subagent #${output.id} starting${mode} (${output.modelAndProvider})`)}
 
 ${chalk.dim(output.prompt)}\n\n`
           }
           case "SubagentComplete": {
-            return `${chalkSubagentHeading(`${subagentIcon} Subagent #${output.id} complete`)}
+            switch (output.status) {
+              case "completed":
+                return `${chalkSubagentHeading(`${subagentIcon} Subagent #${output.id} complete`)}
 
 ${output.summary}\n\n`
+              case "failed":
+                return `${chalk.bold.red(`${subagentIcon} Subagent #${output.id} failed`)}
+
+${chalk.dim(output.summary)}\n\n`
+              case "cancelled":
+                return `${chalkSubagentHeading(`${subagentIcon} Subagent #${output.id} cancelled`)}\n\n`
+            }
           }
           case "ReasoningStart": {
             return (

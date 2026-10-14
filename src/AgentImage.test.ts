@@ -264,8 +264,16 @@ describe("Agent images", () => {
 
   it.effect("does not copy image bytes into a delegate prompt", () =>
     Effect.gen(function* () {
-      const executor = makeExecutor(({ onSubagent }) =>
-        Stream.fromEffect(onSubagent("child task: describe the layout")),
+      const executor = makeExecutor(({ subagents }) =>
+        Stream.fromEffect(
+          subagents.delegate({
+            prompt: "child task: describe the layout",
+            background: false,
+          }),
+        ).pipe(
+          Stream.map((result) => result.output ?? ""),
+          Stream.orDie,
+        ),
       )
       const { exit, calls } = yield* runAgent({
         prompt: imagePrompt,

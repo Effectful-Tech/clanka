@@ -195,6 +195,8 @@ describe("Acp", () => {
               .find((update) => update.sessionUpdate === "usage_update"),
             {
               sessionUpdate: "usage_update",
+              used: 120,
+              size: 236_000,
               usage: {
                 inputTokens: 84,
                 outputTokens: 12,
@@ -245,6 +247,8 @@ describe("Acp", () => {
                 .find((update) => update.sessionUpdate === "usage_update"),
               {
                 sessionUpdate: "usage_update",
+                used: 120,
+                size: 236_000,
                 usage: {
                   inputTokens: 120,
                   outputTokens: 12,

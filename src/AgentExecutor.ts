@@ -5,6 +5,8 @@ import * as NodeConsole from "node:console"
 import * as NodeOs from "node:os"
 import * as NodeVm from "node:vm"
 import { Writable } from "node:stream"
+import { Worker } from "node:worker_threads"
+import type * as NodeWorkerThreads from "node:worker_threads"
 import {
   AgentToolHandlers,
   type DelegateResult,
@@ -12,10 +14,13 @@ import {
   type SubagentResult,
   AgentTools,
   AgentToolsWithSearch,
+  CommandLimits,
   CurrentDirectory,
+  defaultBashTimeout,
   DirectoryChanger,
   ImageAttacher,
   type ImageAttachment,
+  makeBashTool,
   SubagentExecutor,
   type Subagents,
   subagentsUnavailable,
@@ -27,6 +32,8 @@ import * as AgentSkills from "./AgentSkills.ts"
 import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
 import type * as HttpClient from "effect/http/HttpClient"
 import * as Context from "effect/Context"
+import * as Deferred from "effect/Deferred"
+import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
@@ -107,6 +114,40 @@ export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
 }) {}
 
 /**
+ * Limits applied by the executor that runs the tools. With `layerRpcServer`
+ * they are set on the server, next to the commands they bound.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export interface Limits {
+  /**
+   * The longest a single `bash` or `gh` command may run. For `bash` it is
+   * also the default when the model passes no `timeoutMs`, and the `bash`
+   * description states it.
+   *
+   * Defaults to 10 minutes for `bash` and no limit for `gh`, as before.
+   */
+  readonly commandTimeout?: Duration.Input | undefined
+  /**
+   * The longest a single `execute` script may run, including the tool calls
+   * it awaits. A script that runs out of time is interrupted, and its output
+   * so far ends with a line saying it timed out.
+   *
+   * Defaults to no limit.
+   */
+  readonly scriptTimeout?: Duration.Input | undefined
+  /**
+   * The most characters of `bash` and `gh` output held in memory per command.
+   * Longer output keeps its start and end, with a marker in place of the
+   * middle.
+   *
+   * Defaults to no limit.
+   */
+  readonly commandOutputChars?: number | undefined
+}
+
+/**
  * @since 1.0.0
  * @category Constructors
  */
@@ -115,6 +156,7 @@ export const makeLocal = Effect.fnUntraced(function* <
 >(options: {
   readonly directory: string
   readonly tools?: Toolkit | undefined
+  readonly limits?: Limits | undefined
 }): Effect.fn.Return<
   AgentExecutor["Service"],
   never,
@@ -146,10 +188,25 @@ export const makeLocal = Effect.fnUntraced(function* <
     currentDirectory = target
     return target
   }, Effect.orDie)
+  const commandTimeout = options.limits?.commandTimeout
+  const commandLimits: typeof CommandLimits.Service = {
+    timeout:
+      commandTimeout === undefined
+        ? undefined
+        : Duration.fromInputUnsafe(commandTimeout),
+    outputChars: options.limits?.commandOutputChars,
+  }
+  const scriptTimeout = Option.map(
+    Option.fromUndefinedOr(options.limits?.scriptTimeout),
+    Duration.fromInputUnsafe,
+  )
   const search = yield* Effect.serviceOption(SemanticSearch)
   const hasSearch = Option.isSome(search)
   const AllTools = Toolkit.merge(
     hasSearch ? AgentToolsWithSearch : AgentTools,
+    // Same tool id, so the handler is unchanged. Only the description, which
+    // states the timeout, differs.
+    Toolkit.make(makeBashTool(commandLimits.timeout ?? defaultBashTimeout)),
     (options.tools as unknown as Toolkit.Toolkit<{}>) ?? Toolkit.empty,
   )
   const tools = yield* AllTools
@@ -157,14 +214,19 @@ export const makeLocal = Effect.fnUntraced(function* <
 
   const services = yield* Effect.context()
 
-  const toolEntries = Object.entries(tools.tools).map(([name, tool]) => {
-    const handler = services.mapUnsafe.get(tool.id) as Tool.Handler<string>
-    return {
-      name,
-      services: Context.merge(services, handler.context),
-      handler: handler.handler,
-    }
-  })
+  const toolEntries = new Map(
+    Object.entries(tools.tools).map(([name, tool]) => {
+      const handler = services.mapUnsafe.get(tool.id) as Tool.Handler<string>
+      return [
+        name,
+        {
+          services: Context.merge(services, handler.context),
+          handler: handler.handler,
+        },
+      ] as const
+    }),
+  )
+  const toolNames = Array.from(toolEntries.keys())
 
   if (typeof process !== "undefined") {
     process.on("uncaughtException", () => {})
@@ -181,6 +243,7 @@ export const makeLocal = Effect.fnUntraced(function* <
       Context.add(DirectoryChanger, changeDirectory),
       Context.add(SubagentExecutor, opts.subagents),
       Context.add(ImageAttacher, opts.onImage),
+      Context.add(CommandLimits, commandLimits),
       Context.add(Console.Console, console),
       Context.add(References.CurrentLogAnnotations, {}),
       Option.isSome(search)
@@ -188,51 +251,103 @@ export const makeLocal = Effect.fnUntraced(function* <
         : identity,
     )
 
+    // The script runs in its own worker thread, so a script that is busy in
+    // JavaScript can still be stopped. Tool calls are sent back here and run
+    // as before.
     yield* Effect.gen(function* () {
-      const console = yield* Console.Console
-      let running = 0
+      const source = prepareScript(opts.script)
+      const settled = yield* Deferred.make<void>()
+      const worker = yield* Effect.acquireRelease(
+        Effect.sync(
+          () =>
+            new Worker(workerSource, {
+              eval: true,
+              workerData: { source, tools: toolNames } satisfies WorkerData,
+            }),
+        ),
+        (worker) => Effect.promise(() => worker.terminate()),
+      )
 
-      const vmScript = compileScript(opts.script)
-      const sandbox: ScriptSandbox = {
-        main: defaultMain,
-        console,
-        fetch,
-        process: undefined,
-      }
-
-      for (let i = 0; i < toolEntries.length; i++) {
-        const { name, handler, services } = toolEntries[i]!
-        const toolServices = Context.merge(services, taskServices)
-
-        // oxlint-disable-next-line typescript/no-explicit-any
-        sandbox[name] = function (params: any) {
-          const runFork = Effect.runForkWith(
-            Context.add(toolServices, CurrentDirectory, currentDirectory),
-          )
-          running++
-          const fiber = trackFiber(runFork(handler(params, {})))
-          return new Promise((resolve, reject) => {
-            fiber.addObserver((exit) => {
-              running--
-              if (exit._tag === "Success") {
-                return resolve(exit.value)
-              }
-              if (Cause.hasInterruptsOnly(exit.cause)) return
-              reject(Cause.squash(exit.cause))
-            })
-          })
+      // Every call is answered, interrupted ones included: the worker only
+      // reports Done once nothing is outstanding. While the script is being
+      // stopped the worker is already gone and the answer is dropped.
+      const respond = (id: number, exit: Exit.Exit<unknown, unknown>) => {
+        const message: ToWorker = Exit.isSuccess(exit)
+          ? { id, ok: true, value: exit.value }
+          : { id, ok: false, failure: toFailure(Cause.squash(exit.cause)) }
+        try {
+          // oxlint-disable-next-line unicorn/require-post-message-target-origin
+          worker.postMessage(message)
+        } catch (error) {
+          // The value cannot be copied to the worker.
+          // oxlint-disable-next-line unicorn/require-post-message-target-origin
+          worker.postMessage({ id, ok: false, failure: toFailure(error) })
         }
       }
 
-      vmScript.runInNewContext(sandbox, {
-        timeout: 1000,
-      })
-      yield* Effect.promise(sandbox.main)
-      while (true) {
-        yield* Effect.yieldNow
-        if (running === 0) break
+      const call = (message: Extract<FromWorker, { _tag: "Call" }>) => {
+        const entry = toolEntries.get(message.name)!
+        const runFork = Effect.runForkWith(
+          Context.add(
+            Context.merge(entry.services, taskServices),
+            CurrentDirectory,
+            currentDirectory,
+          ),
+        )
+        const fiber = trackFiber(runFork(entry.handler(message.params, {})))
+        fiber.addObserver((exit) => respond(message.id, exit))
       }
+
+      worker.on("message", (message: FromWorker) => {
+        switch (message._tag) {
+          case "Output":
+            Queue.offerUnsafe(output, message.text)
+            break
+          case "Call":
+            call(message)
+            break
+          case "Done":
+            Deferred.doneUnsafe(settled, Effect.void)
+            break
+          case "Failed":
+            Deferred.doneUnsafe(
+              settled,
+              Effect.die(fromFailure(message.failure)),
+            )
+            break
+        }
+      })
+      // Bridge failures end the script instead of leaving it pending.
+      worker.on("error", (error) => {
+        Deferred.doneUnsafe(settled, Effect.die(error))
+      })
+      worker.on("messageerror", (error) => {
+        Deferred.doneUnsafe(settled, Effect.die(error))
+      })
+      worker.on("exit", (code) => {
+        Deferred.doneUnsafe(
+          settled,
+          Effect.die(
+            new Error(`The script worker exited with code ${code} early`),
+          ),
+        )
+      })
+
+      yield* Deferred.await(settled)
     }).pipe(
+      // Stops the worker on every exit: done, failed, timed out, interrupted.
+      Effect.scoped,
+      Option.isSome(scriptTimeout)
+        ? Effect.timeoutOrElse({
+            duration: scriptTimeout.value,
+            orElse: () =>
+              Queue.offer(
+                output,
+                `\nScript timed out: it reached its ${Duration.toMillis(scriptTimeout.value)}ms limit and was stopped. Pending tool calls were cancelled.\n`,
+              ),
+          })
+        : identity,
+      // Interrupts the tool calls still running, and the processes they own.
       Effect.ensuring(Scope.close(handlerScope, Exit.void)),
       Effect.catchCause(Effect.logFatal),
       Effect.provideService(Console.Console, console),
@@ -282,6 +397,7 @@ export const makeLocal = Effect.fnUntraced(function* <
           Context.add(SubagentExecutor, subagentsUnavailable),
           // Direct tool calls have no model turn to attach images to.
           Context.add(ImageAttacher, () => Effect.void),
+          Context.add(CommandLimits, commandLimits),
           Context.add(References.CurrentLogAnnotations, {}),
           Option.isSome(search)
             ? Context.add(SemanticSearch, search.value)
@@ -359,6 +475,7 @@ export const makeRpc = Effect.gen(function* () {
 export const layerLocal = <Toolkit extends Toolkit.Any = never>(options: {
   readonly directory: string
   readonly tools?: Toolkit | undefined
+  readonly limits?: Limits | undefined
 }): Layer.Layer<
   AgentExecutor,
   never,
@@ -402,6 +519,7 @@ export const layerRpc: Layer.Layer<AgentExecutor, never, RpcClient.Protocol> =
 export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
   readonly directory: string
   readonly tools?: Toolkit | undefined
+  readonly limits?: Limits | undefined
 }): Layer.Layer<
   never,
   never,
@@ -650,19 +768,21 @@ const exitToResponse = (
   }
 }
 
-interface ScriptSandbox {
-  main: () => Promise<void>
-  console: Console.Console
-  [toolName: string]: unknown
-}
-
 const wrapScript = (script: string): string => `async function main() {
 ${script}
 }`
 
-const compileScript = (script: string): NodeVm.Script => {
+/**
+ * Returns source that compiles, preprocessing the script if it has syntax
+ * errors. Throws the original syntax error if neither version compiles.
+ */
+const prepareScript = (script: string): string => {
+  const source = wrapScript(script)
   try {
-    return new NodeVm.Script(wrapScript(script))
+    // Compiled only to check the syntax. The worker compiles it again.
+    // oxlint-disable-next-line eslint/no-new
+    new NodeVm.Script(source)
+    return source
   } catch (error) {
     if (!(error instanceof SyntaxError)) {
       throw error
@@ -673,15 +793,197 @@ const compileScript = (script: string): NodeVm.Script => {
       throw error
     }
 
+    const preprocessedSource = wrapScript(preprocessed)
     try {
-      return new NodeVm.Script(wrapScript(preprocessed))
+      // oxlint-disable-next-line eslint/no-new
+      new NodeVm.Script(preprocessedSource)
+      return preprocessedSource
     } catch {
       throw error
     }
   }
 }
 
-const defaultMain = () => Promise.resolve()
+interface WorkerData {
+  readonly source: string
+  readonly tools: ReadonlyArray<string>
+}
+
+/**
+ * A rejection crossing the worker boundary. Errors keep their name, message
+ * and stack. Other values are copied, or turned into a string when they
+ * cannot be.
+ */
+type Failure =
+  | {
+      readonly _tag: "Error"
+      readonly name: string
+      readonly message: string
+      readonly stack: string | undefined
+    }
+  | { readonly _tag: "Value"; readonly value: unknown }
+
+type FromWorker =
+  | { readonly _tag: "Output"; readonly text: string }
+  | {
+      readonly _tag: "Call"
+      readonly id: number
+      readonly name: string
+      readonly params: unknown
+    }
+  | { readonly _tag: "Done" }
+  | { readonly _tag: "Failed"; readonly failure: Failure }
+
+type ToWorker =
+  | { readonly id: number; readonly ok: true; readonly value: unknown }
+  | { readonly id: number; readonly ok: false; readonly failure: Failure }
+
+// -------------------------------------------
+// Script worker
+//
+// The worker runs from source text (`new Worker(source, { eval: true })`), so
+// it needs no separate file in the package, the CLI bundle or a consumer's
+// bundle. The source is built from the function declarations below with
+// `Function.prototype.toString`, which keeps them type-checked and shared
+// with the parent instead of copied into a string.
+//
+// Constraints, because the text of each function must run on its own:
+// - Each must be a `function` declaration, so its text carries its name.
+// - They may reference only each other, their parameters and globals: no
+//   imports, module-level values or closures.
+// - Node modules are loaded with the `load` parameter, which the source text
+//   binds to the worker's `require`. Bundlers rewrite a bare `require` (the
+//   CLI bundle turns it into `__require`), but leave a parameter alone.
+// - A bundler must keep their bodies whole. Renaming identifiers
+//   consistently is fine. Transforms that move code out of a body, such as
+//   coverage instrumentation or helper hoisting, are not. Only the
+//   library build and the CLI bundle are checked.
+// The executor tests run every script through this worker, so they catch a
+// broken constraint in the source. They run the source, not a bundle, so a
+// bundler's rewrites only show up when the built output is run.
+// -------------------------------------------
+
+function toFailure(value: unknown): Failure {
+  if (Object.prototype.toString.call(value) === "[object Error]") {
+    const error = value as Error
+    return {
+      _tag: "Error",
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    }
+  }
+  try {
+    return { _tag: "Value", value: structuredClone(value) }
+  } catch {
+    return { _tag: "Value", value: String(value) }
+  }
+}
+
+function fromFailure(failure: Failure): unknown {
+  if (failure._tag === "Value") return failure.value
+  const error = new Error(failure.message)
+  error.name = failure.name
+  if (failure.stack !== undefined) error.stack = failure.stack
+  return error
+}
+
+/**
+ * Runs one script inside a vm context with the same globals as before, and
+ * forwards console output and tool calls to the parent.
+ */
+function runScriptWorker(load: (id: string) => unknown): void {
+  // Type-only references: the casts are erased, so the text stays
+  // self-contained.
+  const { parentPort, workerData } = load(
+    "node:worker_threads",
+  ) as typeof NodeWorkerThreads
+  const vm = load("node:vm") as typeof NodeVm
+  const { Console } = load("node:console") as typeof NodeConsole
+  const { Writable: WorkerWritable } = load("node:stream") as {
+    readonly Writable: typeof Writable
+  }
+  const port = parentPort!
+  const data = workerData as WorkerData
+
+  // Like the parent process: a stray rejection must not end the script.
+  process.on("uncaughtException", () => {})
+  process.on("unhandledRejection", () => {})
+
+  const post = (message: FromWorker) => port.postMessage(message)
+
+  const pending = new Map<
+    number,
+    {
+      readonly resolve: (value: unknown) => void
+      readonly reject: (error: unknown) => void
+    }
+  >()
+  let nextId = 0
+  let mainSettled = false
+  let done = false
+  // Done once main() has settled and no tool call is outstanding. The check
+  // runs after the microtasks a result triggers, so a continuation that
+  // calls another tool is waited for too. Done is sent once.
+  const maybeDone = () => {
+    if (done || !mainSettled || pending.size > 0) return
+    setImmediate(() => {
+      if (done || pending.size > 0) return
+      done = true
+      post({ _tag: "Done" })
+    })
+  }
+  port.on("message", (message: ToWorker) => {
+    const call = pending.get(message.id)
+    if (call === undefined) return
+    pending.delete(message.id)
+    if (message.ok) call.resolve(message.value)
+    else call.reject(fromFailure(message.failure))
+    maybeDone()
+  })
+
+  const stdout = new WorkerWritable({
+    write(chunk, _encoding, callback) {
+      post({ _tag: "Output", text: String(chunk) })
+      callback()
+    },
+  })
+
+  const sandbox: Record<string, unknown> = {
+    console: new Console({ stdout, colorMode: false }),
+    fetch,
+    process: undefined,
+  }
+  for (const name of data.tools) {
+    sandbox[name] = (params: unknown) =>
+      new Promise((resolve, reject) => {
+        const id = nextId++
+        pending.set(id, { resolve, reject })
+        try {
+          post({ _tag: "Call", id, name, params })
+        } catch (error) {
+          // The params cannot be copied to the parent.
+          pending.delete(id)
+          reject(error)
+          maybeDone()
+        }
+      })
+  }
+
+  new vm.Script(data.source).runInNewContext(sandbox)
+  ;(sandbox.main as () => Promise<void>)().then(
+    () => {
+      mainSettled = true
+      maybeDone()
+    },
+    (error) => post({ _tag: "Failed", failure: toFailure(error) }),
+  )
+}
+
+const workerSource = `${toFailure}
+${fromFailure}
+(${runScriptWorker})(require)
+`
 
 const homeDirectory = (): Option.Option<string> => {
   const fromEnv = process.env.HOME

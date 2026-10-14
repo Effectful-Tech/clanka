@@ -117,6 +117,10 @@ ${chalk.dim(output.summary)}\n\n`
           case "CompactionEnded": {
             return `${prefix}${chalkInfoHeading(`${infoIcon} Context compacted (${output.reason}):`)} ~${numberFormat.format(output.tokensBefore)} tokens to ~${numberFormat.format(output.tokensAfter)}\n\n`
           }
+          case "HistoryAppended":
+          case "HistoryReplaced": {
+            return ""
+          }
         }
       }),
       Stream.catchIf(

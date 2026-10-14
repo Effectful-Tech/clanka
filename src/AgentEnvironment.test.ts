@@ -9,6 +9,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient"
 import * as HttpServer from "effect/http/HttpServer"
 import * as Layer from "effect/Layer"
 import * as MutableRef from "effect/MutableRef"
+import * as Option from "effect/Option"
 import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
 import type * as AiError from "effect/ai/AiError"
@@ -22,7 +23,9 @@ import * as RpcServer from "effect/rpc/RpcServer"
 import * as NodeFs from "node:fs"
 import * as NodePath from "node:path"
 import * as Agent from "./Agent.ts"
+import * as AgentEnvironment from "./AgentEnvironment.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
+import type * as AgentOutput from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
 
 // =============================================================================
@@ -104,13 +107,14 @@ type Respond = (
 ) => Stream.Stream<Response.StreamPartEncoded, AiError.AiError>
 
 // An Agent on the provided executor and a scripted model that records every
-// call. The summarizer is the call without tools.
+// call and output. The summarizer is the call without tools.
 const makeAgent = (options: {
   readonly respond: Respond
   readonly compaction?: Partial<Compaction.CompactionConfigService> | undefined
 }) =>
   Effect.gen(function* () {
     const calls: Array<Call> = []
+    const outputs: Array<AgentOutput.Output> = []
     const record = (prompt: Prompt.Prompt, tools: ReadonlyArray<unknown>) => {
       const call: Call = { prompt, isSummarizer: tools.length === 0 }
       calls.push(call)
@@ -145,7 +149,11 @@ const makeAgent = (options: {
       agent.send({ prompt }).pipe(
         Effect.flatMap((stream) =>
           stream.pipe(
-            Stream.runDrain,
+            Stream.runForEach((output) =>
+              Effect.sync(() => {
+                outputs.push(output)
+              }),
+            ),
             Effect.as(""),
             Effect.catchTag("AgentFinished", (finished) =>
               Effect.succeed(finished.summary),
@@ -163,7 +171,7 @@ const makeAgent = (options: {
         Effect.scoped,
         Effect.exit,
       )
-    return { agent, calls, send }
+    return { agent, calls, outputs, send }
   })
 
 // --- fixtures ----------------------------------------------------------------
@@ -432,5 +440,90 @@ await sleep(60000)`),
         Effect.provide(executorLayer),
       ),
     )
+
+    it.live("two scripts in one response send the update once", () =>
+      Effect.gen(function* () {
+        let rootCalls = 0
+        const { calls, send } = yield* makeAgent({
+          respond: () =>
+            rootCalls++ === 0
+              ? Stream.make(
+                  toolCall(`await changeDirectory("pkg")`),
+                  toolCall(`await changeDirectory("pkg")`),
+                )
+              : Stream.fromIterable(text("done")),
+        })
+        const exit = yield* send("hello")
+
+        assert.deepStrictEqual(exit, Exit.succeed("done"))
+        assert.strictEqual(environmentUpdates(calls[1]!.prompt).length, 1)
+      }).pipe(
+        Effect.scoped,
+        Effect.timeout("4 seconds"),
+        Effect.provide(executorLayer),
+      ),
+    )
+
+    it.live("a delegate's update is reported as the delegate's output", () =>
+      Effect.gen(function* () {
+        let rootCalls = 0
+        const { outputs, send } = yield* makeAgent({
+          respond: (call) => {
+            if (isChild(call)) {
+              return Stream.make(toolCall(`await taskComplete("child done")`))
+            }
+            return rootCalls++ === 0
+              ? Stream.make(
+                  toolCall(`await changeDirectory("pkg")
+await delegate({ prompt: "TASK-CHILD" })`),
+                )
+              : Stream.fromIterable(text("done"))
+          },
+        })
+        const exit = yield* send("hello")
+
+        assert.deepStrictEqual(exit, Exit.succeed("done"))
+        const childUpdates = outputs.flatMap((output) =>
+          output._tag === "SubagentPart" &&
+          output.part._tag === "EnvironmentUpdated"
+            ? [{ id: output.id, update: output.part.update }]
+            : [],
+        )
+        assert.strictEqual(childUpdates.length, 1)
+        assert.strictEqual(childUpdates[0]!.id, 1)
+        assert.include(childUpdates[0]!.update, "PKG-RULES")
+      }).pipe(
+        Effect.scoped,
+        Effect.timeout("4 seconds"),
+        Effect.provide(executorLayer),
+      ),
+    )
   })
 }
+
+// A directory named `..pkg` is inside the startup directory, so the walk
+// stops there and leaves out the AGENTS.md above it.
+it.effect("discovery stops at the startup directory", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const root = yield* makeProject
+    const startup = NodePath.join(root, "start")
+    const cwd = NodePath.join(startup, "..pkg")
+    yield* fs.makeDirectory(cwd, { recursive: true })
+    yield* fs.writeFileString(
+      NodePath.join(startup, "AGENTS.md"),
+      "START-RULES",
+    )
+
+    const discovered = yield* AgentEnvironment.discover({
+      cwd,
+      startup,
+      home: Option.none(),
+    })
+
+    assert.deepStrictEqual(
+      discovered.instructions.map((item) => item.content),
+      ["START-RULES"],
+    )
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+)

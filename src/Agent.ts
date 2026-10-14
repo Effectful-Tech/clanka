@@ -11,7 +11,6 @@ import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
 import type * as HttpClient from "effect/http/HttpClient"
 import type {
   CurrentDirectory,
-  DelegateResult,
   DirectoryChanger,
   ImageAttacher,
   ImageAttachment,
@@ -289,8 +288,7 @@ ${content}
     >()
     const children = new Map<string, Child>()
     // Finished turns waiting to be pushed to the model.
-    const completions: Array<{ readonly child: Child; readonly turn: Turn }> =
-      []
+    const completions: Array<Turn> = []
     let wakeUp: (() => void) | undefined
     const notify = () => {
       const resume = wakeUp
@@ -303,13 +301,9 @@ ${content}
       Array.Array.from(children.values()).filter(
         (child) => child.turn.status === "running",
       )
-    const hasUndelivered = () => completions.some(({ turn }) => !turn.delivered)
+    const hasUndelivered = () => completions.some((turn) => !turn.delivered)
 
-    const finishTurn = (
-      child: Child,
-      turn: Turn,
-      exit: Exit.Exit<string, unknown>,
-    ) =>
+    const finishTurn = (turn: Turn, exit: Exit.Exit<string, unknown>) =>
       Effect.sync(() => {
         if (Exit.isSuccess(exit)) {
           turn.status = "completed"
@@ -323,20 +317,20 @@ ${content}
         Queue.offerUnsafe(
           output,
           new SubagentComplete({
-            id: child.id,
+            id: turn.agentId,
             summary: turn.output ?? "",
             status: turn.status,
           }),
         )
         if (!turn.delivered) {
-          completions.push({ child, turn })
+          completions.push(turn)
         }
         Deferred.doneUnsafe(turn.done, Effect.void)
         notify()
       })
 
-    // Starts a turn of a child in its own fiber, with this run's services
-    // and the sub-agent model.
+    // Runs the child's current turn in its own fiber, with this run's
+    // services and the sub-agent model.
     const startTurn = Effect.fnUntraced(function* (options: {
       readonly child: Child
       readonly prompt: string
@@ -345,15 +339,7 @@ ${content}
       readonly background: boolean
     }) {
       const { child } = options
-      const turn: Turn = {
-        status: "running",
-        output: undefined,
-        // Foreground results go straight back to the script.
-        delivered: !options.background,
-        done: Deferred.makeUnsafe(),
-        fiber: undefined,
-      }
-      child.turn = turn
+      const turn = child.turn
       const display = opts.display && !options.background
       const stream = spawn({
         agentId: child.id,
@@ -385,17 +371,15 @@ ${content}
                 case "SubagentComplete":
                   Queue.offerUnsafe(output, part)
                   break
-                case "SubagentPart":
-                  if (display) Queue.offerUnsafe(output, part)
-                  break
                 default:
-                  if (display) {
-                    Queue.offerUnsafe(
-                      output,
-                      new SubagentPart({ id: child.id, part }),
-                    )
-                  }
-                  break
+                  // Background agents only report start and completion.
+                  if (!display) break
+                  Queue.offerUnsafe(
+                    output,
+                    part._tag === "SubagentPart"
+                      ? part
+                      : new SubagentPart({ id: child.id, part }),
+                  )
               }
             }
             return Effect.void
@@ -406,17 +390,19 @@ ${content}
           ),
         )
       }).pipe(
-        Effect.onExit((exit) => finishTurn(child, turn, exit)),
+        Effect.onExit((exit) => finishTurn(turn, exit)),
         Effect.provide(subagentModel),
         Effect.provideService(SubagentModel, subagentModel),
         Effect.provideContext(runContext),
         Effect.forkIn(runScope, { startImmediately: true }),
       )
-      return turn
     })
 
-    const childResult = (child: Child): SubagentResult =>
-      makeResult(String(child.id), child.turn.status, child.turn.output)
+    // Leaves `output` out when unset, so the result stays JSON for RPC.
+    const childResult = ({ id, turn }: Child): SubagentResult =>
+      turn.output === undefined
+        ? { id: String(id), status: turn.status }
+        : { id: String(id), status: turn.status, output: turn.output }
 
     const lookupChild = (id: string) =>
       Effect.suspend(() => {
@@ -430,9 +416,18 @@ ${content}
 
     const subagents: Subagents = {
       delegate: Effect.fnUntraced(function* ({ prompt, background }) {
-        const child = makeChild(agentCounter++, prompt)
-        children.set(String(child.id), child)
-        const turn = yield* startTurn({
+        const agentId = agentCounter++
+        const child: Child = {
+          id: agentId,
+          prompt,
+          history: MutableRef.make(Prompt.empty),
+          mailbox: makeMailbox(),
+          turn: makeTurn(agentId, background),
+        }
+        const id = String(child.id)
+        children.set(id, child)
+        const turn = child.turn
+        yield* startTurn({
           child,
           label: prompt,
           prompt: `You have been asked using the "delegate" function to complete the following task. Try to avoid using the "delegate" function yourself unless strictly necessary:
@@ -441,11 +436,7 @@ ${prompt}`,
           background,
         })
         if (background) {
-          return makeResult(
-            String(child.id),
-            "running",
-            undefined,
-          ) as DelegateResult
+          return { id, status: "running" }
         }
         // Foreground: a failure crashes the script, as before. Interrupting
         // the script stops the agent.
@@ -459,11 +450,7 @@ ${prompt}`,
             ),
           )
         }
-        return makeResult(
-          String(child.id),
-          "completed",
-          turn.output,
-        ) as DelegateResult
+        return { id, status: "completed", output: turn.output ?? "" }
       }),
       waitAgents: Effect.fnUntraced(function* (ids) {
         const targets =
@@ -490,6 +477,7 @@ ${prompt}`,
           child.mailbox.notify()
           return childResult(child)
         }
+        child.turn = makeTurn(child.id, true)
         yield* startTurn({
           child,
           prompt: message,
@@ -681,7 +669,7 @@ ${prompt}`,
         // Completion pushes from background sub-agents. These have their own
         // queue: the steering path above cuts the model stream short.
         if (completions.length > 0) {
-          const pushes = completions.splice(0).filter(({ turn }) => {
+          const pushes = completions.splice(0).filter((turn) => {
             if (turn.delivered) return false
             turn.delivered = true
             return true
@@ -690,9 +678,9 @@ ${prompt}`,
             MutableRef.update(
               prompt,
               Prompt.concat(
-                pushes.map(({ child, turn }) => ({
+                pushes.map((turn) => ({
                   role: "user" as const,
-                  content: `<subagent id="${child.id}" status="${turn.status}">
+                  content: `<subagent id="${turn.agentId}" status="${turn.status}">
 ${Compaction.capOutput(turn.output ?? "").output}
 </subagent>`,
                 })),
@@ -1010,6 +998,7 @@ interface Child {
 }
 
 interface Turn {
+  readonly agentId: number
   status: SubagentStatus
   output: string | undefined
   /** Whether the model has seen this result. Undelivered results are pushed. */
@@ -1018,35 +1007,19 @@ interface Turn {
   fiber: Fiber.Fiber<string, AiError.AiError> | undefined
 }
 
-const makeChild = (id: number, prompt: string): Child => ({
-  id,
-  prompt,
-  history: MutableRef.make(Prompt.empty),
-  mailbox: makeMailbox(),
-  // Replaced by the first `startTurn` before anything reads it.
-  turn: {
-    status: "running",
-    output: undefined,
-    delivered: true,
-    done: Deferred.makeUnsafe(),
-    fiber: undefined,
-  },
+const makeTurn = (agentId: number, background: boolean): Turn => ({
+  agentId,
+  status: "running",
+  output: undefined,
+  // Foreground results go straight back to the script.
+  delivered: !background,
+  done: Deferred.makeUnsafe(),
+  fiber: undefined,
 })
-
-const makeResult = (
-  id: string,
-  status: SubagentStatus,
-  output: string | undefined,
-): SubagentResult =>
-  output === undefined ? { id, status } : { id, status, output }
 
 const causeMessage = (cause: Cause.Cause<unknown>): string => {
   const error = Cause.squash(cause)
-  return AiError.isAiError(error)
-    ? error.message
-    : error instanceof Error
-      ? error.message
-      : String(error)
+  return error instanceof Error ? error.message : String(error)
 }
 
 const retryPolicy = Schedule.min([

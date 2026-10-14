@@ -89,9 +89,8 @@ export type SubagentResult = typeof SubagentResult.Type
  * @category Models
  */
 export const DelegateResult = Schema.Struct({
-  id: Schema.String,
+  ...SubagentResult.fields,
   status: Schema.Literals(["completed", "running"]),
-  output: Schema.optional(Schema.String),
 })
 
 /**
@@ -832,57 +831,35 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         return `Success. Updated the following files:\n${out.join("\n")}`
       }, Effect.orDie),
       delegate: Effect.fn("AgentTools.delegate")(function* (options: unknown) {
-        const { prompt, background } = yield* decodeDelegateOptions(
-          options,
-        ).pipe(
-          Effect.mapError(
-            () =>
-              'delegate requires an options object, for example: delegate({ prompt: "..." }) or delegate({ prompt: "...", background: true }).',
-          ),
-        )
+        const { prompt, background = false } = yield* decodeDelegate(options)
         yield* Effect.logInfo(`Calling "delegate"`).pipe(
-          Effect.annotateLogs({ background: background ?? false }),
+          Effect.annotateLogs({ background }),
         )
         const subagents = yield* SubagentExecutor
-        return yield* subagents.delegate({
-          prompt,
-          background: background ?? false,
-        })
+        return yield* subagents.delegate({ prompt, background })
       }),
-      waitAgents: Effect.fn("AgentTools.waitAgents")(function* (ids: unknown) {
-        const decoded = yield* decodeAgentIds(ids).pipe(
-          Effect.mapError(
-            () =>
-              'waitAgents takes an optional array of agent ids, for example: waitAgents(["3", "4"]).',
-          ),
-        )
+      waitAgents: Effect.fn("AgentTools.waitAgents")(function* (
+        input: unknown,
+      ) {
+        const ids = yield* decodeWaitAgents(input)
         yield* Effect.logInfo(`Calling "waitAgents"`).pipe(
-          Effect.annotateLogs({ ids: decoded }),
+          Effect.annotateLogs({ ids }),
         )
         const subagents = yield* SubagentExecutor
-        return yield* subagents.waitAgents(decoded)
+        return yield* subagents.waitAgents(ids)
       }),
       messageAgent: Effect.fn("AgentTools.messageAgent")(function* (
-        options: unknown,
+        input: unknown,
       ) {
-        const decoded = yield* decodeMessageAgentOptions(options).pipe(
-          Effect.mapError(
-            () =>
-              'messageAgent requires an options object, for example: messageAgent({ id: "3", message: "..." }).',
-          ),
-        )
+        const options = yield* decodeMessageAgent(input)
         yield* Effect.logInfo(`Calling "messageAgent"`).pipe(
-          Effect.annotateLogs({ id: decoded.id }),
+          Effect.annotateLogs({ id: options.id }),
         )
         const subagents = yield* SubagentExecutor
-        return yield* subagents.messageAgent(decoded)
+        return yield* subagents.messageAgent(options)
       }),
-      stopAgent: Effect.fn("AgentTools.stopAgent")(function* (id: unknown) {
-        if (typeof id !== "string") {
-          return yield* Effect.fail(
-            'stopAgent requires an agent id, for example: stopAgent("3").',
-          )
-        }
+      stopAgent: Effect.fn("AgentTools.stopAgent")(function* (input: unknown) {
+        const id = yield* decodeStopAgent(input)
         yield* Effect.logInfo(`Calling "stopAgent"`).pipe(
           Effect.annotateLogs({ id }),
         )
@@ -935,14 +912,31 @@ export const AgentToolHandlersTest = AgentToolHandlersNoDeps.pipe(
   ]),
 )
 
-const decodeDelegateOptions = Schema.decodeUnknownEffect(
+// Scripts pass tool arguments undecoded. Invalid input fails with a usage
+// message the model can act on.
+const decodeParams = <S extends Schema.Decoder<unknown>>(
+  schema: S,
+  usage: string,
+) => {
+  const decode = Schema.decodeUnknownEffect(schema)
+  return (input: unknown) => Effect.mapError(decode(input), () => usage)
+}
+
+const decodeDelegate = decodeParams(
   AgentTools.tools.delegate.parametersSchema,
+  'delegate requires an options object, for example: delegate({ prompt: "..." }) or delegate({ prompt: "...", background: true }).',
 )
-const decodeAgentIds = Schema.decodeUnknownEffect(
+const decodeWaitAgents = decodeParams(
   AgentTools.tools.waitAgents.parametersSchema,
+  'waitAgents takes an optional array of agent ids, for example: waitAgents(["3", "4"]).',
 )
-const decodeMessageAgentOptions = Schema.decodeUnknownEffect(
+const decodeMessageAgent = decodeParams(
   AgentTools.tools.messageAgent.parametersSchema,
+  'messageAgent requires an options object, for example: messageAgent({ id: "3", message: "..." }).',
+)
+const decodeStopAgent = decodeParams(
+  AgentTools.tools.stopAgent.parametersSchema,
+  'stopAgent requires an agent id, for example: stopAgent("3").',
 )
 
 class ApplyPatchError extends Data.TaggedClass("ApplyPatchError")<{

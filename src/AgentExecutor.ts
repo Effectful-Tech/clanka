@@ -431,7 +431,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
           const local = yield* makeLocal(options)
           const requestResumes = new Map<
             number,
-            (effect: Effect.Effect<Schema.Json, string>) => void
+            (effect: Effect.Effect<unknown, string>) => void
           >()
           let requestId = 0
 
@@ -457,10 +457,14 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
               // Sends a request to the client and waits for its response.
               // IDs come from a server-wide counter, so concurrent and nested
               // execute streams never collide.
-              const request = (request: typeof AgentRequest.Type) =>
-                Effect.callback<Schema.Json, string>((resume) => {
+              // The client answers with the value of the matching callback.
+              const request = <A>(request: typeof AgentRequest.Type) =>
+                Effect.callback<A, string>((resume) => {
                   const id = requestId++
-                  requestResumes.set(id, resume)
+                  requestResumes.set(
+                    id,
+                    resume as (effect: Effect.Effect<unknown, string>) => void,
+                  )
                   Queue.offerUnsafe(queue, { _tag: "Request", id, request })
                   return Effect.sync(() => {
                     requestResumes.delete(id)
@@ -470,32 +474,31 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(options: {
                 local.execute({
                   script,
                   onTaskComplete: (summary) =>
-                    Effect.asVoid(request({ _tag: "TaskComplete", summary })),
+                    request<void>({ _tag: "TaskComplete", summary }),
                   subagents: {
-                    delegate: ({ prompt, background }) =>
-                      request({ _tag: "Delegate", prompt, background }).pipe(
-                        Effect.orDie,
-                        Effect.map((value) => value as DelegateResult),
+                    delegate: (options) =>
+                      Effect.orDie(
+                        request<DelegateResult>({
+                          _tag: "Delegate",
+                          ...options,
+                        }),
                       ),
                     waitAgents: (ids) =>
-                      request({ _tag: "WaitAgents", ids }).pipe(
-                        Effect.map(
-                          (value) => value as ReadonlyArray<SubagentResult>,
-                        ),
-                      ),
-                    messageAgent: ({ id, message }) =>
-                      request({ _tag: "MessageAgent", id, message }).pipe(
-                        Effect.map((value) => value as SubagentResult),
-                      ),
+                      request<ReadonlyArray<SubagentResult>>({
+                        _tag: "WaitAgents",
+                        ids,
+                      }),
+                    messageAgent: (options) =>
+                      request<SubagentResult>({
+                        _tag: "MessageAgent",
+                        ...options,
+                      }),
                     stopAgent: (id) =>
-                      request({ _tag: "StopAgent", id }).pipe(
-                        Effect.map((value) => value as SubagentResult),
-                      ),
-                    listAgents: request({ _tag: "ListAgents" }).pipe(
-                      Effect.orDie,
-                      Effect.map(
-                        (value) => value as ReadonlyArray<SubagentInfo>,
-                      ),
+                      request<SubagentResult>({ _tag: "StopAgent", id }),
+                    listAgents: Effect.orDie(
+                      request<ReadonlyArray<SubagentInfo>>({
+                        _tag: "ListAgents",
+                      }),
                     ),
                   },
                   onImage(image) {
@@ -617,17 +620,11 @@ const handleRequest = (
     case "TaskComplete":
       return opts.onTaskComplete(request.summary)
     case "Delegate":
-      return opts.subagents.delegate({
-        prompt: request.prompt,
-        background: request.background,
-      })
+      return opts.subagents.delegate(request)
     case "WaitAgents":
       return opts.subagents.waitAgents(request.ids)
     case "MessageAgent":
-      return opts.subagents.messageAgent({
-        id: request.id,
-        message: request.message,
-      })
+      return opts.subagents.messageAgent(request)
     case "StopAgent":
       return opts.subagents.stopAgent(request.id)
     case "ListAgents":

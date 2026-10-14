@@ -289,6 +289,45 @@ console.log("BUSY" + "_LOOP_FINISHED")`)
         ),
     )
 
+    it.live("runs tool calls chained after the script returns", () =>
+      Effect.gen(function* () {
+        const output = yield* runScript(`
+sleep(100).then(() => {
+  console.log("FIRST" + "_CONTINUATION")
+  return sleep(100).then(() => console.log("SECOND" + "_CONTINUATION"))
+})
+console.log("MAIN" + "_DONE")`)
+        assert.include(output, "MAIN_DONE")
+        assert.include(output, "FIRST_CONTINUATION")
+        assert.include(output, "SECOND_CONTINUATION")
+      }).pipe(Effect.timeout("3 seconds"), Effect.provide(executorLayer({}))),
+    )
+
+    // The timeout is the watchdog: a script left waiting fails the test.
+    it.live(
+      "ends a script whose worker exits while a tool call is running",
+      () =>
+        Effect.gen(function* () {
+          const executor = yield* AgentExecutor.AgentExecutor
+          const output = yield* executor
+            .execute({
+              // `delegate` never finishes. The worker then exits through
+              // the host's `process`, the way a crashed worker would.
+              script: `
+delegate({ prompt: "never finishes" })
+sleep(100).then(() => console.constructor.constructor("return process")().exit(7))`,
+              onTaskComplete: () => Effect.void,
+              subagents: {
+                ...subagentsUnavailable,
+                delegate: () => Effect.never,
+              },
+              onImage: () => Effect.void,
+            })
+            .pipe(Stream.mkString)
+          assert.include(output, "code 7")
+        }).pipe(Effect.timeout("3 seconds"), Effect.provide(executorLayer({}))),
+    )
+
     it.live("keeps the start and end of long bash output", () =>
       Effect.gen(function* () {
         const executor = yield* AgentExecutor.AgentExecutor

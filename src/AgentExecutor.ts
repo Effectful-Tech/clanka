@@ -250,7 +250,6 @@ export const makeLocal = Effect.fnUntraced(function* <
     // JavaScript can still be stopped. Tool calls are sent back here and run
     // as before.
     yield* Effect.gen(function* () {
-      let running = 0
       const source = prepareScript(opts.script)
       const settled = yield* Deferred.make<void>()
       const worker = yield* Effect.acquireRelease(
@@ -264,10 +263,10 @@ export const makeLocal = Effect.fnUntraced(function* <
         (worker) => Effect.promise(() => worker.terminate()),
       )
 
+      // Every call is answered, interrupted ones included: the worker only
+      // reports Done once nothing is outstanding. While the script is being
+      // stopped the worker is already gone and the answer is dropped.
       const respond = (id: number, exit: Exit.Exit<unknown, unknown>) => {
-        // An interrupted call is never settled, as before: it only happens
-        // while the script is being stopped.
-        if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return
         const message: ToWorker = Exit.isSuccess(exit)
           ? { id, ok: true, value: exit.value }
           : { id, ok: false, failure: toFailure(Cause.squash(exit.cause)) }
@@ -290,12 +289,8 @@ export const makeLocal = Effect.fnUntraced(function* <
             currentDirectory,
           ),
         )
-        running++
         const fiber = trackFiber(runFork(entry.handler(message.params, {})))
-        fiber.addObserver((exit) => {
-          running--
-          respond(message.id, exit)
-        })
+        fiber.addObserver((exit) => respond(message.id, exit))
       }
 
       worker.on("message", (message: FromWorker) => {
@@ -334,10 +329,6 @@ export const makeLocal = Effect.fnUntraced(function* <
       })
 
       yield* Deferred.await(settled)
-      while (true) {
-        yield* Effect.yieldNow
-        if (running === 0) break
-      }
     }).pipe(
       // Stops the worker on every exit: done, failed, timed out, interrupted.
       Effect.scoped,
@@ -907,12 +898,26 @@ const fromFailure = (failure) => {
 
 const pending = new Map()
 let nextId = 0
+let mainSettled = false
+let done = false
+// Done once main() has settled and no tool call is outstanding. The check
+// runs after the microtasks a result triggers, so a continuation that calls
+// another tool is waited for too. Done is sent once.
+const maybeDone = () => {
+  if (done || !mainSettled || pending.size > 0) return
+  setImmediate(() => {
+    if (done || pending.size > 0) return
+    done = true
+    post({ _tag: "Done" })
+  })
+}
 parentPort.on("message", (message) => {
   const call = pending.get(message.id)
   if (call === undefined) return
   pending.delete(message.id)
   if (message.ok) call.resolve(message.value)
   else call.reject(fromFailure(message.failure))
+  maybeDone()
 })
 
 const stdout = new Writable({
@@ -938,13 +943,17 @@ for (const name of workerData.tools) {
         // The params cannot be copied to the parent.
         pending.delete(id)
         reject(error)
+        maybeDone()
       }
     })
 }
 
 new vm.Script(workerData.source).runInNewContext(sandbox, { timeout: 1000 })
 sandbox.main().then(
-  () => post({ _tag: "Done" }),
+  () => {
+    mainSettled = true
+    maybeDone()
+  },
   (error) => post({ _tag: "Failed", failure: toFailure(error) }),
 )
 `

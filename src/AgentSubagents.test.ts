@@ -551,6 +551,7 @@ await taskComplete("done")`,
       it.effect("stopAgent cancels the agent and everything under it", () =>
         Effect.gen(function* () {
           const grandchildStarted = Latch.makeUnsafe(false)
+          const childBlocked = Latch.makeUnsafe(false)
           let childInterrupted = false
           let grandchildInterrupted = false
           let interruptedBeforeNextTurn = false
@@ -573,7 +574,11 @@ await taskComplete("done")`,
                 case "child":
                   return call.index === 0
                     ? Stream.make(spawnBackground("TASK-GRANDCHILD"))
-                    : Stream.never.pipe(
+                    : Stream.fromEffect(
+                        Effect.sync(() => childBlocked.openUnsafe()).pipe(
+                          Effect.andThen(Effect.never),
+                        ),
+                      ).pipe(
                         Stream.ensuring(
                           Effect.sync(() => {
                             childInterrupted = true
@@ -586,6 +591,7 @@ await taskComplete("done")`,
                       return Stream.make(spawnBackground("TASK-CHILD"))
                     case 1:
                       return Stream.fromEffect(grandchildStarted.await).pipe(
+                        Stream.tap(() => childBlocked.await),
                         Stream.as(
                           toolCall(
                             "stop",

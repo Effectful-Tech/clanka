@@ -425,8 +425,13 @@ describe("Acp", () => {
                 : assistantSays(summary),
             {
               ...executor,
-              execute: ({ onSubagent }) =>
-                Stream.fromEffect(onSubagent(prompt)),
+              execute: ({ subagents }) =>
+                Stream.fromEffect(
+                  subagents.delegate({ prompt, background: false }),
+                ).pipe(
+                  Stream.map((result) => result.output ?? ""),
+                  Stream.orDie,
+                ),
             },
           )
           const created = yield* server.request(1, "session/new", {

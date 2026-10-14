@@ -11,6 +11,7 @@ import * as RpcClient from "effect/rpc/RpcClient"
 import * as RpcSerialization from "effect/rpc/RpcSerialization"
 import * as RpcServer from "effect/rpc/RpcServer"
 import * as AgentExecutor from "./AgentExecutor.ts"
+import { subagentsUnavailable } from "./AgentTools.ts"
 
 const withRpc = <A, E, R>(
   f: (
@@ -59,30 +60,46 @@ describe("RPC subagent executor", () => {
           [
             executor
               .execute({
-                script: 'console.log("first:" + await delegate("first"))',
+                script:
+                  'console.log("first:" + (await delegate({ prompt: "first" })).output)',
                 onTaskComplete: () => Effect.void,
                 onImage: () => Effect.void,
-                onSubagent: (prompt) =>
-                  Effect.gen(function* () {
-                    assert.isTrue(prompt.endsWith("\n\nfirst"))
-                    yield* Deferred.succeed(firstStarted, undefined)
-                    yield* Deferred.await(secondStarted)
-                    return "first-output"
-                  }),
+                subagents: {
+                  ...subagentsUnavailable,
+                  delegate: ({ prompt }) =>
+                    Effect.gen(function* () {
+                      assert.strictEqual(prompt, "first")
+                      yield* Deferred.succeed(firstStarted, undefined)
+                      yield* Deferred.await(secondStarted)
+                      return {
+                        id: "1",
+                        status: "completed" as const,
+                        output: "first-output",
+                      }
+                    }),
+                },
               })
               .pipe(Stream.runCollect),
             executor
               .execute({
-                script: 'console.log("second:" + await delegate("second"))',
+                script:
+                  'console.log("second:" + (await delegate({ prompt: "second" })).output)',
                 onTaskComplete: () => Effect.void,
                 onImage: () => Effect.void,
-                onSubagent: (prompt) =>
-                  Effect.gen(function* () {
-                    assert.isTrue(prompt.endsWith("\n\nsecond"))
-                    yield* Deferred.succeed(secondStarted, undefined)
-                    yield* Deferred.await(firstStarted)
-                    return "second-output"
-                  }),
+                subagents: {
+                  ...subagentsUnavailable,
+                  delegate: ({ prompt }) =>
+                    Effect.gen(function* () {
+                      assert.strictEqual(prompt, "second")
+                      yield* Deferred.succeed(secondStarted, undefined)
+                      yield* Deferred.await(firstStarted)
+                      return {
+                        id: "2",
+                        status: "completed" as const,
+                        output: "second-output",
+                      }
+                    }),
+                },
               })
               .pipe(Stream.runCollect),
           ],
@@ -101,29 +118,45 @@ describe("RPC subagent executor", () => {
         Effect.gen(function* () {
           const output = yield* executor
             .execute({
-              script: 'console.log("parent:" + await delegate("outer"))',
+              script:
+                'console.log("parent:" + (await delegate({ prompt: "outer" })).output)',
               onTaskComplete: () => Effect.void,
               onImage: () => Effect.void,
-              onSubagent: (prompt) =>
-                Effect.gen(function* () {
-                  assert.isTrue(prompt.endsWith("\n\nouter"))
-                  const childOutput = yield* executor
-                    .execute({
-                      script: 'console.log("child:" + await delegate("inner"))',
-                      onTaskComplete: () => Effect.void,
-                      onImage: () => Effect.void,
-                      onSubagent: (innerPrompt) =>
-                        Effect.sync(() => {
-                          assert.isTrue(innerPrompt.endsWith("\n\ninner"))
-                          return "inner-output"
-                        }),
-                    })
-                    .pipe(Stream.runCollect)
-                  assert.isTrue(
-                    childOutput.join("").endsWith("child:inner-output\n"),
-                  )
-                  return childOutput.join("").trim().split("\n").at(-1)!
-                }),
+              subagents: {
+                ...subagentsUnavailable,
+                delegate: ({ prompt }) =>
+                  Effect.gen(function* () {
+                    assert.strictEqual(prompt, "outer")
+                    const childOutput = yield* executor
+                      .execute({
+                        script:
+                          'console.log("child:" + (await delegate({ prompt: "inner" })).output)',
+                        onTaskComplete: () => Effect.void,
+                        onImage: () => Effect.void,
+                        subagents: {
+                          ...subagentsUnavailable,
+                          delegate: ({ prompt: innerPrompt }) =>
+                            Effect.sync(() => {
+                              assert.strictEqual(innerPrompt, "inner")
+                              return {
+                                id: "2",
+                                status: "completed" as const,
+                                output: "inner-output",
+                              }
+                            }),
+                        },
+                      })
+                      .pipe(Stream.runCollect)
+                    assert.isTrue(
+                      childOutput.join("").endsWith("child:inner-output\n"),
+                    )
+                    return {
+                      id: "1",
+                      status: "completed" as const,
+                      output: childOutput.join("").trim().split("\n").at(-1)!,
+                    }
+                  }),
+              },
             })
             .pipe(Stream.runCollect)
           assert.isTrue(output.join("").endsWith("parent:child:inner-output\n"))

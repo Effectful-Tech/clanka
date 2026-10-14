@@ -6,6 +6,7 @@ import * as NodeOs from "node:os"
 import * as NodeVm from "node:vm"
 import { Writable } from "node:stream"
 import { Worker } from "node:worker_threads"
+import type * as NodeWorkerThreads from "node:worker_threads"
 import {
   AgentToolHandlers,
   type DelegateResult,
@@ -15,6 +16,7 @@ import {
   AgentToolsWithSearch,
   CommandLimits,
   CurrentDirectory,
+  defaultBashTimeout,
   DirectoryChanger,
   ImageAttacher,
   type ImageAttachment,
@@ -120,10 +122,11 @@ export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
  */
 export interface Limits {
   /**
-   * The longest a single `bash` command may run. It is also the default when
-   * the model passes no `timeoutMs`, and the `bash` description states it.
+   * The longest a single `bash` or `gh` command may run. For `bash` it is
+   * also the default when the model passes no `timeoutMs`, and the `bash`
+   * description states it.
    *
-   * Defaults to 10 minutes.
+   * Defaults to 10 minutes for `bash` and no limit for `gh`, as before.
    */
   readonly commandTimeout?: Duration.Input | undefined
   /**
@@ -185,10 +188,12 @@ export const makeLocal = Effect.fnUntraced(function* <
     currentDirectory = target
     return target
   }, Effect.orDie)
+  const commandTimeout = options.limits?.commandTimeout
   const commandLimits: typeof CommandLimits.Service = {
-    timeout: Duration.fromInputUnsafe(
-      options.limits?.commandTimeout ?? CommandLimits.defaultValue().timeout,
-    ),
+    timeout:
+      commandTimeout === undefined
+        ? undefined
+        : Duration.fromInputUnsafe(commandTimeout),
     outputChars: options.limits?.commandOutputChars,
   }
   const scriptTimeout = Option.map(
@@ -201,7 +206,7 @@ export const makeLocal = Effect.fnUntraced(function* <
     hasSearch ? AgentToolsWithSearch : AgentTools,
     // Same tool id, so the handler is unchanged. Only the description, which
     // states the timeout, differs.
-    Toolkit.make(makeBashTool(commandLimits.timeout)),
+    Toolkit.make(makeBashTool(commandLimits.timeout ?? defaultBashTimeout)),
     (options.tools as unknown as Toolkit.Toolkit<{}>) ?? Toolkit.empty,
   )
   const tools = yield* AllTools
@@ -833,16 +838,39 @@ type ToWorker =
   | { readonly id: number; readonly ok: true; readonly value: unknown }
   | { readonly id: number; readonly ok: false; readonly failure: Failure }
 
-const isErrorLike = (value: unknown): value is Error =>
-  Object.prototype.toString.call(value) === "[object Error]"
+// -------------------------------------------
+// Script worker
+//
+// The worker runs from source text (`new Worker(source, { eval: true })`), so
+// it needs no separate file in the package, the CLI bundle or a consumer's
+// bundle. The source is built from the function declarations below with
+// `Function.prototype.toString`, which keeps them type-checked and shared
+// with the parent instead of copied into a string.
+//
+// Constraints, because the text of each function must run on its own:
+// - Each must be a `function` declaration, so its text carries its name.
+// - They may reference only each other, their parameters and globals: no
+//   imports, module-level values or closures.
+// - Node modules are loaded with the `load` parameter, which the source text
+//   binds to the worker's `require`. Bundlers rewrite a bare `require` (the
+//   CLI bundle turns it into `__require`), but leave a parameter alone.
+// - A bundler must keep their bodies whole. Renaming identifiers
+//   consistently is fine. Transforms that move code out of a body, such as
+//   coverage instrumentation or helper hoisting, are not. Only the
+//   library build and the CLI bundle are checked.
+// The executor tests run every script through this worker, so they catch a
+// broken constraint in the source. They run the source, not a bundle, so a
+// bundler's rewrites only show up when the built output is run.
+// -------------------------------------------
 
-const toFailure = (value: unknown): Failure => {
-  if (isErrorLike(value)) {
+function toFailure(value: unknown): Failure {
+  if (Object.prototype.toString.call(value) === "[object Error]") {
+    const error = value as Error
     return {
       _tag: "Error",
-      name: value.name,
-      message: value.message,
-      stack: value.stack,
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
     }
   }
   try {
@@ -852,7 +880,7 @@ const toFailure = (value: unknown): Failure => {
   }
 }
 
-const fromFailure = (failure: Failure): unknown => {
+function fromFailure(failure: Failure): unknown {
   if (failure._tag === "Value") return failure.value
   const error = new Error(failure.message)
   error.name = failure.name
@@ -862,100 +890,99 @@ const fromFailure = (failure: Failure): unknown => {
 
 /**
  * Runs one script inside a vm context with the same globals as before, and
- * forwards console output and tool calls to the parent. `toFailure` and
- * `fromFailure` above are mirrored here.
+ * forwards console output and tool calls to the parent.
  */
-const workerSource = `
-const { parentPort, workerData } = require("node:worker_threads")
-const vm = require("node:vm")
-const { Console } = require("node:console")
-const { Writable } = require("node:stream")
-
-// Like the parent process: a stray rejection must not end the script.
-process.on("uncaughtException", () => {})
-process.on("unhandledRejection", () => {})
-
-const post = (message) => parentPort.postMessage(message)
-
-const toFailure = (value) => {
-  if (Object.prototype.toString.call(value) === "[object Error]") {
-    return { _tag: "Error", name: value.name, message: value.message, stack: value.stack }
+function runScriptWorker(load: (id: string) => unknown): void {
+  // Type-only references: the casts are erased, so the text stays
+  // self-contained.
+  const { parentPort, workerData } = load(
+    "node:worker_threads",
+  ) as typeof NodeWorkerThreads
+  const vm = load("node:vm") as typeof NodeVm
+  const { Console } = load("node:console") as typeof NodeConsole
+  const { Writable: WorkerWritable } = load("node:stream") as {
+    readonly Writable: typeof Writable
   }
-  try {
-    return { _tag: "Value", value: structuredClone(value) }
-  } catch {
-    return { _tag: "Value", value: String(value) }
-  }
-}
+  const port = parentPort!
+  const data = workerData as WorkerData
 
-const fromFailure = (failure) => {
-  if (failure._tag === "Value") return failure.value
-  const error = new Error(failure.message)
-  error.name = failure.name
-  if (failure.stack !== undefined) error.stack = failure.stack
-  return error
-}
+  // Like the parent process: a stray rejection must not end the script.
+  process.on("uncaughtException", () => {})
+  process.on("unhandledRejection", () => {})
 
-const pending = new Map()
-let nextId = 0
-let mainSettled = false
-let done = false
-// Done once main() has settled and no tool call is outstanding. The check
-// runs after the microtasks a result triggers, so a continuation that calls
-// another tool is waited for too. Done is sent once.
-const maybeDone = () => {
-  if (done || !mainSettled || pending.size > 0) return
-  setImmediate(() => {
-    if (done || pending.size > 0) return
-    done = true
-    post({ _tag: "Done" })
-  })
-}
-parentPort.on("message", (message) => {
-  const call = pending.get(message.id)
-  if (call === undefined) return
-  pending.delete(message.id)
-  if (message.ok) call.resolve(message.value)
-  else call.reject(fromFailure(message.failure))
-  maybeDone()
-})
+  const post = (message: FromWorker) => port.postMessage(message)
 
-const stdout = new Writable({
-  write(chunk, _encoding, callback) {
-    post({ _tag: "Output", text: chunk.toString() })
-    callback()
-  },
-})
-
-const sandbox = {
-  console: new Console({ stdout, colorMode: false }),
-  fetch,
-  process: undefined,
-}
-for (const name of workerData.tools) {
-  sandbox[name] = (params) =>
-    new Promise((resolve, reject) => {
-      const id = nextId++
-      pending.set(id, { resolve, reject })
-      try {
-        post({ _tag: "Call", id, name, params })
-      } catch (error) {
-        // The params cannot be copied to the parent.
-        pending.delete(id)
-        reject(error)
-        maybeDone()
-      }
+  const pending = new Map<
+    number,
+    {
+      readonly resolve: (value: unknown) => void
+      readonly reject: (error: unknown) => void
+    }
+  >()
+  let nextId = 0
+  let mainSettled = false
+  let done = false
+  // Done once main() has settled and no tool call is outstanding. The check
+  // runs after the microtasks a result triggers, so a continuation that
+  // calls another tool is waited for too. Done is sent once.
+  const maybeDone = () => {
+    if (done || !mainSettled || pending.size > 0) return
+    setImmediate(() => {
+      if (done || pending.size > 0) return
+      done = true
+      post({ _tag: "Done" })
     })
+  }
+  port.on("message", (message: ToWorker) => {
+    const call = pending.get(message.id)
+    if (call === undefined) return
+    pending.delete(message.id)
+    if (message.ok) call.resolve(message.value)
+    else call.reject(fromFailure(message.failure))
+    maybeDone()
+  })
+
+  const stdout = new WorkerWritable({
+    write(chunk, _encoding, callback) {
+      post({ _tag: "Output", text: String(chunk) })
+      callback()
+    },
+  })
+
+  const sandbox: Record<string, unknown> = {
+    console: new Console({ stdout, colorMode: false }),
+    fetch,
+    process: undefined,
+  }
+  for (const name of data.tools) {
+    sandbox[name] = (params: unknown) =>
+      new Promise((resolve, reject) => {
+        const id = nextId++
+        pending.set(id, { resolve, reject })
+        try {
+          post({ _tag: "Call", id, name, params })
+        } catch (error) {
+          // The params cannot be copied to the parent.
+          pending.delete(id)
+          reject(error)
+          maybeDone()
+        }
+      })
+  }
+
+  new vm.Script(data.source).runInNewContext(sandbox)
+  ;(sandbox.main as () => Promise<void>)().then(
+    () => {
+      mainSettled = true
+      maybeDone()
+    },
+    (error) => post({ _tag: "Failed", failure: toFailure(error) }),
+  )
 }
 
-new vm.Script(workerData.source).runInNewContext(sandbox, { timeout: 1000 })
-sandbox.main().then(
-  () => {
-    mainSettled = true
-    maybeDone()
-  },
-  (error) => post({ _tag: "Failed", failure: toFailure(error) }),
-)
+const workerSource = `${toFailure}
+${fromFailure}
+(${runScriptWorker})(require)
 `
 
 const homeDirectory = (): Option.Option<string> => {

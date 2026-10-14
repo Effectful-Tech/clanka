@@ -200,6 +200,14 @@ export class ImageAttacher extends Context.Service<
 >()("clanka/AgentTools/ImageAttacher") {}
 
 /**
+ * The `bash` timeout when the caller sets none.
+ *
+ * @since 1.0.0
+ * @category Context
+ */
+export const defaultBashTimeout: Duration.Duration = Duration.minutes(10)
+
+/**
  * The limits the `bash` and `gh` handlers apply to a single command. The
  * executor sets them from its `limits` option.
  *
@@ -207,13 +215,16 @@ export class ImageAttacher extends Context.Service<
  * @category Context
  */
 export class CommandLimits extends Context.Reference<{
-  /** The longest a `bash` command may run, and its default timeout. */
-  readonly timeout: Duration.Duration
+  /**
+   * The longest a `bash` or `gh` command may run, as set by the caller.
+   * Unset, `bash` uses `defaultBashTimeout` and `gh` has no limit.
+   */
+  readonly timeout: Duration.Duration | undefined
   /** The most characters of output held per command. */
   readonly outputChars: number | undefined
 }>("clanka/AgentTools/CommandLimits", {
   defaultValue: () => ({
-    timeout: Duration.minutes(10),
+    timeout: undefined,
     outputChars: undefined,
   }),
 }) {}
@@ -364,7 +375,7 @@ export const AgentTools = Toolkit.make(
     success: Schema.String,
     dependencies: [CurrentDirectory],
   }),
-  makeBashTool(CommandLimits.defaultValue().timeout),
+  makeBashTool(defaultBashTimeout),
   Tool.make("applyPatch", {
     description:
       "Add, update or remove multiple files with a git diff / unified diff / wrapped patch.",
@@ -465,25 +476,45 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     const pathService = yield* Path.Path
     const webSearch = yield* ExaSearch.ExaSearch
     const fetchMarkdown = yield* WebToMarkdown.WebToMarkdown
-    const execute = Effect.fn(function* (command: ChildProcess.Command) {
-      const { outputChars } = yield* CommandLimits
-      const handle = yield* spawner.spawn(command)
-      return yield* handle.all.pipe(
-        Stream.decodeText,
-        outputChars === undefined
-          ? Stream.mkString
-          : collectBounded(outputChars),
-        Effect.flatMap(
-          Effect.fnUntraced(function* (output) {
-            const exitCode = yield* handle.exitCode
-            if (exitCode === 0) return output
-            return yield* Effect.die(
-              new Error(`Command failed with exit code ${exitCode}: ${output}`),
-            )
-          }),
-        ),
-      )
-    }, Effect.scoped)
+    const execute = Effect.fn(
+      function* (
+        command: ChildProcess.Command,
+        _timeout: Duration.Duration | undefined,
+      ) {
+        const { outputChars } = yield* CommandLimits
+        const handle = yield* spawner.spawn(command)
+        return yield* handle.all.pipe(
+          Stream.decodeText,
+          outputChars === undefined
+            ? Stream.mkString
+            : collectBounded(outputChars),
+          Effect.flatMap(
+            Effect.fnUntraced(function* (output) {
+              const exitCode = yield* handle.exitCode
+              if (exitCode === 0) return output
+              return yield* Effect.die(
+                new Error(
+                  `Command failed with exit code ${exitCode}: ${output}`,
+                ),
+              )
+            }),
+          ),
+        )
+      },
+      (effect, _command, timeout) =>
+        timeout === undefined
+          ? effect
+          : Effect.timeoutOrElse(effect, {
+              duration: timeout,
+              orElse: () =>
+                Effect.die(
+                  new Error(
+                    `Command timed out after ${Duration.toMillis(timeout)}ms`,
+                  ),
+                ),
+            }),
+      Effect.scoped,
+    )
 
     /**
      * Image branch of `readFile`: the bytes go to the `ImageAttacher` for
@@ -678,7 +709,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
       }),
       bash: Effect.fn("AgentTools.bash")(function* (options) {
         const limits = yield* CommandLimits
-        const maxMs = Duration.toMillis(limits.timeout)
+        const maxMs = Duration.toMillis(limits.timeout ?? defaultBashTimeout)
         const timeoutMs = Math.min(options.timeoutMs ?? maxMs, maxMs)
         yield* Effect.logInfo(`Calling "bash"`).pipe(
           Effect.annotateLogs({
@@ -691,13 +722,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           cwd,
           stdin: "ignore",
         })
-        return yield* execute(cmd).pipe(
-          Effect.timeoutOrElse({
-            duration: timeoutMs,
-            orElse: () =>
-              Effect.die(new Error(`Command timed out after ${timeoutMs}ms`)),
-          }),
-        )
+        return yield* execute(cmd, Duration.millis(timeoutMs))
       }, Effect.orDie),
       gh: Effect.fn("AgentTools.gh")(function* (args) {
         yield* Effect.logInfo(`Calling "gh"`).pipe(
@@ -708,7 +733,8 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           cwd,
           stdin: "ignore",
         })
-        return yield* execute(cmd)
+        const { timeout } = yield* CommandLimits
+        return yield* execute(cmd, timeout)
       }, Effect.orDie),
       webSearch: Effect.fn("AgentTools.webSearch")(function* (options) {
         yield* Effect.logInfo(`Calling "webSearch"`).pipe(

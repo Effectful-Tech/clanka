@@ -12,6 +12,9 @@ import * as HttpServer from "effect/http/HttpServer"
 import * as RpcClient from "effect/rpc/RpcClient"
 import * as RpcSerialization from "effect/rpc/RpcSerialization"
 import * as RpcServer from "effect/rpc/RpcServer"
+import * as NodeFs from "node:fs"
+import * as NodeOs from "node:os"
+import * as NodePath from "node:path"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import { subagentsUnavailable } from "./AgentTools.ts"
 
@@ -226,6 +229,29 @@ const runScript = (script: string) =>
       .pipe(Stream.mkString),
   )
 
+// Puts a `gh` that only sleeps first on PATH, so the test needs neither the
+// real CLI nor the network.
+const withSlowGh = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const directory = NodeFs.mkdtempSync(
+        NodePath.join(NodeOs.tmpdir(), "slow-gh-"),
+      )
+      const gh = NodePath.join(directory, "gh")
+      NodeFs.writeFileSync(gh, "#!/bin/sh\nsleep 10\n")
+      NodeFs.chmodSync(gh, 0o755)
+      const path = process.env.PATH
+      process.env.PATH = `${directory}${NodePath.delimiter}${path}`
+      return { directory, path }
+    }),
+    () => effect,
+    ({ directory, path }) =>
+      Effect.sync(() => {
+        process.env.PATH = path
+        NodeFs.rmSync(directory, { recursive: true, force: true })
+      }),
+  )
+
 for (const [mode, executorLayer] of Object.entries(executorModes)) {
   describe(`${mode} executor limits`, () => {
     it.live("stops a bash command at the caller's command timeout", () =>
@@ -242,6 +268,25 @@ try {
       }).pipe(
         Effect.timeout("3 seconds"),
         Effect.provide(executorLayer({ commandTimeout: "300 millis" })),
+      ),
+    )
+
+    it.live("stops a gh command at the caller's command timeout", () =>
+      Effect.gen(function* () {
+        const output = yield* runScript(`
+try {
+  await gh(["api", "user"])
+  console.log("GH" + "_RETURNED")
+} catch (error) {
+  console.log("REJECTED:", String(error))
+}`)
+        assert.include(output, "REJECTED:")
+        assert.match(output, /timed out/i)
+        assert.notInclude(output, "GH_RETURNED")
+      }).pipe(
+        Effect.timeout("3 seconds"),
+        Effect.provide(executorLayer({ commandTimeout: "300 millis" })),
+        withSlowGh,
       ),
     )
 

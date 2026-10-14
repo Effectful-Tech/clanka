@@ -312,6 +312,62 @@ await sleep(60000)`,
         Effect.provide(executorLayer({})),
       ),
     )
+
+    // The caller is still busy with output from before the change when it
+    // interrupts. Whatever the script got done by then, the environment
+    // returned matches it: the marker shows it got past `changeDirectory`.
+    it.live(
+      "returns the environment when the caller interrupts while behind",
+      () =>
+        Effect.gen(function* () {
+          const executor = yield* AgentExecutor.AgentExecutor
+          const { environment } = yield* executor.capabilities
+          const marker = NodePath.join(environment.cwd, "changed")
+          const busy = yield* Deferred.make<void>()
+          const updates: Array<AgentExecutor.EnvironmentUpdate> = []
+          const fiber = yield* executor
+            .execute({
+              script: `console.log("before")
+await sleep(50)
+await changeDirectory("..")
+await writeFile({ path: ${JSON.stringify(marker)}, content: "" })
+await sleep(60000)`,
+              environment,
+              onEnvironment: (update) =>
+                Effect.sync(() => {
+                  updates.push(update)
+                }),
+              onTaskComplete: () => Effect.void,
+              subagents: subagentsUnavailable,
+              onImage: () => Effect.void,
+            })
+            .pipe(
+              Stream.runForEach(() =>
+                Deferred.succeed(busy, undefined).pipe(
+                  Effect.andThen(Effect.never),
+                ),
+              ),
+              Effect.forkScoped,
+            )
+          yield* Deferred.await(busy)
+          yield* Effect.gen(function* () {
+            while (!NodeFs.existsSync(marker)) {
+              yield* Effect.sleep("10 millis")
+            }
+          }).pipe(Effect.timeoutOption("500 millis"))
+          const changed = NodeFs.existsSync(marker)
+          yield* Fiber.interrupt(fiber)
+          assert.strictEqual(updates.length, 1)
+          assert.strictEqual(
+            updates[0]!.environment.cwd,
+            changed ? NodePath.dirname(environment.cwd) : environment.cwd,
+          )
+        }).pipe(
+          Effect.scoped,
+          Effect.timeout("5 seconds"),
+          Effect.provide(executorLayer({})),
+        ),
+    )
   })
 
   describe(`${mode} executor limits`, () => {

@@ -29,13 +29,6 @@ import * as AgentExecutor from "./AgentExecutor.ts"
 import type * as AgentOutput from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
 
-// =============================================================================
-// AGENTS.md and skills found after `changeDirectory` reach the model as
-// `<environment-update>` user messages, while the system prompt stays the
-// same. These drive the real Agent loop and a real executor over a project
-// with its own instructions at the root and in `pkg/`.
-// =============================================================================
-
 const skill = (name: string) => `---
 name: ${name}
 description: The ${name} skill.
@@ -95,8 +88,6 @@ const executors = {
     ),
   ),
 }
-
-// --- harness -----------------------------------------------------------------
 
 interface Call {
   readonly prompt: Prompt.Prompt
@@ -175,8 +166,6 @@ const makeAgent = (options: {
     return { agent, calls, outputs, send }
   })
 
-// --- fixtures ----------------------------------------------------------------
-
 let callId = 0
 const toolCall = (script: string): Response.StreamPartEncoded => ({
   type: "tool-call",
@@ -233,9 +222,6 @@ const conversationJson = (prompt: Prompt.Prompt) =>
     encodePrompt(prompt).content.filter((message) => message.role !== "system"),
   )
 
-const filler = (word: string, n: number) =>
-  (word + " ").repeat(Math.ceil(n / (word.length + 1))).slice(0, n)
-
 // Two earlier turns of about 7.5k tokens each, so there is something to
 // summarize.
 const fatHistory = Prompt.fromMessages(
@@ -259,15 +245,13 @@ const fatHistory = Prompt.fromMessages(
           id: `old-${n}`,
           name: "execute",
           isFailure: false,
-          result: filler("log", 30_000),
+          result: "log ".repeat(7_500),
           providerExecuted: false,
         }),
       ],
     }),
   ]),
 )
-
-// --- tests -------------------------------------------------------------------
 
 for (const [mode, executorLayer] of Object.entries(executors)) {
   describe(`environment updates (${mode} executor)`, () => {
@@ -276,14 +260,17 @@ for (const [mode, executorLayer] of Object.entries(executors)) {
       () =>
         Effect.gen(function* () {
           let rootCalls = 0
-          const { calls, send } = yield* makeAgent({
+          const { calls, outputs, send } = yield* makeAgent({
             respond: (call) => {
               if (isChild(call)) {
                 return Stream.make(toolCall(`await taskComplete("child done")`))
               }
               switch (rootCalls++) {
                 case 0:
-                  return Stream.make(toolCall(`await changeDirectory("pkg")`))
+                  return Stream.make(
+                    toolCall(`await changeDirectory("pkg")`),
+                    toolCall(`await changeDirectory("pkg")`),
+                  )
                 case 1:
                   return Stream.make(toolCall(`await changeDirectory("..")`))
                 case 2:
@@ -341,6 +328,15 @@ for (const [mode, executorLayer] of Object.entries(executors)) {
             "PKG-RULES",
             "a delegate started after the cd sees pkg's instructions",
           )
+          const childUpdates = outputs.flatMap((output) =>
+            output._tag === "SubagentPart" &&
+            output.part._tag === "EnvironmentUpdated"
+              ? [{ id: output.id, update: output.part.update }]
+              : [],
+          )
+          assert.strictEqual(childUpdates.length, 1)
+          assert.strictEqual(childUpdates[0]!.id, 1)
+          assert.include(childUpdates[0]!.update, "PKG-RULES")
         }).pipe(
           Effect.scoped,
           Effect.timeout("4 seconds"),
@@ -348,57 +344,8 @@ for (const [mode, executorLayer] of Object.entries(executors)) {
         ),
     )
 
-    it.live("the instructions are present once after compaction", () =>
-      Effect.gen(function* () {
-        let rootCalls = 0
-        const { agent, calls, send } = yield* makeAgent({
-          compaction: {
-            contextWindow: 40_000,
-            reserveTokens: 4_000,
-            keepRecentTokens: 9_000,
-          },
-          respond: (call) => {
-            if (call.isSummarizer) {
-              return Stream.fromIterable([
-                ...text("EARLIER-WORK-SUMMARY"),
-                finish(6_000, "stop"),
-              ])
-            }
-            return rootCalls++ === 0
-              ? // Usage over the threshold compacts before the next call.
-                Stream.make(
-                  toolCall(`await changeDirectory("pkg")`),
-                  finish(37_000),
-                )
-              : Stream.fromIterable([...text("done"), finish(9_000, "stop")])
-          },
-        })
-        MutableRef.set(agent.history, fatHistory)
-        const exit = yield* send("continue")
-
-        assert.deepStrictEqual(exit, Exit.succeed("done"))
-        assert.isTrue(
-          calls.some((call) => call.isSummarizer),
-          "compaction ran",
-        )
-        const last = calls.at(-1)!.prompt
-        assert.include(conversationJson(last), "EARLIER-WORK-SUMMARY")
-        assert.strictEqual(
-          conversationJson(last).split("PKG-RULES").length - 1,
-          1,
-          "pkg's instructions appear exactly once",
-        )
-      }).pipe(
-        Effect.scoped,
-        Effect.timeout("4 seconds"),
-        Effect.provide(executorLayer),
-      ),
-    )
-
-    // Compaction drops the delivered update from the history before the
-    // refresh renders it again, so a cancelled refresh must not leave it lost.
     it.live(
-      "instructions dropped by an interrupted compaction reach the model",
+      "compaction preserves instructions through cancellation and refreshes them once",
       () =>
         Effect.gen(function* () {
           const executor = yield* AgentExecutor.AgentExecutor
@@ -438,7 +385,7 @@ for (const [mode, executorLayer] of Object.entries(executors)) {
                 case 1:
                   return Stream.make(
                     toolCall(`console.log("next")`),
-                    finish(9_000),
+                    finish(37_000),
                   )
                 default:
                   return Stream.fromIterable([
@@ -456,6 +403,17 @@ for (const [mode, executorLayer] of Object.entries(executors)) {
           const exit = yield* send("continue")
 
           assert.deepStrictEqual(exit, Exit.succeed("done"))
+          assert.strictEqual(
+            conversationJson(
+              calls.filter((call) => !call.isSummarizer)[1]!.prompt,
+            ).split("PKG-RULES").length - 1,
+            1,
+            "cancellation preserves the delivered instructions",
+          )
+          assert.include(
+            conversationJson(calls.at(-1)!.prompt),
+            "EARLIER-WORK-SUMMARY",
+          )
           assert.strictEqual(
             conversationJson(calls.at(-1)!.prompt).split("PKG-RULES").length -
               1,
@@ -509,64 +467,6 @@ await sleep(60000)`),
           ),
           "pkg's instructions are sent after the next script",
         )
-      }).pipe(
-        Effect.scoped,
-        Effect.timeout("4 seconds"),
-        Effect.provide(executorLayer),
-      ),
-    )
-
-    it.live("two scripts in one response send the update once", () =>
-      Effect.gen(function* () {
-        let rootCalls = 0
-        const { calls, send } = yield* makeAgent({
-          respond: () =>
-            rootCalls++ === 0
-              ? Stream.make(
-                  toolCall(`await changeDirectory("pkg")`),
-                  toolCall(`await changeDirectory("pkg")`),
-                )
-              : Stream.fromIterable(text("done")),
-        })
-        const exit = yield* send("hello")
-
-        assert.deepStrictEqual(exit, Exit.succeed("done"))
-        assert.strictEqual(environmentUpdates(calls[1]!.prompt).length, 1)
-      }).pipe(
-        Effect.scoped,
-        Effect.timeout("4 seconds"),
-        Effect.provide(executorLayer),
-      ),
-    )
-
-    it.live("a delegate's update is reported as the delegate's output", () =>
-      Effect.gen(function* () {
-        let rootCalls = 0
-        const { outputs, send } = yield* makeAgent({
-          respond: (call) => {
-            if (isChild(call)) {
-              return Stream.make(toolCall(`await taskComplete("child done")`))
-            }
-            return rootCalls++ === 0
-              ? Stream.make(
-                  toolCall(`await changeDirectory("pkg")
-await delegate({ prompt: "TASK-CHILD" })`),
-                )
-              : Stream.fromIterable(text("done"))
-          },
-        })
-        const exit = yield* send("hello")
-
-        assert.deepStrictEqual(exit, Exit.succeed("done"))
-        const childUpdates = outputs.flatMap((output) =>
-          output._tag === "SubagentPart" &&
-          output.part._tag === "EnvironmentUpdated"
-            ? [{ id: output.id, update: output.part.update }]
-            : [],
-        )
-        assert.strictEqual(childUpdates.length, 1)
-        assert.strictEqual(childUpdates[0]!.id, 1)
-        assert.include(childUpdates[0]!.update, "PKG-RULES")
       }).pipe(
         Effect.scoped,
         Effect.timeout("4 seconds"),

@@ -29,6 +29,7 @@ import {
 } from "./AgentTools.ts"
 import * as Image from "./Image.ts"
 import { ToolkitRenderer } from "./ToolkitRenderer.ts"
+import * as AgentEnvironment from "./AgentEnvironment.ts"
 import * as AgentSkills from "./AgentSkills.ts"
 import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
 import type * as HttpClient from "effect/http/HttpClient"
@@ -78,6 +79,25 @@ export class AgentExecutor extends Context.Service<
        */
       readonly environment?: ExecutionEnvironment | undefined
     }): Effect.Effect<Schema.Json>
+    /**
+     * Render the AGENTS.md files and skills that apply to the environment's
+     * directory and that the model has not seen yet. The agent calls it once
+     * after the scripts of a model response, so one update covers all of
+     * them; `execute` itself never renders one.
+     *
+     * With `reset`, everything sent since the system prompt is forgotten and
+     * rendered again. Any operation that rewrites the history, such as
+     * compaction, must do this, so the environment's record of what the
+     * model has seen matches the history.
+     *
+     * Optional: without it the agent sends no updates.
+     */
+    readonly renderEnvironment?:
+      | ((
+          environment: ExecutionEnvironment,
+          options?: { readonly reset?: boolean | undefined } | undefined,
+        ) => Effect.Effect<EnvironmentUpdate>)
+      | undefined
   }
 >()("clanka/AgentExecutor") {}
 
@@ -96,10 +116,11 @@ export interface ExecuteOptions {
   /**
    * Receives the environment the script left behind, once, when the script
    * ends. It is also called when the script fails, times out or is
-   * interrupted. Pass its `environment` to the next `execute` of the same
-   * agent.
+   * interrupted. Pass it to the next `execute` of the same agent.
    */
-  readonly onEnvironment: (update: EnvironmentUpdate) => Effect.Effect<void>
+  readonly onEnvironment: (
+    environment: ExecutionEnvironment,
+  ) => Effect.Effect<void>
   /**
    * Fails with a message for the script when the task cannot be completed
    * yet, for example while sub-agents are still running.
@@ -122,8 +143,9 @@ export interface ExecuteOptions {
 
 /**
  * The sub-agents of the agent running a script. `delegate` also receives the
- * environment the new agent starts in: a copy of the script's environment at
- * the moment `delegate` was called.
+ * environment the new agent starts in: the script's directory at the moment
+ * `delegate` was called, with an update holding everything that applies to
+ * it beyond the system prompt.
  *
  * @since 1.0.0
  * @category Models
@@ -166,9 +188,14 @@ export class ExecutionEnvironment extends Schema.Class<ExecutionEnvironment>(
 export class EnvironmentUpdate extends Schema.Class<EnvironmentUpdate>(
   "clanka/AgentExecutor/EnvironmentUpdate",
 )({
+  /**
+   * The environment once `update` is in the history: what it describes
+   * counts as seen. Store it only together with the update.
+   */
   environment: ExecutionEnvironment,
   /**
-   * Text for the model about what changed, or `None` when nothing is new.
+   * AGENTS.md files and skills the model has not seen yet, or `None` when
+   * nothing is new. The agent wraps it in an `<environment-update>` message.
    */
   update: Schema.Option(Schema.String),
 }) {}
@@ -191,7 +218,10 @@ export type LoopToolHandlers = Readonly<
  */
 export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
   toolsDts: Schema.String,
-  agentsMd: Schema.Option(Schema.String),
+  /**
+   * The startup AGENTS.md as rendered for the system prompt, with its path.
+   */
+  instructions: Schema.Option(Schema.String),
   supportsSearch: Schema.Boolean,
   /**
    * The environment of an agent's first script.
@@ -301,8 +331,12 @@ const makeLocalWith = Effect.fnUntraced(function* <
     readonly executor: AgentExecutor["Service"]
     readonly execute: (
       options: ExecuteOptions,
-      onChange: (update: EnvironmentUpdate) => Effect.Effect<void>,
+      onChange: (environment: ExecutionEnvironment) => Effect.Effect<void>,
     ) => Stream.Stream<string>
+    readonly renderEnvironment: (
+      environment: ExecutionEnvironment,
+      options?: { readonly reset?: boolean | undefined } | undefined,
+    ) => Effect.Effect<EnvironmentUpdate>
   },
   never,
   LocalServices<Toolkit>
@@ -310,8 +344,9 @@ const makeLocalWith = Effect.fnUntraced(function* <
   const fs = yield* FileSystem.FileSystem
   const pathService = yield* Path.Path
   const renderer = yield* ToolkitRenderer
+  const startupDirectory = pathService.resolve(options.directory)
   const startupEnvironment = new ExecutionEnvironment({
-    cwd: pathService.resolve(options.directory),
+    cwd: startupDirectory,
     baseline: [],
     seen: [],
   })
@@ -374,13 +409,56 @@ const makeLocalWith = Effect.fnUntraced(function* <
   )
   const toolNames = Array.from(toolEntries.keys())
 
+  // Skills are read with readFile, so there are none without it.
+  const offersSkills = "readFile" in tools.tools
+  const home = homeDirectory()
+  const discoverAt = (cwd: string) =>
+    AgentEnvironment.discover({ cwd, startup: startupDirectory, home }).pipe(
+      Effect.map((discovered) =>
+        offersSkills ? discovered : { ...discovered, skills: [] },
+      ),
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, pathService),
+    )
+  // What applies to the environment's directory and is neither in the
+  // system prompt nor seen yet.
+  const renderEnvironment = Effect.fnUntraced(function* (
+    environment: ExecutionEnvironment,
+    options?: { readonly reset?: boolean | undefined } | undefined,
+  ) {
+    const seen = options?.reset ? [] : environment.seen
+    const known = new Set([...environment.baseline, ...seen])
+    const discovered = yield* discoverAt(environment.cwd)
+    const instructions = discovered.instructions.filter(
+      (item) => !known.has(item.id),
+    )
+    const skills = discovered.skills.filter(
+      (skill) => !known.has(AgentEnvironment.skillId(skill)),
+    )
+    const nothingNew = instructions.length === 0 && skills.length === 0
+    return new EnvironmentUpdate({
+      environment: new ExecutionEnvironment({
+        cwd: environment.cwd,
+        baseline: environment.baseline,
+        seen: [
+          ...seen,
+          ...instructions.map((item) => item.id),
+          ...skills.map(AgentEnvironment.skillId),
+        ],
+      }),
+      update: nothingNew
+        ? Option.none()
+        : Option.some(AgentEnvironment.renderUpdate({ instructions, skills })),
+    })
+  })
+
   if (typeof process !== "undefined") {
     process.on("uncaughtException", () => {})
   }
 
   const execute = Effect.fnUntraced(function* (
     opts: ExecuteOptions,
-    onChange?: (update: EnvironmentUpdate) => Effect.Effect<void>,
+    onChange?: (environment: ExecutionEnvironment) => Effect.Effect<void>,
   ) {
     const output = yield* Queue.unbounded<string, Cause.Done>()
     const console = yield* makeConsole(output)
@@ -390,31 +468,34 @@ const makeLocalWith = Effect.fnUntraced(function* <
     // Owned by this script, so concurrent scripts never see each other's
     // directory.
     let currentDirectory = opts.environment.cwd
+    const currentEnvironment = () =>
+      new ExecutionEnvironment({
+        cwd: currentDirectory,
+        baseline: opts.environment.baseline,
+        seen: opts.environment.seen,
+      })
     // The script continues only once the change has been reported.
     const changeDirectory = (directory: string) =>
       resolveDirectory(currentDirectory, directory).pipe(
         Effect.tap((target) => {
           currentDirectory = target
-          return onChange ? onChange(currentUpdate()) : Effect.void
+          return onChange ? onChange(currentEnvironment()) : Effect.void
         }),
       )
-    const currentUpdate = () =>
-      new EnvironmentUpdate({
-        environment: new ExecutionEnvironment({
-          cwd: currentDirectory,
-          baseline: opts.environment.baseline,
-          seen: opts.environment.seen,
-        }),
-        update: Option.none(),
-      })
 
     const taskServices = Context.empty().pipe(
       Context.add(TaskCompleter, opts.onTaskComplete),
       Context.add(DirectoryChanger, changeDirectory),
       Context.add(SubagentExecutor, {
         ...opts.subagents,
+        // A new agent has only the system prompt, so it gets everything that
+        // applies to the directory.
         delegate: (options) =>
-          opts.subagents.delegate({ ...options, environment: currentUpdate() }),
+          renderEnvironment(currentEnvironment(), { reset: true }).pipe(
+            Effect.flatMap((environment) =>
+              opts.subagents.delegate({ ...options, environment }),
+            ),
+          ),
       }),
       Context.add(ImageAttacher, opts.onImage),
       Context.add(CommandLimits, commandLimits),
@@ -539,7 +620,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
       Effect.provideService(Console.Console, console),
       // Before the output ends, so the caller has it once the stream is done.
       Effect.ensuring(
-        Effect.suspend(() => opts.onEnvironment(currentUpdate())),
+        Effect.suspend(() => opts.onEnvironment(currentEnvironment())),
       ),
       Effect.ensuring(Queue.end(output)),
       Effect.forkScoped,
@@ -550,31 +631,38 @@ const makeLocalWith = Effect.fnUntraced(function* <
 
   const executor = AgentExecutor.of({
     capabilities: Effect.gen(function* () {
-      const agentsMd = yield* Effect.option(
-        fs.readFileString(pathService.join(options.directory, "AGENTS.md")),
-      )
-      // Skills are read with readFile, so there are none without it.
-      const skills =
-        "readFile" in tools.tools
-          ? yield* AgentSkills.discover({
-              directory: options.directory,
-              homeDirectory: homeDirectory(),
-              hermesHome: Option.fromNullishOr(process.env.HERMES_HOME),
-            }).pipe(
-              Effect.provideService(FileSystem.FileSystem, fs),
-              Effect.provideService(Path.Path, pathService),
-            )
-          : []
+      const startup = yield* discoverAt(startupDirectory)
+      const skills = offersSkills
+        ? yield* AgentSkills.discover({
+            directory: options.directory,
+            homeDirectory: home,
+            hermesHome: Option.fromNullishOr(process.env.HERMES_HOME),
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, pathService),
+          )
+        : []
       return new Capabilities({
         toolsDts,
-        agentsMd,
+        instructions: Option.map(
+          Option.fromNullishOr(startup.instructions.at(-1)),
+          AgentEnvironment.renderInstructions,
+        ),
         supportsSearch: hasSearch,
-        environment: startupEnvironment,
+        environment: new ExecutionEnvironment({
+          cwd: startupDirectory,
+          baseline: [
+            ...startup.instructions.map((item) => item.id),
+            ...skills.map(AgentEnvironment.skillId),
+          ],
+          seen: [],
+        }),
         tools: Object.keys(tools.tools),
         skills,
       })
     }),
     execute: (opts) => execute(opts),
+    renderEnvironment,
     executeUnsafe: (opts) =>
       Effect.suspend(() => {
         const tool = tools.tools[opts.tool as keyof typeof tools.tools]
@@ -615,7 +703,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
       }),
   })
 
-  return { executor, execute }
+  return { executor, execute, renderEnvironment }
 })
 
 /**
@@ -633,10 +721,7 @@ export const makeRpc = Effect.gen(function* () {
       Scope.Scope.useSync((scope) => {
         // Every change is recorded here before the server is told it arrived,
         // so this is current even when the stream is interrupted early.
-        let latest = new EnvironmentUpdate({
-          environment: opts.environment,
-          update: Option.none(),
-        })
+        let latest = opts.environment
         return client
           .execute({
             script: opts.script,
@@ -652,10 +737,7 @@ export const makeRpc = Effect.gen(function* () {
                 case "Request": {
                   const id = part.id
                   if (part.request._tag === "EnvironmentChanged") {
-                    latest = new EnvironmentUpdate({
-                      environment: part.request.environment,
-                      update: Option.none(),
-                    })
+                    latest = part.request.environment
                   }
                   return pipe(
                     handleRequest(opts, part.request),
@@ -674,10 +756,7 @@ export const makeRpc = Effect.gen(function* () {
                   })
                 }
                 case "Environment": {
-                  latest = new EnvironmentUpdate({
-                    environment: part.environment,
-                    update: part.update,
-                  })
+                  latest = part.environment
                   return Effect.void
                 }
               }
@@ -691,6 +770,10 @@ export const makeRpc = Effect.gen(function* () {
             Stream.ensuring(Effect.suspend(() => opts.onEnvironment(latest))),
           )
       }).pipe(Stream.unwrap),
+    renderEnvironment: (environment, options) =>
+      client
+        .renderEnvironment({ environment, reset: options?.reset ?? false })
+        .pipe(Effect.orDie),
     executeUnsafe({ environment, ...options }) {
       return client
         .executeUnsafe(
@@ -784,6 +867,8 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
 
           return Rpcs.of({
             capabilities: () => local.executor.capabilities,
+            renderEnvironment: ({ environment, reset }) =>
+              local.renderEnvironment(environment, { reset }),
             respond: ({ id, response }) => {
               const resume = requestResumes.get(id)
               if (resume) {
@@ -826,12 +911,8 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                   {
                     script,
                     environment,
-                    onEnvironment: (update) =>
-                      Queue.offer(queue, {
-                        _tag: "Environment",
-                        environment: update.environment,
-                        update: update.update,
-                      }),
+                    onEnvironment: (environment) =>
+                      Queue.offer(queue, { _tag: "Environment", environment }),
                     onTaskComplete: (summary) =>
                       request<void>({ _tag: "TaskComplete", summary }),
                     subagents: {
@@ -886,11 +967,11 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                   },
                   // Waits for the client to record the change, so a script
                   // that got past `changeDirectory` never leaves it behind.
-                  (update) =>
+                  (environment) =>
                     Effect.orDie(
                       request<void>({
                         _tag: "EnvironmentChanged",
-                        environment: update.environment,
+                        environment,
                       }),
                     ),
                 ),
@@ -974,7 +1055,7 @@ export const ExecuteOutput = Schema.TaggedUnion({
    * Sent once, when the script ends. Changes before then are sent as
    * `EnvironmentChanged` requests.
    */
-  Environment: EnvironmentUpdate.fields,
+  Environment: { environment: ExecutionEnvironment },
 })
 
 /**
@@ -1004,6 +1085,10 @@ export class Rpcs extends RpcGroup.make(
     }),
     success: ExecuteOutput,
     stream: true,
+  }),
+  Rpc.make("renderEnvironment", {
+    payload: { environment: ExecutionEnvironment, reset: Schema.Boolean },
+    success: EnvironmentUpdate,
   }),
   Rpc.make("executeUnsafe", {
     payload: Schema.Struct({

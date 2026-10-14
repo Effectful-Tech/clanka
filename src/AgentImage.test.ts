@@ -22,7 +22,7 @@ const capabilities = new AgentExecutor.Capabilities({
     baseline: [],
     seen: [],
   }),
-  agentsMd: Option.none(),
+  instructions: Option.none(),
   supportsSearch: false,
   tools: [],
   skills: [],

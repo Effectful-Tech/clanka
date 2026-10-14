@@ -29,7 +29,7 @@ import type * as Model from "effect/ai/Model"
 import * as Prompt from "effect/ai/Prompt"
 import * as HttpClient from "effect/http/HttpClient"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
-import type * as Agent from "./Agent.ts"
+import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import type * as AgentOutput from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
@@ -278,6 +278,7 @@ const historyUpdates = (history: Prompt.Prompt) => {
   for (const message of history.content) {
     if (message.role !== "user" && message.role !== "assistant") continue
     if (Compaction.isSummaryMessage(message)) continue
+    if (Agent.isInjectedMessage(message)) continue
     const sessionUpdate =
       message.role === "user" ? "user_message_chunk" : "agent_message_chunk"
     for (const part of message.content) {

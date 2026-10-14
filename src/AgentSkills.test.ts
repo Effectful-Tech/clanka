@@ -526,7 +526,7 @@ describe("AgentSkills", () => {
         baseline: [],
         seen: [],
       }),
-      agentsMd: Option.none(),
+      instructions: Option.none(),
       supportsSearch: false,
       tools: [],
     })
@@ -845,7 +845,7 @@ const makeExecutor = (skills: ReadonlyArray<AgentSkills.Skill>) =>
           baseline: [],
           seen: [],
         }),
-        agentsMd: Option.none(),
+        instructions: Option.none(),
         supportsSearch: false,
         tools: [],
         skills,

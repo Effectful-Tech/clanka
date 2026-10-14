@@ -289,8 +289,8 @@ export const makeLocal = <Toolkit extends Toolkit.Any = never>(
 
 /**
  * A local executor, plus an `execute` that also reports every change to the
- * environment while the script runs. `layerRpcServer` streams those changes,
- * so its client still has the latest environment when it stops reading.
+ * environment while the script runs. `layerRpcServer` sends those changes to
+ * its client, so the client has the latest environment when it stops reading.
  */
 const makeLocalWith = Effect.fnUntraced(function* <
   Toolkit extends Toolkit.Any = never,
@@ -390,8 +390,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
     // Owned by this script, so concurrent scripts never see each other's
     // directory.
     let currentDirectory = opts.environment.cwd
-    // Reported before the script continues, so the change comes ahead of
-    // any output that follows it.
+    // The script continues only once the change has been reported.
     const changeDirectory = (directory: string) =>
       resolveDirectory(currentDirectory, directory).pipe(
         Effect.tap((target) => {
@@ -632,8 +631,8 @@ export const makeRpc = Effect.gen(function* () {
     capabilities: Effect.orDie(client.capabilities()),
     execute: (opts) =>
       Scope.Scope.useSync((scope) => {
-        // The server sends every change, so this is current even when the
-        // stream is interrupted before the script ends.
+        // Every change is recorded here before the server is told it arrived,
+        // so this is current even when the stream is interrupted early.
         let latest = new EnvironmentUpdate({
           environment: opts.environment,
           update: Option.none(),
@@ -652,6 +651,12 @@ export const makeRpc = Effect.gen(function* () {
                 }
                 case "Request": {
                   const id = part.id
+                  if (part.request._tag === "EnvironmentChanged") {
+                    latest = new EnvironmentUpdate({
+                      environment: part.request.environment,
+                      update: Option.none(),
+                    })
+                  }
                   return pipe(
                     handleRequest(opts, part.request),
                     Effect.exit,
@@ -816,18 +821,17 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                     requestResumes.delete(id)
                   })
                 })
-              const sendEnvironment = (update: EnvironmentUpdate) =>
-                Queue.offer(queue, {
-                  _tag: "Environment",
-                  environment: update.environment,
-                  update: update.update,
-                })
               yield* pipe(
                 local.execute(
                   {
                     script,
                     environment,
-                    onEnvironment: sendEnvironment,
+                    onEnvironment: (update) =>
+                      Queue.offer(queue, {
+                        _tag: "Environment",
+                        environment: update.environment,
+                        update: update.update,
+                      }),
                     onTaskComplete: (summary) =>
                       request<void>({ _tag: "TaskComplete", summary }),
                     subagents: {
@@ -880,7 +884,15 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                       ]),
                     ),
                   },
-                  sendEnvironment,
+                  // Waits for the client to record the change, so a script
+                  // that got past `changeDirectory` never leaves it behind.
+                  (update) =>
+                    Effect.orDie(
+                      request<void>({
+                        _tag: "EnvironmentChanged",
+                        environment: update.environment,
+                      }),
+                    ),
                 ),
                 Stream.runForEachArray((parts) => {
                   for (const part of parts) {
@@ -927,6 +939,11 @@ export const AgentRequest = Schema.TaggedUnion({
   StopAgent: { id: Schema.String },
   ListAgents: {},
   LoopTool: { name: Schema.String, params: Schema.optional(Schema.Json) },
+  /**
+   * The script changed its environment. The client records it before it
+   * responds.
+   */
+  EnvironmentChanged: { environment: ExecutionEnvironment },
 })
 
 /**
@@ -954,8 +971,8 @@ export const ExecuteOutput = Schema.TaggedUnion({
     data: Schema.Uint8Array,
   },
   /**
-   * Sent after every change to the environment and when the script ends.
-   * The client passes the last one it received to `onEnvironment`.
+   * Sent once, when the script ends. Changes before then are sent as
+   * `EnvironmentChanged` requests.
    */
   Environment: EnvironmentUpdate.fields,
 })
@@ -1019,6 +1036,9 @@ const handleRequest = (
       return opts.subagents.stopAgent(request.id)
     case "ListAgents":
       return opts.subagents.listAgents
+    case "EnvironmentChanged":
+      // Recorded by the client before it responds.
+      return Effect.void
     case "LoopTool": {
       const handler = opts.loopTools?.[request.name]
       return handler

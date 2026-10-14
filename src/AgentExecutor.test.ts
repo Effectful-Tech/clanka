@@ -276,7 +276,7 @@ for (const [mode, executorLayer] of Object.entries(executorModes)) {
         const executor = yield* AgentExecutor.AgentExecutor
         const { environment } = yield* executor.capabilities
         const ready = yield* Deferred.make<void>()
-        const updates: Array<AgentExecutor.EnvironmentUpdate> = []
+        const updates: Array<AgentExecutor.ExecutionEnvironment> = []
         const fiber = yield* executor
           .execute({
             script: `await changeDirectory("..")
@@ -302,10 +302,7 @@ await sleep(60000)`,
         yield* Deferred.await(ready)
         yield* Fiber.interrupt(fiber)
         assert.strictEqual(updates.length, 1)
-        assert.strictEqual(
-          updates[0]!.environment.cwd,
-          NodePath.dirname(environment.cwd),
-        )
+        assert.strictEqual(updates[0]!.cwd, NodePath.dirname(environment.cwd))
       }).pipe(
         Effect.scoped,
         Effect.timeout("5 seconds"),
@@ -324,7 +321,7 @@ await sleep(60000)`,
           const { environment } = yield* executor.capabilities
           const marker = NodePath.join(environment.cwd, "changed")
           const busy = yield* Deferred.make<void>()
-          const updates: Array<AgentExecutor.EnvironmentUpdate> = []
+          const updates: Array<AgentExecutor.ExecutionEnvironment> = []
           const fiber = yield* executor
             .execute({
               script: `console.log("before")
@@ -359,7 +356,7 @@ await sleep(60000)`,
           yield* Fiber.interrupt(fiber)
           assert.strictEqual(updates.length, 1)
           assert.strictEqual(
-            updates[0]!.environment.cwd,
+            updates[0]!.cwd,
             changed ? NodePath.dirname(environment.cwd) : environment.cwd,
           )
         }).pipe(

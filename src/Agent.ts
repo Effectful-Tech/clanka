@@ -226,9 +226,7 @@ export const makeWith = Effect.fnUntraced(function* <
 
   const agentsMd =
     options.instructions === undefined
-      ? capabilities.instructions === undefined
-        ? Option.map(capabilities.agentsMd, renderAgentsMd)
-        : Option.some(capabilities.instructions)
+      ? capabilities.instructions
       : Option.map(options.instructions, renderInstructions)
 
   let agentCounter = 0
@@ -327,22 +325,13 @@ export const makeWith = Effect.fnUntraced(function* <
     }
 
     // Committed now, emitted after AgentStart below.
-    MutableRef.update(
-      prompt,
-      Prompt.concat(
-        opts.environmentUpdate === undefined
-          ? opts.prompt
-          : Prompt.concat(
-              opts.prompt,
-              Prompt.make([
-                {
-                  role: "user",
-                  content: wrapEnvironmentUpdate(opts.environmentUpdate),
-                },
-              ]),
-            ),
-      ),
-    )
+    MutableRef.update(prompt, Prompt.concat(opts.prompt))
+    if (opts.environmentUpdate !== undefined) {
+      MutableRef.update(
+        prompt,
+        Prompt.concat(environmentUpdateMessage(opts.environmentUpdate)),
+      )
+    }
 
     const generateSystem =
       typeof opts.system === "function" ? opts.system : defaultSystem
@@ -553,17 +542,11 @@ export const makeWith = Effect.fnUntraced(function* <
         environment,
       }) {
         const agentId = agentCounter++
-        // The update goes into the child's first prompt.
-        const update = environment.update
         const child: Child = {
           id: agentId,
           prompt,
           history: MutableRef.make(Prompt.empty),
-          environment: MutableRef.make(
-            Option.isSome(update)
-              ? update.value.environment
-              : environment.environment,
-          ),
+          environment: MutableRef.make(environment.environment),
           mailbox: makeMailbox(),
           turn: makeTurn(agentId, background),
         }
@@ -576,9 +559,8 @@ export const makeWith = Effect.fnUntraced(function* <
           prompt: `You have been asked using the "delegate" function to complete the following task. Try to avoid using the "delegate" function yourself unless strictly necessary:
 
 ${prompt}`,
-          environmentUpdate: Option.isSome(update)
-            ? update.value.text
-            : undefined,
+          // The update goes into the child's first prompt.
+          environmentUpdate: Option.getOrUndefined(environment.update),
           background,
         })
         if (background) {
@@ -713,44 +695,35 @@ ${prompt}`,
         compactionStarted = true
         maybeSend({ agentId, part: new CompactionStarted({ reason }) })
       })
-    const appendEnvironmentUpdate = (update: AgentExecutor.RenderedUpdate) => {
-      appendHistory(
-        Prompt.make([
-          { role: "user", content: wrapEnvironmentUpdate(update.text) },
-        ]),
+    // The AGENTS.md files and skills for the current directory that the
+    // history does not have yet. Rendered once per response, after all of
+    // its scripts; nothing counts as seen until `applyEnvironmentUpdate` has
+    // put it in the history, so an interrupted response is covered by the
+    // next one. With `reset`, everything is rendered again: any operation
+    // that rewrites the history must do this, because the rewrite drops the
+    // earlier updates.
+    const renderEnvironment = (options?: { readonly reset?: boolean }) =>
+      executor.renderEnvironment?.(opts.environment.current, options) ??
+      Effect.succeed(
+        new AgentExecutor.EnvironmentUpdate({
+          environment: opts.environment.current,
+          update: Option.none(),
+        }),
       )
-      MutableRef.set(opts.environment, update.environment)
-      maybeSend({
-        agentId,
-        part: new EnvironmentUpdated({ update: update.text }),
-      })
-    }
-
     const applyEnvironmentUpdate = (
       update: AgentExecutor.EnvironmentUpdate,
     ) => {
       MutableRef.set(opts.environment, update.environment)
-      if (Option.isSome(update.update)) {
-        appendEnvironmentUpdate(update.update.value)
-      }
+      if (Option.isNone(update.update)) return
+      appendHistory(environmentUpdateMessage(update.update.value))
+      maybeSend({
+        agentId,
+        part: new EnvironmentUpdated({ update: update.update.value }),
+      })
     }
 
-    // One update for every script of a response, rendered against the
-    // environment they left behind. Nothing counts as seen before it is in
-    // the history, so an interrupted response is covered by the next one.
-    const renderEnvironment = Effect.suspend(() =>
-      executor.renderEnvironment === undefined
-        ? Effect.void
-        : executor
-            .renderEnvironment(opts.environment.current)
-            .pipe(Effect.map(applyEnvironmentUpdate)),
-    )
-
-    // Any operation that rewrites the history must refresh the environment:
-    // the rewrite drops earlier updates, so the environment must stop
-    // counting them as seen, and what applies to the current directory is
-    // sent again. The refresh is rendered before the rewrite and both are
-    // committed together, so an interrupt leaves the old history and the old
+    // The refresh is rendered before the rewrite and both are committed
+    // together, so an interrupt leaves the old history and the old
     // environment, which still agree.
     const compactWithEvents = <E, R>(
       reason: Compaction.CompactionReason,
@@ -764,38 +737,30 @@ ${prompt}`,
         compactionStarted = false
         return compaction
       }).pipe(
-        Effect.flatMap((result) =>
-          Option.isNone(result) || executor.refreshEnvironment === undefined
-            ? Effect.succeed({
-                result,
-                refresh: Option.none<AgentExecutor.EnvironmentUpdate>(),
-              })
-            : executor.refreshEnvironment(opts.environment.current).pipe(
-                Effect.map((update) => ({
-                  result,
-                  refresh: Option.some(update),
-                })),
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.succeedNone,
+            onSome: (result) =>
+              Effect.map(renderEnvironment({ reset: true }), (refresh) =>
+                Option.some({ ...result, refresh }),
               ),
+          }),
         ),
         Effect.onExit((exit) =>
           Effect.sync(() => {
             if (!compactionStarted) return
-            const result = Exit.isSuccess(exit)
-              ? exit.value.result
-              : Option.none()
+            const result = Exit.isSuccess(exit) ? exit.value : Option.none()
             let tokensBefore: number
             let tokensAfter: number
             if (Option.isSome(result)) {
-              // Updates in the kept messages are sent again by the refresh,
-              // so they are dropped here to appear once.
+              // The refresh sends the kept updates again, so they are
+              // dropped here to appear once.
               replaceHistory(
-                executor.refreshEnvironment === undefined
-                  ? result.value.prompt
-                  : Prompt.fromMessages(
-                      result.value.prompt.content.filter(
-                        (message) => !isEnvironmentUpdate(message),
-                      ),
-                    ),
+                Prompt.fromMessages(
+                  result.value.prompt.content.filter(
+                    (message) => !isEnvironmentUpdate(message),
+                  ),
+                ),
               )
               lastContextTokens = undefined
               tokensBefore = result.value.tokensBefore
@@ -809,12 +774,11 @@ ${prompt}`,
               agentId,
               part: new CompactionEnded({ reason, tokensBefore, tokensAfter }),
             })
-            if (Exit.isSuccess(exit) && Option.isSome(exit.value.refresh)) {
-              applyEnvironmentUpdate(exit.value.refresh.value)
+            if (Option.isSome(result)) {
+              applyEnvironmentUpdate(result.value.refresh)
             }
           }),
         ),
-        Effect.map(({ result }) => result),
       )
 
     // Script execution
@@ -827,9 +791,9 @@ ${prompt}`,
         executor.execute({
           script: normalizedScript,
           environment: opts.environment.current,
-          onEnvironment: (update) =>
+          onEnvironment: (environment) =>
             Effect.sync(() => {
-              MutableRef.set(opts.environment, update.environment)
+              MutableRef.set(opts.environment, environment)
             }),
           subagents,
           onTaskComplete,
@@ -1162,7 +1126,7 @@ ${Compaction.capOutput(turn.output ?? "").output}
         // After the tool results too, and before any steering messages.
         if (scriptsRan) {
           scriptsRan = false
-          yield* renderEnvironment
+          applyEnvironmentUpdate(yield* renderEnvironment())
         }
         if (conversationMode && !hadToolCall && mailbox.messages.size === 0) {
           // The run is not over while children are running or their results
@@ -1293,38 +1257,25 @@ const retryPolicy = Schedule.min([
   Schedule.spaced(5000),
 ]).pipe(Schedule.jittered)
 
-// For executors that do not render `Capabilities.instructions`.
-const renderAgentsMd = (content: string) => `# AGENTS.md
-
-The following instructions are from AGENTS.md in the directory the agent
-started in. You do not need to read this file again.
-
-**ALWAYS follow these instructions when completing tasks**:
-
-<!-- AGENTS.md start -->
-${content}
-<!-- AGENTS.md end -->`
-
 const environmentUpdateOpen = "<environment-update>"
-const environmentUpdateClose = "</environment-update>"
 
-const wrapEnvironmentUpdate = (text: string) =>
-  `${environmentUpdateOpen}\n${text}\n${environmentUpdateClose}`
+const environmentUpdateMessage = (text: string) =>
+  Prompt.make([
+    {
+      role: "user",
+      content: `${environmentUpdateOpen}\n${text}\n</environment-update>`,
+    },
+  ])
 
-const injectedText = (message: Prompt.Message): string | undefined => {
-  if (message.role !== "user" || message.content.length !== 1) return
-  const part = message.content[0]!
-  return part.type === "text" ? part.text.trim() : undefined
-}
+// A user message that is one text part starting with `prefix`.
+const startsWith = (message: Prompt.Message, prefix: string): boolean =>
+  message.role === "user" &&
+  message.content.length === 1 &&
+  message.content[0]!.type === "text" &&
+  message.content[0]!.text.trimStart().startsWith(prefix)
 
-const isEnvironmentUpdate = (message: Prompt.Message): boolean => {
-  const text = injectedText(message)
-  return (
-    text !== undefined &&
-    text.startsWith(environmentUpdateOpen) &&
-    text.endsWith(environmentUpdateClose)
-  )
-}
+const isEnvironmentUpdate = (message: Prompt.Message): boolean =>
+  startsWith(message, environmentUpdateOpen)
 
 /**
  * Whether a user message was added by the agent rather than typed: an
@@ -1334,15 +1285,8 @@ const isEnvironmentUpdate = (message: Prompt.Message): boolean => {
  * @since 1.0.0
  * @category Models
  */
-export const isInjectedMessage = (message: Prompt.Message): boolean => {
-  if (isEnvironmentUpdate(message)) return true
-  const text = injectedText(message)
-  return (
-    text !== undefined &&
-    text.startsWith("<subagent ") &&
-    text.endsWith("</subagent>")
-  )
-}
+export const isInjectedMessage = (message: Prompt.Message): boolean =>
+  isEnvironmentUpdate(message) || startsWith(message, "<subagent ")
 
 const renderInstructions = (content: string) => `# Project instructions
 

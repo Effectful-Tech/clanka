@@ -80,31 +80,22 @@ export class AgentExecutor extends Context.Service<
       readonly environment?: ExecutionEnvironment | undefined
     }): Effect.Effect<Schema.Json>
     /**
-     * Forget what was sent to the model since the system prompt, and render
-     * everything that applies to the environment's directory again.
-     *
-     * Any operation that rewrites the history, such as compaction, must call
-     * this and add the update to the new history, so the environment's
-     * record of what the model has seen matches the history.
-     *
-     * Optional: without it the agent sends no updates after compaction.
-     */
-    readonly refreshEnvironment?:
-      | ((
-          environment: ExecutionEnvironment,
-        ) => Effect.Effect<EnvironmentUpdate>)
-      | undefined
-    /**
      * Render the AGENTS.md files and skills that apply to the environment's
      * directory and that the model has not seen yet. The agent calls it once
      * after the scripts of a model response, so one update covers all of
-     * them. `execute` itself never renders one.
+     * them; `execute` itself never renders one.
      *
-     * Optional: without it the agent sends no updates after a script.
+     * With `reset`, everything sent since the system prompt is forgotten and
+     * rendered again. Any operation that rewrites the history, such as
+     * compaction, must do this, so the environment's record of what the
+     * model has seen matches the history.
+     *
+     * Optional: without it the agent sends no updates.
      */
     readonly renderEnvironment?:
       | ((
           environment: ExecutionEnvironment,
+          options?: { readonly reset?: boolean | undefined } | undefined,
         ) => Effect.Effect<EnvironmentUpdate>)
       | undefined
   }
@@ -125,11 +116,11 @@ export interface ExecuteOptions {
   /**
    * Receives the environment the script left behind, once, when the script
    * ends. It is also called when the script fails, times out or is
-   * interrupted. Pass its `environment` to the next `execute` of the same
-   * agent. Its `update` is always `None`: `renderEnvironment` renders
-   * updates.
+   * interrupted. Pass it to the next `execute` of the same agent.
    */
-  readonly onEnvironment: (update: EnvironmentUpdate) => Effect.Effect<void>
+  readonly onEnvironment: (
+    environment: ExecutionEnvironment,
+  ) => Effect.Effect<void>
   /**
    * Fails with a message for the script when the task cannot be completed
    * yet, for example while sub-agents are still running.
@@ -194,39 +185,19 @@ export class ExecutionEnvironment extends Schema.Class<ExecutionEnvironment>(
  * @since 1.0.0
  * @category Models
  */
-export class RenderedUpdate extends Schema.Class<RenderedUpdate>(
-  "clanka/AgentExecutor/RenderedUpdate",
-)({
-  /**
-   * The new AGENTS.md files and skills, for the model. The agent wraps it in
-   * an `<environment-update>` message.
-   */
-  text: Schema.String,
-  /**
-   * The environment once `text` is in the history: what it describes counts
-   * as seen.
-   */
-  environment: ExecutionEnvironment,
-}) {}
-
-/**
- * @since 1.0.0
- * @category Models
- */
 export class EnvironmentUpdate extends Schema.Class<EnvironmentUpdate>(
   "clanka/AgentExecutor/EnvironmentUpdate",
 )({
   /**
-   * The environment while `update` is not in the history. An agent that
-   * cannot add the update, for example because it was interrupted, keeps
-   * this one, so the update is rendered again later.
+   * The environment once `update` is in the history: what it describes
+   * counts as seen. Store it only together with the update.
    */
   environment: ExecutionEnvironment,
   /**
    * AGENTS.md files and skills the model has not seen yet, or `None` when
-   * nothing is new.
+   * nothing is new. The agent wraps it in an `<environment-update>` message.
    */
-  update: Schema.Option(RenderedUpdate),
+  update: Schema.Option(Schema.String),
 }) {}
 
 /**
@@ -247,11 +218,10 @@ export type LoopToolHandlers = Readonly<
  */
 export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
   toolsDts: Schema.String,
-  agentsMd: Schema.Option(Schema.String),
   /**
    * The startup AGENTS.md as rendered for the system prompt, with its path.
    */
-  instructions: Schema.optionalKey(Schema.String),
+  instructions: Schema.Option(Schema.String),
   supportsSearch: Schema.Boolean,
   /**
    * The environment of an agent's first script.
@@ -361,13 +331,11 @@ const makeLocalWith = Effect.fnUntraced(function* <
     readonly executor: AgentExecutor["Service"]
     readonly execute: (
       options: ExecuteOptions,
-      onChange: (update: EnvironmentUpdate) => Effect.Effect<void>,
+      onChange: (environment: ExecutionEnvironment) => Effect.Effect<void>,
     ) => Stream.Stream<string>
-    readonly refreshEnvironment: (
-      environment: ExecutionEnvironment,
-    ) => Effect.Effect<EnvironmentUpdate>
     readonly renderEnvironment: (
       environment: ExecutionEnvironment,
+      options?: { readonly reset?: boolean | undefined } | undefined,
     ) => Effect.Effect<EnvironmentUpdate>
   },
   never,
@@ -452,56 +420,37 @@ const makeLocalWith = Effect.fnUntraced(function* <
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(Path.Path, pathService),
     )
-  // The names of the skills in the system prompt, so an update can say when
-  // a project skill takes over one of them.
-  let baselineSkills: ReadonlySet<string> = new Set()
-
   // What applies to the environment's directory and is neither in the
   // system prompt nor seen yet.
-  const render = Effect.fnUntraced(function* (
+  const renderEnvironment = Effect.fnUntraced(function* (
     environment: ExecutionEnvironment,
+    options?: { readonly reset?: boolean | undefined } | undefined,
   ) {
+    const seen = options?.reset ? [] : environment.seen
+    const known = new Set([...environment.baseline, ...seen])
     const discovered = yield* discoverAt(environment.cwd)
-    const known = new Set([...environment.baseline, ...environment.seen])
     const instructions = discovered.instructions.filter(
       (item) => !known.has(item.id),
     )
     const skills = discovered.skills.filter(
       (skill) => !known.has(AgentEnvironment.skillId(skill)),
     )
-    if (instructions.length === 0 && skills.length === 0) {
-      return new EnvironmentUpdate({ environment, update: Option.none() })
-    }
+    const nothingNew = instructions.length === 0 && skills.length === 0
     return new EnvironmentUpdate({
-      environment,
-      update: Option.some(
-        new RenderedUpdate({
-          text: AgentEnvironment.renderUpdate({
-            instructions,
-            skills,
-            previousSkills: baselineSkills,
-          }),
-          environment: new ExecutionEnvironment({
-            cwd: environment.cwd,
-            baseline: environment.baseline,
-            seen: [
-              ...environment.seen,
-              ...instructions.map((item) => item.id),
-              ...skills.map(AgentEnvironment.skillId),
-            ],
-          }),
-        }),
-      ),
-    })
-  })
-  const refreshEnvironment = (environment: ExecutionEnvironment) =>
-    render(
-      new ExecutionEnvironment({
+      environment: new ExecutionEnvironment({
         cwd: environment.cwd,
         baseline: environment.baseline,
-        seen: [],
+        seen: [
+          ...seen,
+          ...instructions.map((item) => item.id),
+          ...skills.map(AgentEnvironment.skillId),
+        ],
       }),
-    )
+      update: nothingNew
+        ? Option.none()
+        : Option.some(AgentEnvironment.renderUpdate({ instructions, skills })),
+    })
+  })
 
   if (typeof process !== "undefined") {
     process.on("uncaughtException", () => {})
@@ -509,7 +458,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
 
   const execute = Effect.fnUntraced(function* (
     opts: ExecuteOptions,
-    onChange?: (update: EnvironmentUpdate) => Effect.Effect<void>,
+    onChange?: (environment: ExecutionEnvironment) => Effect.Effect<void>,
   ) {
     const output = yield* Queue.unbounded<string, Cause.Done>()
     const console = yield* makeConsole(output)
@@ -530,14 +479,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
       resolveDirectory(currentDirectory, directory).pipe(
         Effect.tap((target) => {
           currentDirectory = target
-          return onChange
-            ? onChange(
-                new EnvironmentUpdate({
-                  environment: currentEnvironment(),
-                  update: Option.none(),
-                }),
-              )
-            : Effect.void
+          return onChange ? onChange(currentEnvironment()) : Effect.void
         }),
       )
 
@@ -549,7 +491,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
         // A new agent has only the system prompt, so it gets everything that
         // applies to the directory.
         delegate: (options) =>
-          refreshEnvironment(currentEnvironment()).pipe(
+          renderEnvironment(currentEnvironment(), { reset: true }).pipe(
             Effect.flatMap((environment) =>
               opts.subagents.delegate({ ...options, environment }),
             ),
@@ -678,14 +620,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
       Effect.provideService(Console.Console, console),
       // Before the output ends, so the caller has it once the stream is done.
       Effect.ensuring(
-        Effect.suspend(() =>
-          opts.onEnvironment(
-            new EnvironmentUpdate({
-              environment: currentEnvironment(),
-              update: Option.none(),
-            }),
-          ),
-        ),
+        Effect.suspend(() => opts.onEnvironment(currentEnvironment())),
       ),
       Effect.ensuring(Queue.end(output)),
       Effect.forkScoped,
@@ -696,30 +631,23 @@ const makeLocalWith = Effect.fnUntraced(function* <
 
   const executor = AgentExecutor.of({
     capabilities: Effect.gen(function* () {
-      const agentsMd = yield* Effect.option(
-        fs.readFileString(pathService.join(options.directory, "AGENTS.md")),
-      )
       const startup = yield* discoverAt(startupDirectory)
       const skills = offersSkills
         ? yield* AgentSkills.discover({
             directory: options.directory,
-            homeDirectory: homeDirectory(),
+            homeDirectory: home,
             hermesHome: Option.fromNullishOr(process.env.HERMES_HOME),
           }).pipe(
             Effect.provideService(FileSystem.FileSystem, fs),
             Effect.provideService(Path.Path, pathService),
           )
         : []
-      baselineSkills = new Set(skills.map((skill) => skill.name))
-      const instructions = startup.instructions.at(-1)
       return new Capabilities({
         toolsDts,
-        agentsMd,
-        ...(instructions === undefined
-          ? {}
-          : {
-              instructions: AgentEnvironment.renderInstructions(instructions),
-            }),
+        instructions: Option.map(
+          Option.fromNullishOr(startup.instructions.at(-1)),
+          AgentEnvironment.renderInstructions,
+        ),
         supportsSearch: hasSearch,
         environment: new ExecutionEnvironment({
           cwd: startupDirectory,
@@ -734,8 +662,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
       })
     }),
     execute: (opts) => execute(opts),
-    refreshEnvironment,
-    renderEnvironment: render,
+    renderEnvironment,
     executeUnsafe: (opts) =>
       Effect.suspend(() => {
         const tool = tools.tools[opts.tool as keyof typeof tools.tools]
@@ -776,7 +703,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
       }),
   })
 
-  return { executor, execute, refreshEnvironment, renderEnvironment: render }
+  return { executor, execute, renderEnvironment }
 })
 
 /**
@@ -794,10 +721,7 @@ export const makeRpc = Effect.gen(function* () {
       Scope.Scope.useSync((scope) => {
         // Every change is recorded here before the server is told it arrived,
         // so this is current even when the stream is interrupted early.
-        let latest = new EnvironmentUpdate({
-          environment: opts.environment,
-          update: Option.none(),
-        })
+        let latest = opts.environment
         return client
           .execute({
             script: opts.script,
@@ -813,10 +737,7 @@ export const makeRpc = Effect.gen(function* () {
                 case "Request": {
                   const id = part.id
                   if (part.request._tag === "EnvironmentChanged") {
-                    latest = new EnvironmentUpdate({
-                      environment: part.request.environment,
-                      update: Option.none(),
-                    })
+                    latest = part.request.environment
                   }
                   return pipe(
                     handleRequest(opts, part.request),
@@ -835,10 +756,7 @@ export const makeRpc = Effect.gen(function* () {
                   })
                 }
                 case "Environment": {
-                  latest = new EnvironmentUpdate({
-                    environment: part.environment,
-                    update: part.update,
-                  })
+                  latest = part.environment
                   return Effect.void
                 }
               }
@@ -852,10 +770,10 @@ export const makeRpc = Effect.gen(function* () {
             Stream.ensuring(Effect.suspend(() => opts.onEnvironment(latest))),
           )
       }).pipe(Stream.unwrap),
-    refreshEnvironment: (environment) =>
-      client.refreshEnvironment({ environment }).pipe(Effect.orDie),
-    renderEnvironment: (environment) =>
-      client.renderEnvironment({ environment }).pipe(Effect.orDie),
+    renderEnvironment: (environment, options) =>
+      client
+        .renderEnvironment({ environment, reset: options?.reset ?? false })
+        .pipe(Effect.orDie),
     executeUnsafe({ environment, ...options }) {
       return client
         .executeUnsafe(
@@ -949,10 +867,8 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
 
           return Rpcs.of({
             capabilities: () => local.executor.capabilities,
-            refreshEnvironment: ({ environment }) =>
-              local.refreshEnvironment(environment),
-            renderEnvironment: ({ environment }) =>
-              local.renderEnvironment(environment),
+            renderEnvironment: ({ environment, reset }) =>
+              local.renderEnvironment(environment, { reset }),
             respond: ({ id, response }) => {
               const resume = requestResumes.get(id)
               if (resume) {
@@ -995,12 +911,8 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                   {
                     script,
                     environment,
-                    onEnvironment: (update) =>
-                      Queue.offer(queue, {
-                        _tag: "Environment",
-                        environment: update.environment,
-                        update: update.update,
-                      }),
+                    onEnvironment: (environment) =>
+                      Queue.offer(queue, { _tag: "Environment", environment }),
                     onTaskComplete: (summary) =>
                       request<void>({ _tag: "TaskComplete", summary }),
                     subagents: {
@@ -1055,11 +967,11 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                   },
                   // Waits for the client to record the change, so a script
                   // that got past `changeDirectory` never leaves it behind.
-                  (update) =>
+                  (environment) =>
                     Effect.orDie(
                       request<void>({
                         _tag: "EnvironmentChanged",
-                        environment: update.environment,
+                        environment,
                       }),
                     ),
                 ),
@@ -1143,7 +1055,7 @@ export const ExecuteOutput = Schema.TaggedUnion({
    * Sent once, when the script ends. Changes before then are sent as
    * `EnvironmentChanged` requests.
    */
-  Environment: EnvironmentUpdate.fields,
+  Environment: { environment: ExecutionEnvironment },
 })
 
 /**
@@ -1174,12 +1086,8 @@ export class Rpcs extends RpcGroup.make(
     success: ExecuteOutput,
     stream: true,
   }),
-  Rpc.make("refreshEnvironment", {
-    payload: { environment: ExecutionEnvironment },
-    success: EnvironmentUpdate,
-  }),
   Rpc.make("renderEnvironment", {
-    payload: { environment: ExecutionEnvironment },
+    payload: { environment: ExecutionEnvironment, reset: Schema.Boolean },
     success: EnvironmentUpdate,
   }),
   Rpc.make("executeUnsafe", {

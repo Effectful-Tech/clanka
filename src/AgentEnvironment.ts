@@ -141,33 +141,21 @@ ${instructions.content}
 
 /**
  * The text of an environment update: new AGENTS.md files, outermost first,
- * then new skills. `previousSkills` are the names of the skills offered
- * before, so a project skill with the same name is called out.
+ * then new skills.
  *
  * @since 1.0.0
  * @category Rendering
  */
-export const renderUpdate = (options: {
-  readonly instructions: ReadonlyArray<Instructions>
-  readonly skills: ReadonlyArray<AgentSkills.Skill>
-  readonly previousSkills: ReadonlySet<string>
-}): string => {
-  const sections = options.instructions.map(renderInstructions)
-  if (options.skills.length > 0) {
-    const overrides = options.skills.filter((skill) =>
-      options.previousSkills.has(skill.name),
-    )
+export const renderUpdate = (discovered: Discovered): string => {
+  const sections = discovered.instructions.map(renderInstructions)
+  if (discovered.skills.length > 0) {
     sections.push(`# Skills
 
-New skills are available, in addition to those listed before. Read a skill's
+New skills are available, in addition to those listed before. A skill listed
+here takes precedence over an earlier skill with the same name. Read a skill's
 file with "readFile" before a task that matches its description.
 
-${AgentSkills.renderEntries(options.skills)}${overrides
-      .map(
-        (skill) =>
-          `\n\nThe project skill "${skill.name}" above now takes precedence over the skill with the same name listed before.`,
-      )
-      .join("")}`)
+${AgentSkills.renderEntries(discovered.skills)}`)
   }
   return sections.join("\n\n")
 }

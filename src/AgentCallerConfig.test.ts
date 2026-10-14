@@ -508,7 +508,7 @@ describe("executor capabilities", () => {
             baseline: [],
             seen: [],
           }),
-          agentsMd: Option.none(),
+          instructions: Option.none(),
           supportsSearch: false,
           tools: ["readFile"],
           skills: [],

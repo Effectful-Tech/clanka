@@ -354,12 +354,12 @@ for (const [mode, executorLayer] of Object.entries(executors)) {
           // The first refresh hangs, so the turn is cancelled during it.
           const gated = AgentExecutor.AgentExecutor.of({
             ...executor,
-            refreshEnvironment: (environment) =>
-              refreshes++ === 0
+            renderEnvironment: (environment, options) =>
+              options?.reset && refreshes++ === 0
                 ? Deferred.succeed(refreshing, undefined).pipe(
                     Effect.andThen(Effect.never),
                   )
-                : executor.refreshEnvironment!(environment),
+                : executor.renderEnvironment!(environment, options),
           })
           let rootCalls = 0
           const { agent, calls, send } = yield* makeAgent({

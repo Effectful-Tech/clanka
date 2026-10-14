@@ -262,17 +262,7 @@ export interface LocalOptions<Toolkit extends Toolkit.Any = never> {
   readonly excludeTools?: ReadonlyArray<ExcludableTool> | undefined
 }
 
-/**
- * @since 1.0.0
- * @category Constructors
- */
-export const makeLocal = Effect.fnUntraced(function* <
-  Toolkit extends Toolkit.Any = never,
->(
-  options: LocalOptions<Toolkit>,
-): Effect.fn.Return<
-  AgentExecutor["Service"],
-  never,
+type LocalServices<Toolkit> =
   | ToolkitRenderer
   | FileSystem.FileSystem
   | Path.Path
@@ -287,6 +277,35 @@ export const makeLocal = Effect.fnUntraced(function* <
       | TaskCompleter
       | ImageAttacher
     >
+
+/**
+ * @since 1.0.0
+ * @category Constructors
+ */
+export const makeLocal = <Toolkit extends Toolkit.Any = never>(
+  options: LocalOptions<Toolkit>,
+): Effect.Effect<AgentExecutor["Service"], never, LocalServices<Toolkit>> =>
+  Effect.map(makeLocalWith(options), (local) => local.executor)
+
+/**
+ * A local executor, plus an `execute` that also reports every change to the
+ * environment while the script runs. `layerRpcServer` streams those changes,
+ * so its client still has the latest environment when it stops reading.
+ */
+const makeLocalWith = Effect.fnUntraced(function* <
+  Toolkit extends Toolkit.Any = never,
+>(
+  options: LocalOptions<Toolkit>,
+): Effect.fn.Return<
+  {
+    readonly executor: AgentExecutor["Service"]
+    readonly execute: (
+      options: ExecuteOptions,
+      onChange: (update: EnvironmentUpdate) => Effect.Effect<void>,
+    ) => Stream.Stream<string>
+  },
+  never,
+  LocalServices<Toolkit>
 > {
   const fs = yield* FileSystem.FileSystem
   const pathService = yield* Path.Path
@@ -359,7 +378,10 @@ export const makeLocal = Effect.fnUntraced(function* <
     process.on("uncaughtException", () => {})
   }
 
-  const execute = Effect.fnUntraced(function* (opts: ExecuteOptions) {
+  const execute = Effect.fnUntraced(function* (
+    opts: ExecuteOptions,
+    onChange?: (update: EnvironmentUpdate) => Effect.Effect<void>,
+  ) {
     const output = yield* Queue.unbounded<string, Cause.Done>()
     const console = yield* makeConsole(output)
     const handlerScope = Scope.makeUnsafe("parallel")
@@ -368,11 +390,13 @@ export const makeLocal = Effect.fnUntraced(function* <
     // Owned by this script, so concurrent scripts never see each other's
     // directory.
     let currentDirectory = opts.environment.cwd
+    // Reported before the script continues, so the change comes ahead of
+    // any output that follows it.
     const changeDirectory = (directory: string) =>
       resolveDirectory(currentDirectory, directory).pipe(
-        Effect.map((target) => {
+        Effect.tap((target) => {
           currentDirectory = target
-          return target
+          return onChange ? onChange(currentUpdate()) : Effect.void
         }),
       )
     const currentUpdate = () =>
@@ -525,7 +549,7 @@ export const makeLocal = Effect.fnUntraced(function* <
     return Stream.fromQueue(output)
   }, Stream.unwrap)
 
-  return AgentExecutor.of({
+  const executor = AgentExecutor.of({
     capabilities: Effect.gen(function* () {
       const agentsMd = yield* Effect.option(
         fs.readFileString(pathService.join(options.directory, "AGENTS.md")),
@@ -551,7 +575,7 @@ export const makeLocal = Effect.fnUntraced(function* <
         skills,
       })
     }),
-    execute,
+    execute: (opts) => execute(opts),
     executeUnsafe: (opts) =>
       Effect.suspend(() => {
         const tool = tools.tools[opts.tool as keyof typeof tools.tools]
@@ -591,6 +615,8 @@ export const makeLocal = Effect.fnUntraced(function* <
         ) as Effect.Effect<Schema.Json>
       }),
   })
+
+  return { executor, execute }
 })
 
 /**
@@ -605,8 +631,14 @@ export const makeRpc = Effect.gen(function* () {
   return AgentExecutor.of({
     capabilities: Effect.orDie(client.capabilities()),
     execute: (opts) =>
-      Scope.Scope.useSync((scope) =>
-        client
+      Scope.Scope.useSync((scope) => {
+        // The server sends every change, so this is current even when the
+        // stream is interrupted before the script ends.
+        let latest = new EnvironmentUpdate({
+          environment: opts.environment,
+          update: Option.none(),
+        })
+        return client
           .execute({
             script: opts.script,
             environment: opts.environment,
@@ -637,12 +669,11 @@ export const makeRpc = Effect.gen(function* () {
                   })
                 }
                 case "Environment": {
-                  return opts.onEnvironment(
-                    new EnvironmentUpdate({
-                      environment: part.environment,
-                      update: part.update,
-                    }),
-                  )
+                  latest = new EnvironmentUpdate({
+                    environment: part.environment,
+                    update: part.update,
+                  })
+                  return Effect.void
                 }
               }
             }),
@@ -652,8 +683,9 @@ export const makeRpc = Effect.gen(function* () {
                 ? Result.succeed(part.text)
                 : Result.failVoid,
             ),
-          ),
-      ).pipe(Stream.unwrap),
+            Stream.ensuring(Effect.suspend(() => opts.onEnvironment(latest))),
+          )
+      }).pipe(Stream.unwrap),
     executeUnsafe({ environment, ...options }) {
       return client
         .executeUnsafe(
@@ -738,7 +770,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
     Layer.provide(
       Rpcs.toLayer(
         Effect.gen(function* () {
-          const local = yield* withBuiltInHandlers(makeLocal(options))
+          const local = yield* withBuiltInHandlers(makeLocalWith(options))
           const requestResumes = new Map<
             number,
             (effect: Effect.Effect<unknown, string>) => void
@@ -746,7 +778,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
           let requestId = 0
 
           return Rpcs.of({
-            capabilities: () => local.capabilities,
+            capabilities: () => local.executor.capabilities,
             respond: ({ id, response }) => {
               const resume = requestResumes.get(id)
               if (resume) {
@@ -784,68 +816,72 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                     requestResumes.delete(id)
                   })
                 })
+              const sendEnvironment = (update: EnvironmentUpdate) =>
+                Queue.offer(queue, {
+                  _tag: "Environment",
+                  environment: update.environment,
+                  update: update.update,
+                })
               yield* pipe(
-                local.execute({
-                  script,
-                  environment,
-                  onEnvironment: (update) =>
-                    Queue.offer(queue, {
-                      _tag: "Environment",
-                      environment: update.environment,
-                      update: update.update,
-                    }),
-                  onTaskComplete: (summary) =>
-                    request<void>({ _tag: "TaskComplete", summary }),
-                  subagents: {
-                    delegate: (options) =>
-                      Effect.orDie(
-                        request<DelegateResult>({
-                          _tag: "Delegate",
+                local.execute(
+                  {
+                    script,
+                    environment,
+                    onEnvironment: sendEnvironment,
+                    onTaskComplete: (summary) =>
+                      request<void>({ _tag: "TaskComplete", summary }),
+                    subagents: {
+                      delegate: (options) =>
+                        Effect.orDie(
+                          request<DelegateResult>({
+                            _tag: "Delegate",
+                            ...options,
+                          }),
+                        ),
+                      waitAgents: (ids) =>
+                        request<ReadonlyArray<SubagentResult>>({
+                          _tag: "WaitAgents",
+                          ids,
+                        }),
+                      messageAgent: (options) =>
+                        request<SubagentResult>({
+                          _tag: "MessageAgent",
                           ...options,
                         }),
+                      stopAgent: (id) =>
+                        request<SubagentResult>({ _tag: "StopAgent", id }),
+                      listAgents: Effect.orDie(
+                        request<ReadonlyArray<SubagentInfo>>({
+                          _tag: "ListAgents",
+                        }),
                       ),
-                    waitAgents: (ids) =>
-                      request<ReadonlyArray<SubagentResult>>({
-                        _tag: "WaitAgents",
-                        ids,
-                      }),
-                    messageAgent: (options) =>
-                      request<SubagentResult>({
-                        _tag: "MessageAgent",
-                        ...options,
-                      }),
-                    stopAgent: (id) =>
-                      request<SubagentResult>({ _tag: "StopAgent", id }),
-                    listAgents: Effect.orDie(
-                      request<ReadonlyArray<SubagentInfo>>({
-                        _tag: "ListAgents",
-                      }),
+                    },
+                    onImage(image) {
+                      return Queue.offer(queue, {
+                        _tag: "Image",
+                        fileName: image.fileName,
+                        mediaType: image.mediaType,
+                        data: image.data,
+                      })
+                    },
+                    loopTools: Object.fromEntries(
+                      loopTools.map((name) => [
+                        name,
+                        (params: unknown) =>
+                          toJson(name, params).pipe(
+                            Effect.flatMap((params) =>
+                              request<unknown>({
+                                _tag: "LoopTool",
+                                name,
+                                params,
+                              }),
+                            ),
+                          ),
+                      ]),
                     ),
                   },
-                  onImage(image) {
-                    return Queue.offer(queue, {
-                      _tag: "Image",
-                      fileName: image.fileName,
-                      mediaType: image.mediaType,
-                      data: image.data,
-                    })
-                  },
-                  loopTools: Object.fromEntries(
-                    loopTools.map((name) => [
-                      name,
-                      (params: unknown) =>
-                        toJson(name, params).pipe(
-                          Effect.flatMap((params) =>
-                            request<unknown>({
-                              _tag: "LoopTool",
-                              name,
-                              params,
-                            }),
-                          ),
-                        ),
-                    ]),
-                  ),
-                }),
+                  sendEnvironment,
+                ),
                 Stream.runForEachArray((parts) => {
                   for (const part of parts) {
                     Queue.offerUnsafe(queue, {
@@ -866,7 +902,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
               return queue
             }),
             executeUnsafe(opts) {
-              return local.executeUnsafe(opts as any)
+              return local.executor.executeUnsafe(opts as any)
             },
           })
         }),
@@ -918,7 +954,8 @@ export const ExecuteOutput = Schema.TaggedUnion({
     data: Schema.Uint8Array,
   },
   /**
-   * Sent once, when the script ends.
+   * Sent after every change to the environment and when the script ends.
+   * The client passes the last one it received to `onEnvironment`.
    */
   Environment: EnvironmentUpdate.fields,
 })

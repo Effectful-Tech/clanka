@@ -1,9 +1,13 @@
 import { assert, describe, it } from "@effect/vitest"
+import * as NodeServices from "@effect/platform-node/NodeServices"
+import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
+import * as FileSystem from "effect/FileSystem"
 import * as Fiber from "effect/Fiber"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
+import * as FetchHttpClient from "effect/http/FetchHttpClient"
 import * as Prompt from "effect/ai/Prompt"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as LanguageModel from "effect/ai/LanguageModel"
@@ -35,6 +39,16 @@ const executor = AgentExecutor.AgentExecutor.of({
   execute: () => Stream.make("script output"),
   executeUnsafe: () => Effect.die("executeUnsafe not implemented"),
 })
+
+// A fresh executor per server, like the CLI builds one per session.
+const localExecutor = (directory: string) =>
+  Layer.build(
+    AgentExecutor.layerLocal({ directory }).pipe(
+      Layer.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
+    ),
+  ).pipe(
+    Effect.map((context) => Context.get(context, AgentExecutor.AgentExecutor)),
+  )
 
 const makeServer = (
   streamText: Parameters<typeof LanguageModel.make>[0]["streamText"],
@@ -99,6 +113,20 @@ const assistantSays = (text: string) =>
     { type: "text-delta", id: "1", delta: text },
     { type: "text-end", id: "1" },
   )
+
+// A model that runs `script` once, then answers "done".
+const runsScript = (script: string) => {
+  let calls = 0
+  return () =>
+    calls++ === 0
+      ? parts({
+          type: "tool-call",
+          id: "call-1",
+          name: "execute",
+          params: { script },
+        })
+      : assistantSays("done")
+}
 
 const withStore = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
@@ -738,6 +766,53 @@ describe("Acp", () => {
           }),
         ),
       ),
+  )
+
+  it.live("keeps the working directory across a session reload", () =>
+    withStore(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const cwd = yield* fs.makeTempDirectoryScoped()
+        const sessionId = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const server = yield* makeServer(
+              runsScript(`await bash({ command: "mkdir sub" })
+await changeDirectory("sub")`),
+              yield* localExecutor(cwd),
+            )
+            const created = yield* server.request(1, "session/new", { cwd })
+            const sessionId: string = created.result.sessionId
+            yield* server.request(2, "session/prompt", {
+              sessionId,
+              prompt: [{ type: "text", text: "change directory" }],
+            })
+            return sessionId
+          }),
+        )
+
+        const output = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const server = yield* makeServer(
+              runsScript(
+                `console.log("PWD:" + (await bash({ command: "pwd" })).trim())`,
+              ),
+              yield* localExecutor(cwd),
+            )
+            yield* server.request(1, "session/load", { sessionId, cwd })
+            yield* server.request(2, "session/prompt", {
+              sessionId,
+              prompt: [{ type: "text", text: "print it" }],
+            })
+            return server
+              .updates(sessionId)
+              .filter((u) => u.sessionUpdate === "tool_call_update")
+              .map((u) => String(u.rawOutput))
+              .join("\n")
+          }),
+        )
+        assert.match(output, /PWD:\S*\/sub$/m)
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    ),
   )
 
   it.effect("rejects unknown models and methods", () =>

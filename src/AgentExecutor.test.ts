@@ -3,6 +3,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
+import * as Fiber from "effect/Fiber"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
 import * as Stream from "effect/Stream"
@@ -267,6 +268,52 @@ const withSlowGh = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   )
 
 for (const [mode, executorLayer] of Object.entries(executorModes)) {
+  describe(`${mode} executor environment`, () => {
+    // A cancelled script keeps the directory it changed to, as an ACP
+    // `session/cancel` or a `stopAgent` continues the same agent afterwards.
+    it.live("returns the environment when the caller interrupts", () =>
+      Effect.gen(function* () {
+        const executor = yield* AgentExecutor.AgentExecutor
+        const { environment } = yield* executor.capabilities
+        const ready = yield* Deferred.make<void>()
+        const updates: Array<AgentExecutor.EnvironmentUpdate> = []
+        const fiber = yield* executor
+          .execute({
+            script: `await changeDirectory("..")
+console.log("ready")
+await sleep(60000)`,
+            environment,
+            onEnvironment: (update) =>
+              Effect.sync(() => {
+                updates.push(update)
+              }),
+            onTaskComplete: () => Effect.void,
+            subagents: subagentsUnavailable,
+            onImage: () => Effect.void,
+          })
+          .pipe(
+            Stream.runForEach((text) =>
+              text.includes("ready")
+                ? Deferred.succeed(ready, undefined)
+                : Effect.void,
+            ),
+            Effect.forkScoped,
+          )
+        yield* Deferred.await(ready)
+        yield* Fiber.interrupt(fiber)
+        assert.strictEqual(updates.length, 1)
+        assert.strictEqual(
+          updates[0]!.environment.cwd,
+          NodePath.dirname(environment.cwd),
+        )
+      }).pipe(
+        Effect.scoped,
+        Effect.timeout("5 seconds"),
+        Effect.provide(executorLayer({})),
+      ),
+    )
+  })
+
   describe(`${mode} executor limits`, () => {
     it.live("stops a bash command at the caller's command timeout", () =>
       Effect.gen(function* () {

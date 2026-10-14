@@ -297,6 +297,7 @@ interface Session {
   readonly agent: Agent.Agent
   running: Fiber.Fiber<void, unknown> | undefined
   toolCalls: number
+  readonly announcedSubagents: Set<number>
 }
 
 /**
@@ -394,6 +395,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       agent,
       running: undefined,
       toolCalls: 0,
+      announcedSubagents: new Set(),
     }
     sessions.set(id, session)
     return session
@@ -671,15 +673,18 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
           })
         // A background agent's tool call stays in progress until the agent
         // finishes, while the parent keeps taking turns.
-        case "SubagentStart":
+        case "SubagentStart": {
+          const announced = session.announcedSubagents.has(part.id)
+          session.announcedSubagents.add(part.id)
           return update(session.id, {
-            sessionUpdate: "tool_call",
+            sessionUpdate: announced ? "tool_call_update" : "tool_call",
             toolCallId: `subagent-${part.id}`,
             title: `delegate: ${part.prompt.replace(/\s+/g, " ").trim().slice(0, 120)}`,
             kind: "think",
             status: "in_progress",
             rawInput: { prompt: part.prompt },
           })
+        }
         case "SubagentComplete":
           return update(session.id, {
             sessionUpdate: "tool_call_update",

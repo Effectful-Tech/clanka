@@ -133,6 +133,11 @@ const runsScript = (script: string) => {
       : assistantSays("done")
 }
 
+const message = (role: "user" | "assistant", text: string) =>
+  Prompt.makeMessage(role, {
+    content: [Prompt.makePart("text", { text })],
+  })
+
 const withStore = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     Effect.provide(
@@ -832,6 +837,60 @@ await changeDirectory("sub")`),
         assert.match(output, /PWD:\S*\/sub$/m)
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     ),
+  )
+
+  it.effect(
+    "hides environment updates and sub-agent results during replay",
+    () =>
+      withStore(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const kvs = yield* KeyValueStore.KeyValueStore
+            const store = KeyValueStore.toSchemaStore(
+              KeyValueStore.prefix(kvs, "session-"),
+              Acp.SessionRecord,
+            )
+            const sessionId = "injected-session"
+            yield* store.set(
+              sessionId,
+              new Acp.SessionRecord({
+                cwd: "/tmp",
+                model: "test:model",
+                thoughtLevel: "medium",
+                history: Prompt.fromMessages([
+                  message("user", "Typed by the user"),
+                  message(
+                    "user",
+                    "<environment-update>\nPKG-RULES\n</environment-update>",
+                  ),
+                  message(
+                    "user",
+                    '<subagent id="1" status="completed">\nCHILD-RESULT\n</subagent>',
+                  ),
+                  message("assistant", "Reply"),
+                ]),
+              }),
+            )
+
+            const server = yield* makeServer(() => assistantSays("unused"))
+            const loaded = yield* server.request(1, "session/load", {
+              sessionId,
+              cwd: "/tmp",
+            })
+            assert.isUndefined(loaded.error)
+            assert.deepStrictEqual(server.updates(sessionId), [
+              {
+                sessionUpdate: "user_message_chunk",
+                content: { type: "text", text: "Typed by the user" },
+              },
+              {
+                sessionUpdate: "agent_message_chunk",
+                content: { type: "text", text: "Reply" },
+              },
+            ])
+          }),
+        ),
+      ),
   )
 
   it.effect("rejects unknown models and methods", () =>

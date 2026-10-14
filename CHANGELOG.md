@@ -1,5 +1,30 @@
 # clanka
 
+## 0.9.0
+
+### Minor Changes
+
+- [#217](https://github.com/Effectful-Tech/clanka/pull/217) [`ec06ce2`](https://github.com/Effectful-Tech/clanka/commit/ec06ce2f8400a7ff8073bbd15bb2e2915e356545) Thanks [@tim-smart](https://github.com/tim-smart)! - Add background sub-agents. `delegate({ prompt, background: true })` returns straight away with an agent ID while the sub-agent keeps working, and its result is pushed to the parent as a `<subagent id="..." status="...">` message before the next model call. New script functions `waitAgents`, `messageAgent`, `stopAgent` and `listAgents` manage an agent's own children. Sub-agents are scoped to the parent's run, and `taskComplete` fails while children are still running.
+
+  Breaking changes:
+
+  - `delegate` now takes an options object and returns `{ id, status, output }`. A bare string is rejected, so custom `system` prompts or skills that show `delegate("...")` need updating to `delegate({ prompt: "..." })` and read `.output`.
+  - `AgentExecutor.execute` takes `subagents` instead of `onSubagent`, and `onTaskComplete` may fail with a message. The `SubagentExecutor` service now provides the `Subagents` interface.
+  - The executor RPC protocol replaced the `Subagent` / `subagentOutput` pair and the `TaskComplete` event with a `Request` event and a `respond` RPC. Client and server must be upgraded together.
+
+- [#220](https://github.com/Effectful-Tech/clanka/pull/220) [`9d0da00`](https://github.com/Effectful-Tech/clanka/commit/9d0da00532d91d471102d13f6191a7978992914e) Thanks [@tim-smart](https://github.com/tim-smart)! - Let callers choose what the model is offered, and add loop-side tools.
+
+  - `AgentExecutor.layerLocal`, `AgentExecutor.layerRpcServer` and `Agent.layerLocal` take `excludeTools` to leave out built-in tools. A left-out tool is not in the sandbox, the type declarations or the system prompt. Leaving out `delegate` also leaves out `waitAgents`, `messageAgent`, `stopAgent` and `listAgents`.
+  - `Agent.makeWith` and `Agent.layerWith` take `instructions` (replace or remove the executor's `AGENTS.md`), `skills` (caller-supplied skills, read with a loop-side `readSkill` function) and `loopTools`, an Effect `Toolkit` whose handlers run next to the Agent. Calls are decoded against the tool's schema before the handler runs, and a handler failure rejects the script's call with its message. In RPC mode the call travels from the executor to the loop over the existing `Request` / `respond` pair.
+  - `SubagentModel` is optional. Without it, sub-agents run on the parent's model.
+  - `Capabilities` gains `tools`, the names of the functions the executor offers.
+
+  `Agent.make`, `Agent.layer`, the CLI and ACP keep today's behaviour. The executor RPC protocol gains a required `Capabilities.tools` field, an `execute` `loopTools` field and an `AgentRequest.LoopTool` request, so the executor's client and server must be upgraded together.
+
+- [#219](https://github.com/Effectful-Tech/clanka/pull/219) [`bf47f3f`](https://github.com/Effectful-Tech/clanka/commit/bf47f3f5828c04510ea9fd4f1997b4b033702ea6) Thanks [@tim-smart](https://github.com/tim-smart)! - - Add `Agent.MaxRetries` and typed `RetriesExhausted` failures. Retries now default to 20 instead of unlimited.
+  - Add executor `limits` for bash/gh command time, whole-script time (including busy JavaScript), and retained command output. Defaults stay unchanged: bash has a 10-minute limit; gh, whole scripts, and retained output are unlimited. The bash description now reflects the configured limit.
+  - Emit `HistoryAppended` and `HistoryReplaced` from `send` so consumers can rebuild history across compaction. Exhaustive `Output` handlers need cases for both events.
+
 ## 0.8.6
 
 ### Patch Changes

@@ -5,6 +5,7 @@ import * as NodeConsole from "node:console"
 import * as NodeOs from "node:os"
 import * as NodeVm from "node:vm"
 import { Writable } from "node:stream"
+import { Worker } from "node:worker_threads"
 import {
   AgentToolHandlers,
   type DelegateResult,
@@ -29,6 +30,7 @@ import * as AgentSkills from "./AgentSkills.ts"
 import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
 import type * as HttpClient from "effect/http/HttpClient"
 import * as Context from "effect/Context"
+import * as Deferred from "effect/Deferred"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Option from "effect/Option"
@@ -207,14 +209,19 @@ export const makeLocal = Effect.fnUntraced(function* <
 
   const services = yield* Effect.context()
 
-  const toolEntries = Object.entries(tools.tools).map(([name, tool]) => {
-    const handler = services.mapUnsafe.get(tool.id) as Tool.Handler<string>
-    return {
-      name,
-      services: Context.merge(services, handler.context),
-      handler: handler.handler,
-    }
-  })
+  const toolEntries = new Map(
+    Object.entries(tools.tools).map(([name, tool]) => {
+      const handler = services.mapUnsafe.get(tool.id) as Tool.Handler<string>
+      return [
+        name,
+        {
+          services: Context.merge(services, handler.context),
+          handler: handler.handler,
+        },
+      ] as const
+    }),
+  )
+  const toolNames = Array.from(toolEntries.keys())
 
   if (typeof process !== "undefined") {
     process.on("uncaughtException", () => {})
@@ -239,51 +246,101 @@ export const makeLocal = Effect.fnUntraced(function* <
         : identity,
     )
 
+    // The script runs in its own worker thread, so a script that is busy in
+    // JavaScript can still be stopped. Tool calls are sent back here and run
+    // as before.
     yield* Effect.gen(function* () {
-      const console = yield* Console.Console
       let running = 0
+      const source = prepareScript(opts.script)
+      const settled = yield* Deferred.make<void>()
+      const worker = yield* Effect.acquireRelease(
+        Effect.sync(
+          () =>
+            new Worker(workerSource, {
+              eval: true,
+              workerData: { source, tools: toolNames } satisfies WorkerData,
+            }),
+        ),
+        (worker) => Effect.promise(() => worker.terminate()),
+      )
 
-      const vmScript = compileScript(opts.script)
-      const sandbox: ScriptSandbox = {
-        main: defaultMain,
-        console,
-        fetch,
-        process: undefined,
-      }
-
-      for (let i = 0; i < toolEntries.length; i++) {
-        const { name, handler, services } = toolEntries[i]!
-        const toolServices = Context.merge(services, taskServices)
-
-        // oxlint-disable-next-line typescript/no-explicit-any
-        sandbox[name] = function (params: any) {
-          const runFork = Effect.runForkWith(
-            Context.add(toolServices, CurrentDirectory, currentDirectory),
-          )
-          running++
-          const fiber = trackFiber(runFork(handler(params, {})))
-          return new Promise((resolve, reject) => {
-            fiber.addObserver((exit) => {
-              running--
-              if (exit._tag === "Success") {
-                return resolve(exit.value)
-              }
-              if (Cause.hasInterruptsOnly(exit.cause)) return
-              reject(Cause.squash(exit.cause))
-            })
-          })
+      const respond = (id: number, exit: Exit.Exit<unknown, unknown>) => {
+        // An interrupted call is never settled, as before: it only happens
+        // while the script is being stopped.
+        if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return
+        const message: ToWorker = Exit.isSuccess(exit)
+          ? { id, ok: true, value: exit.value }
+          : { id, ok: false, failure: toFailure(Cause.squash(exit.cause)) }
+        try {
+          // oxlint-disable-next-line unicorn/require-post-message-target-origin
+          worker.postMessage(message)
+        } catch (error) {
+          // The value cannot be copied to the worker.
+          // oxlint-disable-next-line unicorn/require-post-message-target-origin
+          worker.postMessage({ id, ok: false, failure: toFailure(error) })
         }
       }
 
-      vmScript.runInNewContext(sandbox, {
-        timeout: 1000,
+      const call = (message: Extract<FromWorker, { _tag: "Call" }>) => {
+        const entry = toolEntries.get(message.name)!
+        const runFork = Effect.runForkWith(
+          Context.add(
+            Context.merge(entry.services, taskServices),
+            CurrentDirectory,
+            currentDirectory,
+          ),
+        )
+        running++
+        const fiber = trackFiber(runFork(entry.handler(message.params, {})))
+        fiber.addObserver((exit) => {
+          running--
+          respond(message.id, exit)
+        })
+      }
+
+      worker.on("message", (message: FromWorker) => {
+        switch (message._tag) {
+          case "Output":
+            Queue.offerUnsafe(output, message.text)
+            break
+          case "Call":
+            call(message)
+            break
+          case "Done":
+            Deferred.doneUnsafe(settled, Effect.void)
+            break
+          case "Failed":
+            Deferred.doneUnsafe(
+              settled,
+              Effect.die(fromFailure(message.failure)),
+            )
+            break
+        }
       })
-      yield* Effect.promise(sandbox.main)
+      // Bridge failures end the script instead of leaving it pending.
+      worker.on("error", (error) => {
+        Deferred.doneUnsafe(settled, Effect.die(error))
+      })
+      worker.on("messageerror", (error) => {
+        Deferred.doneUnsafe(settled, Effect.die(error))
+      })
+      worker.on("exit", (code) => {
+        Deferred.doneUnsafe(
+          settled,
+          Effect.die(
+            new Error(`The script worker exited with code ${code} early`),
+          ),
+        )
+      })
+
+      yield* Deferred.await(settled)
       while (true) {
         yield* Effect.yieldNow
         if (running === 0) break
       }
     }).pipe(
+      // Stops the worker on every exit: done, failed, timed out, interrupted.
+      Effect.scoped,
       Option.isSome(scriptTimeout)
         ? Effect.timeoutOrElse({
             duration: scriptTimeout.value,
@@ -715,19 +772,21 @@ const exitToResponse = (
   }
 }
 
-interface ScriptSandbox {
-  main: () => Promise<void>
-  console: Console.Console
-  [toolName: string]: unknown
-}
-
 const wrapScript = (script: string): string => `async function main() {
 ${script}
 }`
 
-const compileScript = (script: string): NodeVm.Script => {
+/**
+ * Returns source that compiles, preprocessing the script if it has syntax
+ * errors. Throws the original syntax error if neither version compiles.
+ */
+const prepareScript = (script: string): string => {
+  const source = wrapScript(script)
   try {
-    return new NodeVm.Script(wrapScript(script))
+    // Compiled only to check the syntax. The worker compiles it again.
+    // oxlint-disable-next-line eslint/no-new
+    new NodeVm.Script(source)
+    return source
   } catch (error) {
     if (!(error instanceof SyntaxError)) {
       throw error
@@ -738,15 +797,157 @@ const compileScript = (script: string): NodeVm.Script => {
       throw error
     }
 
+    const preprocessedSource = wrapScript(preprocessed)
     try {
-      return new NodeVm.Script(wrapScript(preprocessed))
+      // oxlint-disable-next-line eslint/no-new
+      new NodeVm.Script(preprocessedSource)
+      return preprocessedSource
     } catch {
       throw error
     }
   }
 }
 
-const defaultMain = () => Promise.resolve()
+interface WorkerData {
+  readonly source: string
+  readonly tools: ReadonlyArray<string>
+}
+
+/**
+ * A rejection crossing the worker boundary. Errors keep their name, message
+ * and stack. Other values are copied, or turned into a string when they
+ * cannot be.
+ */
+type Failure =
+  | {
+      readonly _tag: "Error"
+      readonly name: string
+      readonly message: string
+      readonly stack: string | undefined
+    }
+  | { readonly _tag: "Value"; readonly value: unknown }
+
+type FromWorker =
+  | { readonly _tag: "Output"; readonly text: string }
+  | {
+      readonly _tag: "Call"
+      readonly id: number
+      readonly name: string
+      readonly params: unknown
+    }
+  | { readonly _tag: "Done" }
+  | { readonly _tag: "Failed"; readonly failure: Failure }
+
+type ToWorker =
+  | { readonly id: number; readonly ok: true; readonly value: unknown }
+  | { readonly id: number; readonly ok: false; readonly failure: Failure }
+
+const isErrorLike = (value: unknown): value is Error =>
+  Object.prototype.toString.call(value) === "[object Error]"
+
+const toFailure = (value: unknown): Failure => {
+  if (isErrorLike(value)) {
+    return {
+      _tag: "Error",
+      name: value.name,
+      message: value.message,
+      stack: value.stack,
+    }
+  }
+  try {
+    return { _tag: "Value", value: structuredClone(value) }
+  } catch {
+    return { _tag: "Value", value: String(value) }
+  }
+}
+
+const fromFailure = (failure: Failure): unknown => {
+  if (failure._tag === "Value") return failure.value
+  const error = new Error(failure.message)
+  error.name = failure.name
+  if (failure.stack !== undefined) error.stack = failure.stack
+  return error
+}
+
+/**
+ * Runs one script inside a vm context with the same globals as before, and
+ * forwards console output and tool calls to the parent. `toFailure` and
+ * `fromFailure` above are mirrored here.
+ */
+const workerSource = `
+const { parentPort, workerData } = require("node:worker_threads")
+const vm = require("node:vm")
+const { Console } = require("node:console")
+const { Writable } = require("node:stream")
+
+// Like the parent process: a stray rejection must not end the script.
+process.on("uncaughtException", () => {})
+process.on("unhandledRejection", () => {})
+
+const post = (message) => parentPort.postMessage(message)
+
+const toFailure = (value) => {
+  if (Object.prototype.toString.call(value) === "[object Error]") {
+    return { _tag: "Error", name: value.name, message: value.message, stack: value.stack }
+  }
+  try {
+    return { _tag: "Value", value: structuredClone(value) }
+  } catch {
+    return { _tag: "Value", value: String(value) }
+  }
+}
+
+const fromFailure = (failure) => {
+  if (failure._tag === "Value") return failure.value
+  const error = new Error(failure.message)
+  error.name = failure.name
+  if (failure.stack !== undefined) error.stack = failure.stack
+  return error
+}
+
+const pending = new Map()
+let nextId = 0
+parentPort.on("message", (message) => {
+  const call = pending.get(message.id)
+  if (call === undefined) return
+  pending.delete(message.id)
+  if (message.ok) call.resolve(message.value)
+  else call.reject(fromFailure(message.failure))
+})
+
+const stdout = new Writable({
+  write(chunk, _encoding, callback) {
+    post({ _tag: "Output", text: chunk.toString() })
+    callback()
+  },
+})
+
+const sandbox = {
+  console: new Console({ stdout, colorMode: false }),
+  fetch,
+  process: undefined,
+}
+for (const name of workerData.tools) {
+  sandbox[name] = (params) =>
+    new Promise((resolve, reject) => {
+      const id = nextId++
+      pending.set(id, { resolve, reject })
+      try {
+        post({ _tag: "Call", id, name, params })
+      } catch (error) {
+        // The params cannot be copied to the parent.
+        pending.delete(id)
+        reject(error)
+      }
+    })
+}
+
+new vm.Script(workerData.source).runInNewContext(sandbox, { timeout: 1000 })
+sandbox.main().then(
+  () => post({ _tag: "Done" }),
+  (error) => post({ _tag: "Failed", failure: toFailure(error) }),
+)
+`
 
 const homeDirectory = (): Option.Option<string> => {
   const fromEnv = process.env.HOME

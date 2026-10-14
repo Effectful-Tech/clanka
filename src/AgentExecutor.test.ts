@@ -270,6 +270,25 @@ console.log("after")`)
       ),
     )
 
+    // The busy loop is the watchdog: it gives up after 2 seconds, so a
+    // regression fails the assertions instead of hanging the test runner.
+    it.live(
+      "ends a script that is busy in JavaScript at the script timeout",
+      () =>
+        Effect.gen(function* () {
+          const output = yield* runScript(`
+await sleep(1)
+const giveUp = Date.now() + 2000
+while (Date.now() < giveUp) {}
+console.log("BUSY" + "_LOOP_FINISHED")`)
+          assert.notInclude(output, "BUSY_LOOP_FINISHED")
+          assert.match(output, /timed out/i)
+        }).pipe(
+          Effect.timeout("5 seconds"),
+          Effect.provide(executorLayer({ scriptTimeout: "300 millis" })),
+        ),
+    )
+
     it.live("keeps the start and end of long bash output", () =>
       Effect.gen(function* () {
         const executor = yield* AgentExecutor.AgentExecutor

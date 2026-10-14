@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest"
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer"
 import * as NodeServices from "@effect/platform-node/NodeServices"
+import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
 import * as Exit from "effect/Exit"
 import * as Fiber from "effect/Fiber"
@@ -352,7 +353,7 @@ for (const [mode, executorLayer] of Object.entries(executors)) {
         let rootCalls = 0
         const { agent, calls, send } = yield* makeAgent({
           compaction: {
-            contextWindow: 20_000,
+            contextWindow: 40_000,
             reserveTokens: 4_000,
             keepRecentTokens: 9_000,
           },
@@ -367,7 +368,7 @@ for (const [mode, executorLayer] of Object.entries(executors)) {
               ? // Usage over the threshold compacts before the next call.
                 Stream.make(
                   toolCall(`await changeDirectory("pkg")`),
-                  finish(17_000),
+                  finish(37_000),
                 )
               : Stream.fromIterable([...text("done"), finish(9_000, "stop")])
           },
@@ -392,6 +393,80 @@ for (const [mode, executorLayer] of Object.entries(executors)) {
         Effect.timeout("4 seconds"),
         Effect.provide(executorLayer),
       ),
+    )
+
+    // Compaction drops the delivered update from the history before the
+    // refresh renders it again, so a cancelled refresh must not leave it lost.
+    it.live(
+      "instructions dropped by an interrupted compaction reach the model",
+      () =>
+        Effect.gen(function* () {
+          const executor = yield* AgentExecutor.AgentExecutor
+          const refreshing = yield* Deferred.make<void>()
+          let refreshes = 0
+          // The first refresh hangs, so the turn is cancelled during it.
+          const gated = AgentExecutor.AgentExecutor.of({
+            ...executor,
+            refreshEnvironment: (environment) =>
+              refreshes++ === 0
+                ? Deferred.succeed(refreshing, undefined).pipe(
+                    Effect.andThen(Effect.never),
+                  )
+                : executor.refreshEnvironment!(environment),
+          })
+          let rootCalls = 0
+          const { agent, calls, send } = yield* makeAgent({
+            compaction: {
+              contextWindow: 40_000,
+              reserveTokens: 4_000,
+              keepRecentTokens: 9_000,
+            },
+            respond: (call) => {
+              if (call.isSummarizer) {
+                return Stream.fromIterable([
+                  ...text("EARLIER-WORK-SUMMARY"),
+                  finish(6_000, "stop"),
+                ])
+              }
+              switch (rootCalls++) {
+                case 0:
+                  // Usage over the threshold compacts before the next call.
+                  return Stream.make(
+                    toolCall(`await changeDirectory("pkg")`),
+                    finish(37_000),
+                  )
+                case 1:
+                  return Stream.make(
+                    toolCall(`console.log("next")`),
+                    finish(9_000),
+                  )
+                default:
+                  return Stream.fromIterable([
+                    ...text("done"),
+                    finish(9_000, "stop"),
+                  ])
+              }
+            },
+          }).pipe(Effect.provideService(AgentExecutor.AgentExecutor, gated))
+          MutableRef.set(agent.history, fatHistory)
+
+          const first = yield* Effect.forkScoped(send("start"))
+          yield* Deferred.await(refreshing)
+          yield* Fiber.interrupt(first)
+          const exit = yield* send("continue")
+
+          assert.deepStrictEqual(exit, Exit.succeed("done"))
+          assert.strictEqual(
+            conversationJson(calls.at(-1)!.prompt).split("PKG-RULES").length -
+              1,
+            1,
+            "pkg's instructions appear exactly once",
+          )
+        }).pipe(
+          Effect.scoped,
+          Effect.timeout("4 seconds"),
+          Effect.provide(executorLayer),
+        ),
     )
 
     // The update for an interrupted script never reaches the history, so its

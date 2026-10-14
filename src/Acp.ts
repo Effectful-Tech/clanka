@@ -312,6 +312,10 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
   KeyValueStore.KeyValueStore | Scope.Scope
 > {
   const kvs = yield* KeyValueStore.KeyValueStore
+  const { contextWindow } = yield* Compaction.CompactionConfig
+  const size = Number.isFinite(contextWindow)
+    ? Math.max(0, Math.round(contextWindow))
+    : 0
   // Optional: `https:` images need an HttpClient and `file:` images need a
   // FileSystem and Path. Inline (base64) images work without either. When a
   // service is missing the corresponding block is rejected, never fetched.
@@ -654,6 +658,10 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         case "Usage":
           return update(session.id, {
             sessionUpdate: "usage_update",
+            used: Number.isFinite(part.contextTokens)
+              ? Math.max(0, Math.round(part.contextTokens))
+              : 0,
+            size,
             usage: {
               inputTokens: Math.max(
                 0,

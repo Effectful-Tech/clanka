@@ -1390,6 +1390,7 @@ const [files, content] = await Promise.all([
     path: "package.json",
     startLine: 1,
     endLine: 10,
+    lineNumbers: false,
   })
 ])
 console.log("files:", files)

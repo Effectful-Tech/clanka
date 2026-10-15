@@ -287,6 +287,10 @@ export const AgentTools = Toolkit.make(
       path: Schema.String,
       startLine: Schema.optional(Schema.Number),
       endLine: Schema.optional(Schema.Number),
+      lineNumbers: Schema.optional(Schema.Boolean).annotate({
+        documentation:
+          "Prefix text lines with their line numbers (default: true)",
+      }),
     }),
     success: Schema.NullOr(Schema.String),
     dependencies: [CurrentDirectory, ImageAttacher],
@@ -603,6 +607,14 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           )
         }
         return yield* Stream.runCollect(stream).pipe(
+          Effect.map((lines) =>
+            options.lineNumbers === false
+              ? lines
+              : lines.map(
+                  (line, index) =>
+                    `${(options.startLine ?? 1) + index}: ${line}`,
+                ),
+          ),
           Effect.map(Array.join("\n")),
           Effect.catchReason("PlatformError", "NotFound", () =>
             Effect.succeed(null),

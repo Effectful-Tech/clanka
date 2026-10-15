@@ -1,5 +1,11 @@
 # clanka
 
+## 0.10.1
+
+### Patch Changes
+
+- [#226](https://github.com/Effectful-Tech/clanka/pull/226) [`be5877a`](https://github.com/Effectful-Tech/clanka/commit/be5877aca9d6457d9d2f9689443133c38df50c7b) Thanks [@tim-smart](https://github.com/tim-smart)! - Add a `lineNumbers` option to the `readFile` tool, enabled by default. Text output uses original file line numbers; set `lineNumbers: false` to return unnumbered text.
+
 ## 0.10.0
 
 ### Minor Changes

@@ -7,6 +7,7 @@ import * as Fiber from "effect/Fiber"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
 import * as Stream from "effect/Stream"
+import * as TestClock from "effect/testing/TestClock"
 import * as FetchHttpClient from "effect/http/FetchHttpClient"
 import * as HttpEffect from "effect/http/HttpEffect"
 import * as HttpServer from "effect/http/HttpServer"
@@ -414,18 +415,43 @@ try {
       }).pipe(Effect.provide(executorLayer({ commandTimeout: "3 minutes" }))),
     )
 
-    it.live("ends a script at the caller's script timeout", () =>
+    it.effect("ends a script at the caller's script timeout", () =>
       Effect.gen(function* () {
-        const output = yield* runScript(`
+        const executor = yield* AgentExecutor.AgentExecutor
+        const { environment } = yield* executor.capabilities
+        const started = yield* Deferred.make<void>()
+        const script = yield* executor
+          .execute({
+            environment,
+            onEnvironment: () => Effect.void,
+            onTaskComplete: () => Effect.void,
+            onImage: () => Effect.void,
+            subagents: subagentsUnavailable,
+            script: `
 console.log("before")
 await sleep(10000)
-console.log("after")`)
+console.log("after")`,
+          })
+          .pipe(
+            Stream.tap((output) =>
+              output.includes("before")
+                ? Deferred.succeed(started, undefined)
+                : Effect.void,
+            ),
+            Stream.mkString,
+            Effect.forkScoped,
+          )
+        // Worker startup uses real time. Advance the whole-script clock only
+        // after output is observed, without changing when its deadline starts.
+        yield* Deferred.await(started)
+        yield* TestClock.adjust("300 millis")
+        const output = yield* Fiber.join(script)
         assert.include(output, "before")
         assert.notInclude(output, "after")
         assert.match(output, /timed out/i)
       }).pipe(
-        Effect.timeout("3 seconds"),
         Effect.provide(executorLayer({ scriptTimeout: "300 millis" })),
+        Effect.scoped,
       ),
     )
 

@@ -22,6 +22,7 @@ import * as RpcSerialization from "effect/rpc/RpcSerialization"
 import * as RpcServer from "effect/rpc/RpcServer"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
+import type { Output } from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
 
 // =============================================================================
@@ -73,6 +74,7 @@ const roleOf = (prompt: Prompt.Prompt): Role => {
 const runAgent = (options: {
   readonly conversationMode: boolean
   readonly respond: Respond
+  readonly onOutput?: ((output: Output) => Effect.Effect<void>) | undefined
   readonly afterExit?: Effect.Effect<void> | undefined
 }) =>
   Effect.gen(function* () {
@@ -103,7 +105,7 @@ const runAgent = (options: {
     const exit = yield* agent.send({ prompt: "hello" }).pipe(
       Effect.flatMap((stream) =>
         stream.pipe(
-          Stream.runDrain,
+          Stream.runForEach(options.onOutput ?? (() => Effect.void)),
           Effect.as(""),
           Effect.catchTag("AgentFinished", (finished) =>
             Effect.succeed(finished.summary),
@@ -326,14 +328,21 @@ for (const [executorName, executorLayer] of executors) {
         () =>
           Effect.gen(function* () {
             const childRelease = Latch.makeUnsafe(false)
-            const childDone = Latch.makeUnsafe(false)
+            const completionDelivered = Latch.makeUnsafe(false)
             const { exit, calls } = yield* runAgent({
               conversationMode: true,
+              onOutput: (output) =>
+                Effect.sync(() => {
+                  if (output._tag === "SubagentComplete" && output.id === 1) {
+                    assert.strictEqual(output.status, "completed")
+                    assert.strictEqual(output.summary, "CHILD-RESULT")
+                    completionDelivered.openUnsafe()
+                  }
+                }),
               respond: (call) => {
                 if (call.role === "child") {
                   return Stream.fromEffect(childRelease.await).pipe(
                     Stream.flatMap(() => complete("CHILD-RESULT")),
-                    Stream.ensuring(Effect.sync(() => childDone.openUnsafe())),
                   )
                 }
                 switch (call.index) {
@@ -347,8 +356,9 @@ for (const [executorName, executorLayer] of executors) {
                         Stream.fromEffect(
                           Effect.gen(function* () {
                             childRelease.openUnsafe()
-                            yield* childDone.await
-                            yield* Effect.sleep("100 millis")
+                            // Unlike the child model stream ending, this event
+                            // means cleanup finished and the push was queued.
+                            yield* completionDelivered.await
                           }),
                         ).pipe(Stream.drain),
                       ),
@@ -367,7 +377,11 @@ for (const [executorName, executorLayer] of executors) {
 
             assert.deepStrictEqual(exit, Exit.succeed("done"))
             const root = calls.filter((call) => call.role === "root")
-            const prompt = root[2]!.prompt
+            const delivery = root.find(
+              (call) => findPush(call.prompt, "1", "completed").index !== -1,
+            )
+            assert.isDefined(delivery, "completion push reached the model")
+            const prompt = delivery!.prompt
             const assistantIndex = prompt.content.findIndex(
               (message) =>
                 message.role === "assistant" &&

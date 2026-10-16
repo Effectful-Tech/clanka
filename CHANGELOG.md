@@ -1,5 +1,11 @@
 # clanka
 
+## 0.11.0
+
+### Minor Changes
+
+- [#230](https://github.com/Effectful-Tech/clanka/pull/230) [`0e450d4`](https://github.com/Effectful-Tech/clanka/commit/0e450d4e1acf1f22ef8c6e50fa2ba18ce7cba20a) Thanks [@tim-smart](https://github.com/tim-smart)! - Support OpenAI API keys and custom API base URLs in the CLI and ACP server via --api-key / --api-url or CLANKA_OPENAI_API_KEY / CLANKA_OPENAI_API_URL, independently of semantic search configuration.
+
 ## 0.10.1
 
 ### Patch Changes

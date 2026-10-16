@@ -134,16 +134,16 @@ const provider = Flag.Literals("provider", providers).pipe(
 const model = Flag.String("model").pipe(Flag.withAlias("m"), Flag.optional)
 
 const apiKey = Flag.Redacted("api-key").pipe(
-  Flag.withDescription("OpenAI API key (defaults to OPENAI_API_KEY)"),
-  Flag.withFallbackConfig(Config.Redacted("OPENAI_API_KEY")),
+  Flag.withDescription("OpenAI API key (defaults to CLANKA_OPENAI_API_KEY)"),
+  Flag.withFallbackConfig(Config.Redacted("CLANKA_OPENAI_API_KEY")),
   Flag.optional,
 )
 
 const apiUrl = Flag.String("api-url").pipe(
   Flag.withDescription(
-    "OpenAI API base URL for API-key mode (defaults to OPENAI_API_URL or https://api.openai.com/v1)",
+    "OpenAI API base URL for API-key mode (defaults to CLANKA_OPENAI_API_URL or https://api.openai.com/v1)",
   ),
-  Flag.withFallbackConfig(Config.String("OPENAI_API_URL")),
+  Flag.withFallbackConfig(Config.String("CLANKA_OPENAI_API_URL")),
   Flag.optional,
 )
 

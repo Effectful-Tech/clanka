@@ -51,11 +51,20 @@ const withSubagentModel = <E, R>(
   >,
 ) => Layer.merge(model, Agent.layerSubagentModel(model))
 
-const modelLayer = (provider: Provider, model: string, effort: string) =>
+const modelLayer = (
+  provider: Provider,
+  model: string,
+  effort: string,
+  openai: OpenAiClient.Options,
+) =>
   provider === "openai"
-    ? withSubagentModel(
-        Codex.modelWebSocket(model, { reasoning: { effort: effort as any } }),
-      ).pipe(Layer.provide(Codex.layerClient))
+    ? openai.apiKey !== undefined
+      ? withSubagentModel(
+          Codex.model(model, { reasoning: { effort: effort as any } }),
+        ).pipe(Layer.provide(OpenAiClient.layer(openai)))
+      : withSubagentModel(
+          Codex.modelWebSocket(model, { reasoning: { effort: effort as any } }),
+        ).pipe(Layer.provide(Codex.layerClient))
     : provider === "xai"
       ? withSubagentModel(
           Xai.modelWebSocket(model, {
@@ -123,6 +132,20 @@ const provider = Flag.Literals("provider", providers).pipe(
 )
 
 const model = Flag.String("model").pipe(Flag.withAlias("m"), Flag.optional)
+
+const apiKey = Flag.Redacted("api-key").pipe(
+  Flag.withDescription("OpenAI API key (defaults to OPENAI_API_KEY)"),
+  Flag.withFallbackConfig(Config.Redacted("OPENAI_API_KEY")),
+  Flag.optional,
+)
+
+const apiUrl = Flag.String("api-url").pipe(
+  Flag.withDescription(
+    "OpenAI API base URL for API-key mode (defaults to OPENAI_API_URL or https://api.openai.com/v1)",
+  ),
+  Flag.withFallbackConfig(Config.String("OPENAI_API_URL")),
+  Flag.optional,
+)
 
 const semantic = Flag.Directory("search").pipe(
   Flag.withDescription(
@@ -208,11 +231,16 @@ const acpModel = Flag.String("model").pipe(
   Flag.map((modelId) => Option.getOrThrow(parseModelId(modelId))),
 )
 
-const acp = Command.make("acp", { model: acpModel, compaction }).pipe(
+const acp = Command.make("acp", {
+  model: acpModel,
+  compaction,
+  apiKey,
+  apiUrl,
+}).pipe(
   Command.withDescription(
     "Run as an Agent Client Protocol (ACP) server over stdio",
   ),
-  Command.withHandler(({ model }) =>
+  Command.withHandler(({ model, apiKey, apiUrl }) =>
     Acp.runStdio({
       version,
       defaultModel: model.model,
@@ -223,7 +251,10 @@ const acp = Command.make("acp", { model: acpModel, compaction }).pipe(
         ),
       makeModel: (modelId, thoughtLevel) =>
         Option.map(parseAcpModelId(modelId), ({ provider, model }) =>
-          modelLayer(provider, model, thoughtLevel),
+          modelLayer(provider, model, thoughtLevel, {
+            apiKey: Option.getOrUndefined(apiKey),
+            apiUrl: Option.getOrUndefined(apiUrl),
+          }),
         ),
     }),
   ),
@@ -243,6 +274,8 @@ Command.make("clanka", {
   semantic,
   prompt,
   compaction,
+  apiKey,
+  apiUrl,
 }).pipe(
   Command.withHandler(
     Effect.fnUntraced(function* ({
@@ -250,6 +283,8 @@ Command.make("clanka", {
       model: modelRaw,
       semantic,
       prompt: nonInteractivePrompt,
+      apiKey,
+      apiUrl,
     }) {
       const stdio = yield* Stdio.Stdio
       const OutputFormatter = yield* Effect.promise(
@@ -270,7 +305,10 @@ Command.make("clanka", {
           }),
       })
       const [model, reasoning] = selectedModel.split("/") as [string, string]
-      const Model = modelLayer(provider, model, reasoning)
+      const Model = modelLayer(provider, model, reasoning, {
+        apiKey: Option.getOrUndefined(apiKey),
+        apiUrl: Option.getOrUndefined(apiUrl),
+      })
 
       return yield* Effect.gen(function* () {
         const agent = yield* Agent.Agent

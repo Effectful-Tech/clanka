@@ -37,6 +37,7 @@
     "@silvia-odwyer/photon-node": "^0.3.4",
     "@vscode/ripgrep": "^1.18.0",
     "chalk": "^6.0.1",
+    "effect": "https://pkg.pr.new/effect@7405633",
     "glob": "^13.0.6",
     "sqlite-vec": "0.1.9",
     "tree-sitter": "^0.21.1",
@@ -48,8 +49,7 @@
     "@effect/ai-openai": "^4.0.0",
     "@effect/ai-openai-compat": "^4.0.0",
     "@effect/platform-node": "^4.0.0",
-    "@effect/sql-sqlite-node": "^4.0.0",
-    "effect": "^4.0.0"
+    "@effect/sql-sqlite-node": "^4.0.0"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^1.0.1",
@@ -62,7 +62,6 @@
     "@effect/vitest": "4.0.5",
     "@types/node": "^26.6.5",
     "@types/turndown": "^5.0.6",
-    "effect": "4.0.5",
     "husky": "^9.1.7",
     "lint-staged": "^17.6.0",
     "oxlint": "^1.88.0",

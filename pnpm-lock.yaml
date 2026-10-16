@@ -20,6 +20,9 @@ importers:
       chalk:
         specifier: ^6.0.1
         version: 6.0.1
+      effect:
+        specifier: https://pkg.pr.new/effect@7405633
+        version: https://pkg.pr.new/effect@7405633
       glob:
         specifier: ^13.0.6
         version: 13.0.6
@@ -47,31 +50,28 @@ importers:
         version: 3.0.3
       '@effect/ai-openai':
         specifier: 4.0.5
-        version: 4.0.5(effect@4.0.5)
+        version: 4.0.5(effect@https://pkg.pr.new/effect@7405633)
       '@effect/ai-openai-compat':
         specifier: 4.0.5
-        version: 4.0.5(effect@4.0.5)
+        version: 4.0.5(effect@https://pkg.pr.new/effect@7405633)
       '@effect/platform-node':
         specifier: 4.0.5
-        version: 4.0.5(effect@4.0.5)(redis@6.2.1)
+        version: 4.0.5(effect@https://pkg.pr.new/effect@7405633)(redis@6.2.1)
       '@effect/sql-sqlite-node':
         specifier: 4.0.5
-        version: 4.0.5(effect@4.0.5)
+        version: 4.0.5(effect@https://pkg.pr.new/effect@7405633)
       '@effect/tsgo':
         specifier: 0.53.1
         version: 0.53.1
       '@effect/vitest':
         specifier: 4.0.5
-        version: 4.0.5(effect@4.0.5)(vitest@5.0.5(@types/node@26.6.5)(vite@8.0.10(@types/node@26.6.5)(yaml@2.9.1)))
+        version: 4.0.5(effect@https://pkg.pr.new/effect@7405633)(vitest@5.0.5(@types/node@26.6.5)(vite@8.0.10(@types/node@26.6.5)(yaml@2.9.1)))
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5
       '@types/turndown':
         specifier: ^5.0.6
         version: 5.0.6
-      effect:
-        specifier: 4.0.5
-        version: 4.0.5
       husky:
         specifier: ^9.1.7
         version: 9.1.7
@@ -175,22 +175,26 @@ packages:
 
   '@effect/ai-openai-compat@4.0.5':
     resolution: {integrity: sha512-UuIXsrmMafHw9VSgER+Fql3GbUxpoiQ5tjsZmcRd+2DyjH/RXRYtamWwkXJquPwo7M7imXlq0hYbDjBwoAx2Aw==}
+    version: 4.0.5
     peerDependencies:
       effect: ^4.0.5
 
   '@effect/ai-openai@4.0.5':
     resolution: {integrity: sha512-xJGqOXR10BdLIk3X5rPA8/cXbk7hyvygPK2xjplkc1LxI2VT2wspTT7Nt+BlcN9+REzHM10ve0bbNbk5GIJKuw==}
+    version: 4.0.5
     peerDependencies:
       effect: ^4.0.5
 
   '@effect/platform-node-shared@4.0.5':
     resolution: {integrity: sha512-a8rCdEkfZBGe9C6bsIjxVZuRp73svIyK5IHwHdDAVsvZXjrbkxusfI+rZ8WlX31RP1mKizwI/E72GQTNfdMWHw==}
+    version: 4.0.5
     engines: {node: '>=18.0.0'}
     peerDependencies:
       effect: ^4.0.5
 
   '@effect/platform-node@4.0.5':
     resolution: {integrity: sha512-v4KD5fWvEUa4QmWFpZFbBsRhmfnTP6ETCME2r9ifyXVDPjhfpxpTZl41prjgQFMqZBHdWWCl7YC5ImbXv5ui5g==}
+    version: 4.0.5
     engines: {node: '>=18.0.0'}
     peerDependencies:
       effect: ^4.0.5
@@ -198,6 +202,7 @@ packages:
 
   '@effect/sql-sqlite-node@4.0.5':
     resolution: {integrity: sha512-SHza5qNwiI4dRtUk45wvUfvZq7vB950DW2wD6npzt2aH/tesFfPlZJSDBIvwhazoK+gvDknBOONfKyFZsIF+tg==}
+    version: 4.0.5
     peerDependencies:
       effect: ^4.0.5
 
@@ -242,6 +247,7 @@ packages:
 
   '@effect/vitest@4.0.5':
     resolution: {integrity: sha512-q64paZ/i4V2NiRhTyqCmT2KiDbFjlxc2EZrZca8GGt+Nf8844946HyJM5bPk/q+YeRkFSxIrlCs+J+LSfky/wA==}
+    version: 4.0.5
     peerDependencies:
       effect: ^4.0.5
       vitest: '>=5.0.0 <6.0.0'
@@ -1065,8 +1071,9 @@ packages:
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
 
-  effect@4.0.5:
-    resolution: {integrity: sha512-BY4/28NlpOd99yzmV741xbVGmp+1U7tks4oB7F/Png64bTa5tm5eCA6W0RiXsnuLDDoJpjfVSo4Dnq4BZb/89Q==}
+  effect@https://pkg.pr.new/effect@7405633:
+    resolution: {integrity: sha512-jpZ4U7t2oN9om0BZGLadhAwir1liKgyK0B4i6qhIn4eGwNq++4nc8rHMKOt20W0NCzVSawOV7d68q64kCr8MFQ==, tarball: https://pkg.pr.new/effect@7405633}
+    version: 4.0.5
 
   empathic@2.1.0:
     resolution: {integrity: sha512-AnfC1ATldl49/cvZdLPDjBfrRNwbDO05aibiOtzQu3qtlbJtomNLhF30HEtn/7iBz50dlMECqATo3fG0LrdEgw==}
@@ -1996,36 +2003,36 @@ snapshots:
       fast-wrap-ansi: 0.2.2
       sisteransi: 1.0.5
 
-  '@effect/ai-openai-compat@4.0.5(effect@4.0.5)':
+  '@effect/ai-openai-compat@4.0.5(effect@https://pkg.pr.new/effect@7405633)':
     dependencies:
-      effect: 4.0.5
+      effect: https://pkg.pr.new/effect@7405633
 
-  '@effect/ai-openai@4.0.5(effect@4.0.5)':
+  '@effect/ai-openai@4.0.5(effect@https://pkg.pr.new/effect@7405633)':
     dependencies:
-      effect: 4.0.5
+      effect: https://pkg.pr.new/effect@7405633
 
-  '@effect/platform-node-shared@4.0.5(effect@4.0.5)':
+  '@effect/platform-node-shared@4.0.5(effect@https://pkg.pr.new/effect@7405633)':
     dependencies:
       '@types/ws': 8.18.2
-      effect: 4.0.5
+      effect: https://pkg.pr.new/effect@7405633
       ws: 8.22.0
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@effect/platform-node@4.0.5(effect@4.0.5)(redis@6.2.1)':
+  '@effect/platform-node@4.0.5(effect@https://pkg.pr.new/effect@7405633)(redis@6.2.1)':
     dependencies:
-      '@effect/platform-node-shared': 4.0.5(effect@4.0.5)
-      effect: 4.0.5
+      '@effect/platform-node-shared': 4.0.5(effect@https://pkg.pr.new/effect@7405633)
+      effect: https://pkg.pr.new/effect@7405633
       redis: 6.2.1
       undici: 8.12.2
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@effect/sql-sqlite-node@4.0.5(effect@4.0.5)':
+  '@effect/sql-sqlite-node@4.0.5(effect@https://pkg.pr.new/effect@7405633)':
     dependencies:
-      effect: 4.0.5
+      effect: https://pkg.pr.new/effect@7405633
 
   '@effect/tsgo-darwin-arm64@0.53.1':
     optional: true
@@ -2058,9 +2065,9 @@ snapshots:
       '@effect/tsgo-win32-arm64': 0.53.1
       '@effect/tsgo-win32-x64': 0.53.1
 
-  '@effect/vitest@4.0.5(effect@4.0.5)(vitest@5.0.5(@types/node@26.6.5)(vite@8.0.10(@types/node@26.6.5)(yaml@2.9.1)))':
+  '@effect/vitest@4.0.5(effect@https://pkg.pr.new/effect@7405633)(vitest@5.0.5(@types/node@26.6.5)(vite@8.0.10(@types/node@26.6.5)(yaml@2.9.1)))':
     dependencies:
-      effect: 4.0.5
+      effect: https://pkg.pr.new/effect@7405633
       vitest: 5.0.5(@types/node@26.6.5)(vite@8.0.10(@types/node@26.6.5)(yaml@2.9.1))
 
   '@emnapi/core@1.10.0':
@@ -2612,7 +2619,7 @@ snapshots:
 
   ee-first@1.1.1: {}
 
-  effect@4.0.5: {}
+  effect@https://pkg.pr.new/effect@7405633: {}
 
   empathic@2.1.0: {}
 

@@ -106,7 +106,6 @@ const withLocalExecutor = <A, E, R>(
             HERMES_HOME: process.env.HERMES_HOME,
           }
           process.env.HOME = roots.home
-          // @ts-expect-error
           if (hermesHome === undefined) delete process.env.HERMES_HOME
           else process.env.HERMES_HOME = hermesHome
           return previous

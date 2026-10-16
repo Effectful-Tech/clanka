@@ -59,53 +59,79 @@ vi.mock("./GlobalWebSocket.ts", () => ({
 }))
 
 describe("CLI OpenAI API-key configuration", () => {
-  for (const source of ["flags", "environment"] as const) {
-    it.effect(`uses ${source} without starting Codex device login`, () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem
-        const configHome = yield* fs.makeTempDirectoryScoped()
-        cli.requests = []
-        cli.args = [
-          "--provider",
-          "openai",
-          "--model",
-          "gpt-6-astra/medium",
-          "--prompt",
-          "hello",
-          ...(source === "flags"
-            ? [
-                "--api-key",
-                "test-api-key",
-                "--api-url",
-                "https://gateway.test/v1",
-              ]
-            : []),
-        ]
-        yield* Effect.promise(() => import("./cli.ts"))
-        assert.isDefined(cli.program)
-        yield* cli.program!.pipe(
-          Effect.provideService(
-            ConfigProvider.ConfigProvider,
-            ConfigProvider.fromUnknown({
-              XDG_CONFIG_HOME: configHome,
-              ...(source === "environment"
-                ? { OPENAI_API_KEY: "test-api-key" }
-                : {}),
-            }),
-          ),
-          Effect.exit,
-        )
-        assert.lengthOf(cli.requests, 1)
-        const request = cli.requests[0]!
-        assert.strictEqual(request.method, "POST")
-        assert.strictEqual(
-          request.url,
-          source === "flags"
-            ? "https://gateway.test/v1/responses"
-            : "https://api.openai.com/v1/responses",
-        )
-        assert.strictEqual(request.headers.authorization, "Bearer test-api-key")
-      }).pipe(Effect.provide(NodeServices.layer)),
+  for (const source of [
+    "flags",
+    "environment",
+    "environment-url",
+    "search-key",
+  ] as const) {
+    it.effect(
+      source === "search-key"
+        ? "keeps Codex login when only the search OPENAI_API_KEY is set"
+        : `uses ${source} without starting Codex device login`,
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const configHome = yield* fs.makeTempDirectoryScoped()
+          cli.requests = []
+          cli.args = [
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-6-astra/medium",
+            "--prompt",
+            "hello",
+            ...(source === "flags"
+              ? [
+                  "--api-key",
+                  "test-api-key",
+                  "--api-url",
+                  "https://gateway.test/v1",
+                ]
+              : []),
+          ]
+          yield* Effect.promise(() => import("./cli.ts"))
+          assert.isDefined(cli.program)
+          yield* cli.program!.pipe(
+            Effect.provideService(
+              ConfigProvider.ConfigProvider,
+              ConfigProvider.fromUnknown({
+                XDG_CONFIG_HOME: configHome,
+                ...(source === "environment" || source === "environment-url"
+                  ? { CLANKA_OPENAI_API_KEY: "test-api-key" }
+                  : {}),
+                ...(source === "environment-url"
+                  ? { CLANKA_OPENAI_API_URL: "https://gateway.test/v1" }
+                  : {}),
+                ...(source === "search-key"
+                  ? { OPENAI_API_KEY: "search-api-key" }
+                  : {}),
+              }),
+            ),
+            Effect.exit,
+          )
+          assert.lengthOf(cli.requests, 1)
+          const request = cli.requests[0]!
+          assert.strictEqual(request.method, "POST")
+          if (source === "search-key") {
+            assert.strictEqual(
+              request.url,
+              "https://auth.openai.com/api/accounts/deviceauth/usercode",
+            )
+            assert.isUndefined(request.headers.authorization)
+            return
+          }
+          assert.strictEqual(
+            request.url,
+            source === "flags" || source === "environment-url"
+              ? "https://gateway.test/v1/responses"
+              : "https://api.openai.com/v1/responses",
+          )
+          assert.strictEqual(
+            request.headers.authorization,
+            "Bearer test-api-key",
+          )
+        }).pipe(Effect.provide(NodeServices.layer)),
     )
   }
 })

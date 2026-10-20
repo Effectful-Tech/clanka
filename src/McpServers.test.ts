@@ -375,6 +375,9 @@ describe("McpServers", () => {
         assert.match(system, /broken.*boom/)
         assert.include(system, "slow")
         assert.include(system, "declare function searchTools(")
+        // Each connected server shows the call that lists its tools.
+        assert.include(system, 'searchTools({ server: "github" })')
+        assert.notInclude(system, 'searchTools({ server: "broken" })')
         // Tool types are only returned by `searchTools`.
         assert.notInclude(system, "PRIVATE-DESCRIPTION")
         assert.notInclude(system, "declare namespace mcp")
@@ -513,9 +516,8 @@ await taskComplete(JSON.stringify({
   ranked: await searchTools({ query: "issue" }),
   camel: await searchTools({ query: "pull" }),
   parameter: await searchTools({ query: "owner" }),
-  byDefault: await searchTools({ query: "widget" }),
-  capped: await searchTools({ query: "widget", limit: 50 }),
-  server: await searchTools({ server: "many", limit: 1 }),
+  capped: await searchTools({ query: "widget" }),
+  server: await searchTools({ server: "many" }),
   neither: await attempt(searchTools({})),
   unknown: await attempt(searchTools({ server: "nope" })),
   none: await searchTools({ query: "zebra" }),
@@ -537,9 +539,8 @@ await taskComplete(JSON.stringify({
       assert.include(result.parameter, "function list_issues(")
       assert.notInclude(result.parameter, "function issue(")
 
-      assert.strictEqual(count(result.byDefault, /function widget_/g), 5)
-      assert.strictEqual(count(result.capped, /function widget_/g), 20)
-      // `server` alone lists every tool on it and ignores `limit`.
+      // A query returns at most 10 tools; `server` alone lists all of them.
+      assert.strictEqual(count(result.capped, /function widget_/g), 10)
       assert.strictEqual(count(result.server, /function widget_/g), 25)
 
       for (const rejected of [result.neither, result.unknown]) {

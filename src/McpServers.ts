@@ -826,55 +826,56 @@ const makeSearchTools = (servers: ReadonlyArray<ConnectedServer>) => {
     .map((server) => `${server.id} (${server.status.tools.length} tools)`)
     .join(", ")
 
-  return (params: unknown): Effect.Effect<string, string> =>
-    Effect.gen(function* () {
-      const options = yield* decode(params ?? {}).pipe(
-        Effect.mapError((error) => `searchTools: ${error.message}`),
+  return Effect.fnUntraced(function* (
+    params: unknown,
+  ): Effect.fn.Return<string, string> {
+    const options = yield* decode(params ?? {}).pipe(
+      Effect.mapError((error) => `searchTools: ${error.message}`),
+    )
+    const query = options.query?.trim() ?? ""
+    let candidates = servers
+    if (options.server !== undefined) {
+      const server = servers.find(
+        (server) =>
+          server.id === options.server || server.name === options.server,
       )
-      const query = options.query?.trim() ?? ""
-      let candidates = servers
-      if (options.server !== undefined) {
-        const server = servers.find(
-          (server) =>
-            server.id === options.server || server.name === options.server,
-        )
-        if (server === undefined) {
-          return yield* Effect.fail(
-            `searchTools: unknown MCP server "${options.server}". Servers: ${serverList}`,
-          )
-        }
-        if (query === "") return renderTools([[server, server.tools]])
-        candidates = [server]
-      } else if (query === "") {
+      if (server === undefined) {
         return yield* Effect.fail(
-          `searchTools: pass a query or a server. Servers: ${serverList}`,
+          `searchTools: unknown MCP server "${options.server}". Servers: ${serverList}`,
         )
       }
+      if (query === "") return renderTools([[server, server.tools]])
+      candidates = [server]
+    } else if (query === "") {
+      return yield* Effect.fail(
+        `searchTools: pass a query or a server. Servers: ${serverList}`,
+      )
+    }
 
-      const limit = Math.min(20, Math.max(1, Math.floor(options.limit ?? 5)))
-      const terms = { text: query.toLowerCase(), tokens: tokens(query) }
-      const ranked = candidates
-        .flatMap((server) =>
-          server.tools.map((tool) => ({
-            server,
-            tool,
-            score: score(tool, terms),
-          })),
-        )
-        .filter((match) => match.score > 0)
-        .toSorted((a, b) => b.score - a.score)
-        .slice(0, limit)
-      if (ranked.length === 0) {
-        return `No MCP tools match "${query}". Servers: ${counts}.`
-      }
-      const groups = new Map<ConnectedServer, Array<ToolEntry>>()
-      for (const { server, tool } of ranked) {
-        const group = groups.get(server)
-        if (group === undefined) groups.set(server, [tool])
-        else group.push(tool)
-      }
-      return renderTools([...groups])
-    })
+    const limit = Math.min(20, Math.max(1, Math.floor(options.limit ?? 5)))
+    const terms = { text: query.toLowerCase(), tokens: tokens(query) }
+    const ranked = candidates
+      .flatMap((server) =>
+        server.tools.map((tool) => ({
+          server,
+          tool,
+          score: score(tool, terms),
+        })),
+      )
+      .filter((match) => match.score > 0)
+      .toSorted((a, b) => b.score - a.score)
+      .slice(0, limit)
+    if (ranked.length === 0) {
+      return `No MCP tools match "${query}". Servers: ${counts}.`
+    }
+    const groups = new Map<ConnectedServer, Array<ToolEntry>>()
+    for (const { server, tool } of ranked) {
+      const group = groups.get(server)
+      if (group === undefined) groups.set(server, [tool])
+      else group.push(tool)
+    }
+    return renderTools([...groups])
+  })
 }
 
 const renderTools = (
@@ -901,51 +902,52 @@ const callTool = (
   const prefix = `mcp.${name}:`
   const timeout = Duration.toMillis(server.callTimeout)
   const timedOut = `${prefix} timed out after ${timeout}ms`
-  return (params: unknown): Effect.Effect<unknown, string> =>
-    Effect.gen(function* () {
-      if (server.dropped !== undefined) {
-        return yield* Effect.fail(
-          `${prefix} MCP server "${server.name}" is not connected: ${server.dropped}`,
-        )
-      }
-      const args = params ?? {}
-      if (Option.isSome(tool.decode)) {
-        yield* tool.decode
-          .value(args)
-          .pipe(Effect.mapError((message) => `${prefix} ${message}`))
-      }
-      const result = (yield* Effect.tryPromise({
-        try: (signal) =>
-          server.client.callTool(
-            { name: tool.name, arguments: args as Record<string, unknown> },
-            undefined,
-            { signal, timeout },
-          ),
-        catch: (error) =>
-          error instanceof McpError && error.code === ErrorCode.RequestTimeout
-            ? timedOut
-            : `${prefix} ${errorMessage(error)}`,
-      }).pipe(
-        Effect.timeoutOrElse({
-          duration: server.callTimeout,
-          orElse: () => Effect.fail(timedOut),
-        }),
-      )) as CallToolResult
-      if (result.isError !== true && tool.structured) {
-        return result.structuredContent
-      }
-      const text = yield* renderContent(result.content ?? [], {
-        name,
-        onImage,
-        nextImage,
-      })
-      if (result.isError === true) {
-        return yield* Effect.fail(
-          `${prefix} ${text === "" ? "tool returned an error with no message" : text}`,
-        )
-      }
-      return text
+  return Effect.fnUntraced(function* (
+    params: unknown,
+  ): Effect.fn.Return<unknown, string> {
+    if (server.dropped !== undefined) {
+      return yield* Effect.fail(
+        `${prefix} MCP server "${server.name}" is not connected: ${server.dropped}`,
+      )
+    }
+    const args = params ?? {}
+    if (Option.isSome(tool.decode)) {
+      yield* tool.decode
+        .value(args)
+        .pipe(Effect.mapError((message) => `${prefix} ${message}`))
+    }
+    const result = (yield* Effect.tryPromise({
+      try: (signal) =>
+        server.client.callTool(
+          { name: tool.name, arguments: args as Record<string, unknown> },
+          undefined,
+          { signal, timeout },
+        ),
+      catch: (error) =>
+        error instanceof McpError && error.code === ErrorCode.RequestTimeout
+          ? timedOut
+          : `${prefix} ${errorMessage(error)}`,
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: server.callTimeout,
+        orElse: () => Effect.fail(timedOut),
+      }),
+    )) as CallToolResult
+    if (result.isError !== true && tool.structured) {
+      return result.structuredContent
+    }
+    const text = yield* renderContent(result.content ?? [], {
+      name,
+      onImage,
+      nextImage,
     })
+    if (result.isError === true) {
+      return yield* Effect.fail(
+        `${prefix} ${text === "" ? "tool returned an error with no message" : text}`,
+      )
+    }
+    return text
+  })
 }
 
 const extensions: Record<Image.ImageMediaType, string> = {

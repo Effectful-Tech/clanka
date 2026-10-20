@@ -226,23 +226,22 @@ const expand = Effect.fnUntraced(function* (text: string) {
   return result + text.slice(last)
 })
 
-const expandStrings = (value: unknown) =>
-  Effect.gen(function* () {
-    if (typeof value === "string") return yield* expand(value)
-    if (Array.isArray(value)) {
-      return yield* Effect.forEach(value, (item: unknown) =>
-        typeof item === "string" ? expand(item) : Effect.succeed(item),
-      )
+const expandStrings = Effect.fnUntraced(function* (value: unknown) {
+  if (typeof value === "string") return yield* expand(value)
+  if (Array.isArray(value)) {
+    return yield* Effect.forEach(value, (item: unknown) =>
+      typeof item === "string" ? expand(item) : Effect.succeed(item),
+    )
+  }
+  if (typeof value === "object" && value !== null) {
+    const result: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value)) {
+      result[key] = typeof item === "string" ? yield* expand(item) : item
     }
-    if (typeof value === "object" && value !== null) {
-      const result: Record<string, unknown> = {}
-      for (const [key, item] of Object.entries(value)) {
-        result[key] = typeof item === "string" ? yield* expand(item) : item
-      }
-      return result
-    }
-    return value
-  })
+    return result
+  }
+  return value
+})
 
 const expandedFields = ["command", "args", "env", "cwd", "url", "headers"]
 

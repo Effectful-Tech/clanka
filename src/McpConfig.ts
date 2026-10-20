@@ -98,7 +98,7 @@ export const load = Effect.fnUntraced(function* (options: {
     })),
   ]
 
-  const servers: Record<string, McpServers.ServerEntry> = {}
+  const servers: Record<string, McpServers.ServerEntry> = Object.create(null)
   for (const { file, required } of sources) {
     const fail = (message: string) =>
       new McpConfigError({ message: `${file}: ${message}` })

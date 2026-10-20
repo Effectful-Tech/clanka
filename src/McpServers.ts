@@ -541,6 +541,11 @@ const connect = Effect.fnUntraced(function* (
   }
 
   const client = new Client({ name: "clanka", version: "1.0.0" })
+  // Failed initialization starts close without awaiting it. Retain that
+  // promise so failure cleanup and scope finalization await the same shutdown.
+  const close = client.close.bind(client)
+  let closing: Promise<void> | undefined
+  client.close = () => (closing ??= close())
   // The SDK client only has callback properties.
   // oxlint-disable-next-line unicorn/prefer-add-event-listener
   client.onerror = (error) => {

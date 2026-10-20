@@ -208,9 +208,9 @@ const mcpServerEntries = Effect.fnUntraced(function* (
   servers: ReadonlyArray<typeof McpServer.Type>,
   cwd: string,
 ) {
-  const entries: Record<string, McpServers.ServerEntry> = {}
+  const entries: Record<string, McpServers.ServerEntry> = Object.create(null)
   for (const server of servers) {
-    if (server.name in entries) {
+    if (Object.hasOwn(entries, server.name)) {
       yield* Effect.logWarning("Skipping duplicate MCP server").pipe(
         Effect.annotateLogs({ server: server.name }),
       )

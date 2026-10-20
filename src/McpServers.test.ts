@@ -21,6 +21,7 @@ import * as Toolkit from "effect/ai/Toolkit"
 import * as RpcClient from "effect/rpc/RpcClient"
 import * as RpcSerialization from "effect/rpc/RpcSerialization"
 import * as RpcServer from "effect/rpc/RpcServer"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import * as Agent from "./Agent.ts"
@@ -288,6 +289,57 @@ const build = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.scoped,
     Effect.catchDefect((defect) => Effect.succeed(String(defect))),
   )
+
+// A session the server ended is terminal, whichever layer built the
+// transport.
+const endedSession = (
+  layer: (url: string) => Layer.Layer<McpServers.McpServers>,
+) =>
+  Effect.gen(function* () {
+    // The `end` tool ends the session it is called in.
+    let endSession: (() => void) | undefined
+    const remote = yield* Effect.acquireRelease(
+      Effect.promise(() =>
+        listenHttp(
+          makeFakeServer({
+            tools: [
+              { name: "ping", call: () => text("pong") },
+              {
+                name: "end",
+                call: () => {
+                  endSession?.()
+                  return text("ended")
+                },
+              },
+            ],
+          }),
+        ),
+      ),
+      (remote) => Effect.promise(remote.close),
+    )
+    endSession = remote.endSession
+    const { summary, status } = yield* Effect.gen(function* () {
+      const { summary } = yield* runAgent({
+        script: `${attempt}
+await mcp.remote.end({})
+const first = await attempt(mcp.remote.ping({}))
+await taskComplete(JSON.stringify({ first, second: await attempt(mcp.remote.ping({})) }))`,
+      })
+      return { summary, status: yield* currentStatus }
+    }).pipe(Effect.provide(layer(remote.url)))
+    const { first, second } = JSON.parse(summary)
+    // The 404 ends the session; the next call is rejected locally.
+    assert.match(first, /^ERR mcp\.remote\.ping: /)
+    assert.match(
+      second,
+      /^ERR mcp\.remote\.ping: MCP server "remote" is not connected: /,
+    )
+    failure(status, "remote")
+    assert.deepStrictEqual(
+      remote.afterEnd.filter((request) => request.startsWith("POST")),
+      ["POST tools/call"],
+    )
+  }).pipe(Effect.scoped)
 
 // --- lifecycle and prompt ----------------------------------------------------
 
@@ -914,55 +966,20 @@ console.log(await mcp.fake.screenshot({}))`
   )
 
   it.live("an http session the server ended is not connected", () =>
-    Effect.gen(function* () {
-      // The `end` tool ends the session it is called in.
-      let endSession: (() => void) | undefined
-      const remote = yield* Effect.acquireRelease(
-        Effect.promise(() =>
-          listenHttp(
-            makeFakeServer({
-              tools: [
-                { name: "ping", call: () => text("pong") },
-                {
-                  name: "end",
-                  call: () => {
-                    endSession?.()
-                    return text("ended")
-                  },
-                },
-              ],
-            }),
-          ),
-        ),
-        (remote) => Effect.promise(remote.close),
-      )
-      endSession = remote.endSession
-      const { summary, status } = yield* Effect.gen(function* () {
-        const { summary } = yield* runAgent({
-          script: `${attempt}
-await mcp.remote.end({})
-const first = await attempt(mcp.remote.ping({}))
-await taskComplete(JSON.stringify({ first, second: await attempt(mcp.remote.ping({})) }))`,
-        })
-        return { summary, status: yield* currentStatus }
-      }).pipe(
-        Effect.provide(
-          McpServers.layer({ remote: { type: "http", url: remote.url } }),
-        ),
-      )
-      const { first, second } = JSON.parse(summary)
-      // The 404 ends the session; the next call is rejected locally.
-      assert.match(first, /^ERR mcp\.remote\.ping: /)
-      assert.match(
-        second,
-        /^ERR mcp\.remote\.ping: MCP server "remote" is not connected: /,
-      )
-      failure(status, "remote")
-      assert.deepStrictEqual(
-        remote.afterEnd.filter((request) => request.startsWith("POST")),
-        ["POST tools/call"],
-      )
-    }).pipe(Effect.scoped),
+    endedSession((url) => McpServers.layer({ remote: { type: "http", url } })),
+  )
+
+  it.live(
+    "an ended session on a caller-built SDK transport is not connected",
+    () =>
+      endedSession((url) =>
+        McpServers.layerTransports({
+          remote: {
+            transport: () =>
+              new StreamableHTTPClientTransport(new URL(url)) as Transport,
+          },
+        }),
+      ),
   )
 
   it.live("an http response resumes after its stream closes", () =>

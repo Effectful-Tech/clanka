@@ -69,9 +69,10 @@ running clanka in it. Pass `--no-mcp`, or set `CLANKA_MCP=false`, to load no
 servers at all.
 
 The model calls MCP tools from its scripts as `mcp.<server>.<tool>(options)`.
-Their type declarations are not in the system prompt: the model looks them up
-with `searchTools({ query })` or `searchTools({ server })`. A server that fails
-to start is reported and skipped.
+Their type declarations are not in the system prompt: the model lists a
+server's tools with `searchTools({ server })`, or searches all servers by
+keyword with `searchTools({ query })`, which returns at most 10 tools. A server
+that fails to start is reported and skipped.
 
 `clanka acp` ignores these files and connects the servers the ACP client sends
 with `session/new`, `session/load` and `session/resume`.

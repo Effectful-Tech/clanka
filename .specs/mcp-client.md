@@ -121,14 +121,20 @@ HTTP servers use `StreamableHTTPClientTransport` with the headers in
 ## Discovery
 
 ```ts
-searchTools({ query?: string, server?: string, limit?: number }): Promise<string>
+searchTools({ query?: string, server?: string }): Promise<string>
 ```
+
+One function has two modes, so that only one more global name is reserved:
+
+- `searchTools({ server })` lists every tool on that server, with no cap.
+- `searchTools({ query })` searches all servers by keyword and returns at most
+  10 tools. With `server` as well, it searches only that server.
+
+The d.ts doc comment leads with one example of each mode.
 
 - Keyword scoring over the tool name (split on `_`, `-` and camelCase, original
   and cleaned), the description and the parameter names. An exact name match
   ranks first.
-- `limit` defaults to 5, at most 20. `server` alone lists every tool on it and
-  ignores `limit`.
 - Neither argument, or an unknown server, rejects with the list of servers.
 - No match resolves with
   `No MCP tools match "<query>". Servers: github (26 tools), playwright (25 tools).`
@@ -144,10 +150,13 @@ searchTools({ query?: string, server?: string, limit?: number }): Promise<string
 `searchTools` and `mcp` are bound and declared only when at least one server
 is connected. MCP tool declarations never appear in the system prompt.
 
-The system prompt lists each connected server with its identifier, tool count
-and its instructions (capped at 2,000 characters), each failed server on one
-line with its reason, and, when a server is connected, how to call MCP tools
-and find their types.
+The system prompt lists each connected server with its identifier, tool count,
+the exact call that lists its tools (for example
+`- github (26 tools). List them with searchTools({ server: "github" }).`) and
+its instructions (capped at 2,000 characters), and each failed server on one
+line with its reason. When a server is connected, one sentence says how to
+call MCP tools, and that their types come from listing a server's tools or
+searching across all servers by keyword.
 
 ## JSON Schema to d.ts
 

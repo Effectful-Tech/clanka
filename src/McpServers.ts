@@ -781,22 +781,29 @@ const makeTool = Effect.fnUntraced(function* (
 // =============================================================================
 
 const searchToolsDts = `/**
- * Find MCP tools and return their type declarations, to print before calling
- * one. Pass a \`query\` to search tool names, descriptions and parameters, or a
- * \`server\` alone to list all of its tools.
+ * List every tool on a server:
+ *
+ *     console.log(await searchTools({ server: "github" }))
+ *
+ * Search all servers by keyword, for at most 10 tools:
+ *
+ *     console.log(await searchTools({ query: "create issue" }))
+ *
+ * Both return the tools' type declarations. Print them before calling a tool.
+ * A \`query\` with a \`server\` searches only that server.
  */
 declare function searchTools(options: {
     readonly query?: string;
     readonly server?: string;
-    /** How many tools to return for a query. Defaults to 5, at most 20. */
-    readonly limit?: number;
 }): Promise<string>`
 
 const SearchParams = Schema.Struct({
   query: Schema.optionalKey(Schema.String),
   server: Schema.optionalKey(Schema.String),
-  limit: Schema.optionalKey(Schema.Finite),
 })
+
+// The most tools a query returns. Listing a server returns all of them.
+const maxResults = 10
 
 const tokens = (text: string): Array<string> =>
   text
@@ -852,7 +859,6 @@ const makeSearchTools = (servers: ReadonlyArray<ConnectedServer>) => {
       )
     }
 
-    const limit = Math.min(20, Math.max(1, Math.floor(options.limit ?? 5)))
     const terms = { text: query.toLowerCase(), tokens: tokens(query) }
     const ranked = candidates
       .flatMap((server) =>
@@ -864,7 +870,7 @@ const makeSearchTools = (servers: ReadonlyArray<ConnectedServer>) => {
       )
       .filter((match) => match.score > 0)
       .toSorted((a, b) => b.score - a.score)
-      .slice(0, limit)
+      .slice(0, maxResults)
     if (ranked.length === 0) {
       return `No MCP tools match "${query}". Servers: ${counts}.`
     }
@@ -1039,7 +1045,7 @@ const renderPrompt = (servers: ReadonlyArray<ServerState>): string => {
     if (server._tag === "Failed") {
       return `- ${server.name}: failed to connect: ${shortReason(server.error)}`
     }
-    const header = `- ${server.id} (${server.status.tools.length} tools)`
+    const header = `- ${server.id} (${server.status.tools.length} tools). List them with \`searchTools({ server: ${JSON.stringify(server.id)} })\`.`
     return Option.match(server.status.instructions, {
       onNone: () => header,
       onSome: (instructions) => {
@@ -1047,7 +1053,7 @@ const renderPrompt = (servers: ReadonlyArray<ServerState>): string => {
           instructions.length > maxInstructions
             ? `${instructions.slice(0, maxInstructions)}\n[instructions truncated]`
             : instructions
-        return `${header}. Its instructions:\n\n${text.trim()}\n`
+        return `${header} Its instructions:\n\n${text.trim()}\n`
       },
     })
   })
@@ -1055,7 +1061,7 @@ const renderPrompt = (servers: ReadonlyArray<ServerState>): string => {
 ${
   anyConnected
     ? `
-MCP tools are called as \`mcp.<server>.<tool>(options)\`. Their types are not listed above: use \`searchTools\` to find tools and print their declarations before calling one. Images in their results are attached to the next message.
+MCP tools are called as \`mcp.<server>.<tool>(options)\`. Their types are not listed above: list a server's tools with \`searchTools({ server })\`, or search across all servers by keyword with \`searchTools({ query })\`, and print the declarations before calling a tool. Images in their results are attached to the next message.
 `
     : ""
 }

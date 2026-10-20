@@ -913,6 +913,96 @@ console.log(await mcp.fake.screenshot({}))`
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   )
 
+  it.live("an http session the server ended is not connected", () =>
+    Effect.gen(function* () {
+      // The `end` tool ends the session it is called in.
+      let endSession: (() => void) | undefined
+      const remote = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          listenHttp(
+            makeFakeServer({
+              tools: [
+                { name: "ping", call: () => text("pong") },
+                {
+                  name: "end",
+                  call: () => {
+                    endSession?.()
+                    return text("ended")
+                  },
+                },
+              ],
+            }),
+          ),
+        ),
+        (remote) => Effect.promise(remote.close),
+      )
+      endSession = remote.endSession
+      const { summary, status } = yield* Effect.gen(function* () {
+        const { summary } = yield* runAgent({
+          script: `${attempt}
+await mcp.remote.end({})
+const first = await attempt(mcp.remote.ping({}))
+await taskComplete(JSON.stringify({ first, second: await attempt(mcp.remote.ping({})) }))`,
+        })
+        return { summary, status: yield* currentStatus }
+      }).pipe(
+        Effect.provide(
+          McpServers.layer({ remote: { type: "http", url: remote.url } }),
+        ),
+      )
+      const { first, second } = JSON.parse(summary)
+      // The 404 ends the session; the next call is rejected locally.
+      assert.match(first, /^ERR mcp\.remote\.ping: /)
+      assert.match(
+        second,
+        /^ERR mcp\.remote\.ping: MCP server "remote" is not connected: /,
+      )
+      failure(status, "remote")
+      assert.deepStrictEqual(
+        remote.afterEnd.filter((request) => request.startsWith("POST")),
+        ["POST tools/call"],
+      )
+    }).pipe(Effect.scoped),
+  )
+
+  it.live("an http response resumes after its stream closes", () =>
+    Effect.gen(function* () {
+      const remote = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          listenHttp(
+            makeFakeServer({
+              tools: [
+                {
+                  name: "slow",
+                  call: async (_, { closeStream }) => {
+                    closeStream()
+                    await new Promise((resolve) => setTimeout(resolve, 100))
+                    return text("resumed")
+                  },
+                },
+              ],
+            }),
+            "/mcp",
+            { resumable: true },
+          ),
+        ),
+        (remote) => Effect.promise(remote.close),
+      )
+      const { summary, status } = yield* Effect.gen(function* () {
+        const { summary } = yield* runAgent({
+          script: "await taskComplete(await mcp.remote.slow({}))",
+        })
+        return { summary, status: yield* currentStatus }
+      }).pipe(
+        Effect.provide(
+          McpServers.layer({ remote: { type: "http", url: remote.url } }),
+        ),
+      )
+      assert.strictEqual(summary, "resumed")
+      assert.strictEqual(status["remote"]?._tag, "Connected")
+    }).pipe(Effect.scoped),
+  )
+
   it.live("http servers are sent the static headers", () =>
     Effect.gen(function* () {
       const remote = yield* Effect.acquireRelease(

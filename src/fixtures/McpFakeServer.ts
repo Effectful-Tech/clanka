@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
+import { InMemoryEventStore } from "@modelcontextprotocol/sdk/examples/shared/inMemoryEventStore.js"
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -25,6 +26,8 @@ export interface FakeTool {
         context: {
           readonly signal: AbortSignal
           readonly close: () => Promise<void>
+          /** Ends a resumable HTTP response stream before the result. */
+          readonly closeStream: () => void
         },
       ) => CallToolResult | Promise<CallToolResult>)
     | undefined
@@ -81,6 +84,7 @@ export const makeFakeServer = (options: {
     return tool.call(request.params.arguments ?? {}, {
       signal: extra.signal,
       close: () => server.close(),
+      closeStream: () => extra.closeSSEStream?.(),
     })
   })
   return server
@@ -88,31 +92,67 @@ export const makeFakeServer = (options: {
 
 /**
  * Serves one fake server session over streamable HTTP on a loopback port.
- * `authorization` collects the header of every request.
+ *
+ * - `authorization` collects the header of every request.
+ * - `resumable` stores events, so a closed response stream can be resumed.
+ * - `endSession` answers every later request with 404, as a server does for
+ *   a session it has ended. `afterEnd` lists those requests as
+ *   `"<HTTP method> <JSON-RPC method>"`.
  */
 export const listenHttp = async (
   server: Server,
   path = "/mcp",
+  options: { readonly resumable?: boolean } = {},
 ): Promise<{
   readonly url: string
   readonly authorization: ReadonlyArray<string | undefined>
+  readonly afterEnd: ReadonlyArray<string>
+  readonly endSession: () => void
   readonly close: () => Promise<void>
 }> => {
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),
+    ...(options.resumable === true
+      ? { eventStore: new InMemoryEventStore(), retryInterval: 10 }
+      : {}),
   })
   // The SDK's optional callbacks predate `exactOptionalPropertyTypes`.
   await server.connect(transport as Transport)
   const authorization: Array<string | undefined> = []
+  const afterEnd: Array<string> = []
+  let ended = false
   const http = Http.createServer((request, response) => {
     authorization.push(request.headers.authorization)
-    void transport.handleRequest(request, response)
+    if (!ended) {
+      void transport.handleRequest(request, response)
+      return
+    }
+    let body = ""
+    request.on("data", (chunk) => {
+      body += String(chunk)
+    })
+    request.on("end", () => {
+      const method = body === "" ? undefined : JSON.parse(body).method
+      afterEnd.push(`${request.method} ${method ?? ""}`.trim())
+      response.writeHead(404, { "content-type": "application/json" })
+      response.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32001, message: "Session not found" },
+        }),
+      )
+    })
   })
   await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve))
   const { port } = http.address() as AddressInfo
   return {
     url: `http://127.0.0.1:${port}${path}`,
     authorization,
+    afterEnd,
+    endSession: () => {
+      ended = true
+    },
     close: async () => {
       http.closeAllConnections()
       await new Promise((resolve) => http.close(resolve))

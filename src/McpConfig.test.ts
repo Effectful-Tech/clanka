@@ -200,6 +200,18 @@ describe("McpConfig", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   )
 
+  it.effect("keeps servers named like Object.prototype members", () =>
+    Effect.gen(function* () {
+      const { config } = yield* load({
+        project:
+          '{ "mcpServers": { "__proto__": { "command": "proto-cmd" }, "constructor": { "command": "constructor-cmd" } } }',
+      })
+      assert.sameMembers(Object.keys(config), ["__proto__", "constructor"])
+      assert.strictEqual(at(config, "__proto__.command"), "proto-cmd")
+      assert.strictEqual(at(config, "constructor.command"), "constructor-cmd")
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  )
+
   it.effect("an invalid file stops the CLI unless MCP is disabled", () =>
     Effect.gen(function* () {
       const invalidJson = yield* load({ project: "{ not json" }).pipe(

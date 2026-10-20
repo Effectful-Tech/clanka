@@ -1166,4 +1166,29 @@ describe("Acp MCP servers", () => {
         }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
       ),
   )
+
+  it.live("starts servers named like Object.prototype members", () =>
+    withStore(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const path = yield* Path.Path
+        const cwd = yield* fs.makeTempDirectoryScoped()
+        const server = yield* makeServer(() => assistantSays("ok"))
+        const names = ["constructor", "__proto__"]
+        const created = yield* server.request(1, "session/new", {
+          cwd,
+          mcpServers: names.map((name) =>
+            stdioServer(path, name, path.join(cwd, `${name}.json`)),
+          ),
+        })
+        assert.isUndefined(created.error)
+        for (const name of names) {
+          assert.isTrue(
+            yield* fs.exists(path.join(cwd, `${name}.json`)),
+            `${name} was not started`,
+          )
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    ),
+  )
 })

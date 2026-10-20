@@ -883,6 +883,36 @@ console.log(await mcp.fake.screenshot({}))`
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   )
 
+  it.live(
+    "a stdio server that fails to initialize has exited when the scope closes",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const path = yield* Path.Path
+        const out = path.join(yield* fs.makeTempDirectoryScoped(), "out.json")
+        const status = yield* currentStatus.pipe(
+          Effect.provide(
+            McpServers.layer({
+              rejecting: {
+                type: "stdio",
+                command: process.execPath,
+                args: [fixture(path)],
+                env: {
+                  FIXTURE_OUT: Redacted.make(out),
+                  FIXTURE_REJECT_INIT: Redacted.make("1"),
+                },
+              },
+            }),
+          ),
+        )
+        assert.include(failure(status, "rejecting"), "initialize rejected")
+        // The server outlives its stdin, so it only ends once the shutdown
+        // the failed connect started is awaited.
+        const started = JSON.parse(yield* fs.readFileString(out))
+        assert.isFalse(isRunning(started.pid))
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  )
+
   it.live("http servers are sent the static headers", () =>
     Effect.gen(function* () {
       const remote = yield* Effect.acquireRelease(

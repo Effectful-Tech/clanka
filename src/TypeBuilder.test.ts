@@ -1,9 +1,18 @@
 /** @effect-diagnostics schemaNumber:off */
+import * as JsonSchema from "effect/JsonSchema"
 import * as Schema from "effect/Schema"
+import * as SchemaRepresentation from "effect/SchemaRepresentation"
 import { describe, expect, it } from "vitest"
 import * as TypeBuilder from "./TypeBuilder.ts"
 
 const lines = (...parts: ReadonlyArray<string>): string => parts.join("\n")
+
+// Imported as MCP tool schemas are.
+const fromJsonSchema = (schema: JsonSchema.JsonSchema) =>
+  SchemaRepresentation.fromJsonSchemaDocument(
+    JsonSchema.fromSchemaDraft2020_12(schema),
+    { patterns: "ignore" },
+  )
 
 const primitiveCases = [
   ["string", Schema.String, "string"],
@@ -505,5 +514,66 @@ describe("TypeBuilder", () => {
         { omitTrailingSemicolon: true },
       ),
     ).toBe(lines("{", "    readonly token: string", "}"))
+  })
+
+  it("falls back to descriptions for property doc comments", () => {
+    // The importer attaches a check to integers and bounded strings.
+    expect(
+      TypeBuilder.render(
+        fromJsonSchema({
+          type: "object",
+          properties: {
+            owner: { type: "string", description: "Repository owner" },
+            count: { type: "integer", description: "How many" },
+            title: {
+              type: "string",
+              maxLength: 10,
+              description: "Short title",
+            },
+          },
+          required: ["owner"],
+        }),
+      ),
+    ).toBe(
+      lines(
+        "{",
+        "    /** Repository owner */",
+        "    readonly owner: string;",
+        "    /** How many */",
+        "    readonly count?: number;",
+        "    /** Short title */",
+        "    readonly title?: string;",
+        "    [x: string]: unknown;",
+        "}",
+      ),
+    )
+  })
+
+  it("supports omitting unknown index signatures", () => {
+    expect(
+      TypeBuilder.render(
+        fromJsonSchema({
+          type: "object",
+          properties: {
+            login: { type: "string" },
+            labels: {
+              type: "object",
+              additionalProperties: { type: "string" },
+            },
+          },
+          required: ["login"],
+        }),
+        { omitUnknownIndexSignatures: true },
+      ),
+    ).toBe(
+      lines(
+        "{",
+        "    readonly login: string;",
+        "    readonly labels?: {",
+        "        [x: string]: string;",
+        "    };",
+        "}",
+      ),
+    )
   })
 })

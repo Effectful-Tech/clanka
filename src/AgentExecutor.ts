@@ -1388,8 +1388,11 @@ function runScriptWorker(load: (id: string) => unknown): void {
     fetch,
     process: undefined,
   }
+  // MCP tools are named "<server>.<tool>" and bound as `mcp[server][tool]`.
+  // Null prototypes keep names like `__proto__` and `constructor` safe.
+  const mcp: Record<string, Record<string, unknown>> = Object.create(null)
   for (const name of data.tools) {
-    sandbox[name] = (params: unknown) =>
+    const call = (params: unknown) =>
       new Promise((resolve, reject) => {
         const id = nextId++
         pending.set(id, { resolve, reject })
@@ -1402,7 +1405,17 @@ function runScriptWorker(load: (id: string) => unknown): void {
           maybeDone()
         }
       })
+    const dot = name.indexOf(".")
+    if (dot === -1) {
+      sandbox[name] = call
+      continue
+    }
+    const server = name.slice(0, dot)
+    mcp[server] ??= Object.create(null)
+    mcp[server]![name.slice(dot + 1)] = call
   }
+  // Only bound with servers, so `typeof mcp` tells scripts whether there are any.
+  if (Object.keys(mcp).length > 0) sandbox["mcp"] = mcp
 
   new vm.Script(data.source).runInNewContext(sandbox)
   ;(sandbox.main as () => Promise<void>)().then(

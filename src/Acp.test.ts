@@ -6,6 +6,8 @@ import * as FileSystem from "effect/FileSystem"
 import * as Fiber from "effect/Fiber"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
+import * as Path from "effect/Path"
+import * as Schedule from "effect/Schedule"
 import * as Stream from "effect/Stream"
 import * as FetchHttpClient from "effect/http/FetchHttpClient"
 import * as Prompt from "effect/ai/Prompt"
@@ -17,6 +19,7 @@ import * as Acp from "./Acp.ts"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as Compaction from "./Compaction.ts"
+import { listenHttp, makeFakeServer, text } from "./fixtures/McpFakeServer.ts"
 
 type Message = {
   readonly id?: number
@@ -947,6 +950,245 @@ await changeDirectory("sub")`),
           assert.deepStrictEqual(done.result, { stopReason: "cancelled" })
         }),
       ),
+    ),
+  )
+})
+
+// --- MCP servers ---------------------------------------------------------------
+
+const systemText = (prompt: Prompt.Prompt): string =>
+  prompt.content
+    .filter((message) => message.role === "system")
+    .map((message) => message.content)
+    .join("\n")
+
+const isRunning = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const exited = (pid: number) =>
+  Effect.sync(() => isRunning(pid)).pipe(
+    Effect.repeat({
+      while: (running) => running,
+      schedule: Schedule.spaced("50 millis"),
+    }),
+    Effect.timeout("3 seconds"),
+  )
+
+const remoteServer = (path?: string) =>
+  Effect.acquireRelease(
+    Effect.promise(() =>
+      listenHttp(
+        makeFakeServer({
+          tools: [{ name: "ping", call: () => text("pong") }],
+        }),
+        path,
+      ),
+    ),
+    (remote) => Effect.promise(remote.close),
+  )
+
+/**
+ * An ACP stdio entry running the fixture server, which writes its pid and cwd
+ * to `out`.
+ */
+const stdioServer = (path: Path.Path, name: string, out: string) => ({
+  name,
+  command: process.execPath,
+  args: [path.join(import.meta.dirname, "fixtures", "McpStdioServer.ts")],
+  env: [{ name: "FIXTURE_OUT", value: out }],
+})
+
+const readStarted = (out: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    return JSON.parse(yield* fs.readFileString(out)) as {
+      readonly pid: number
+      readonly cwd: string
+    }
+  })
+
+describe("Acp MCP servers", () => {
+  it.live("connects stdio and http servers and reports failed ones once", () =>
+    withStore(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const path = yield* Path.Path
+        const cwd = yield* fs.makeTempDirectoryScoped()
+        const out = path.join(cwd, "started.json")
+        const remote = yield* remoteServer()
+        const systems: Array<string> = []
+        const server = yield* makeServer((options) => {
+          systems.push(systemText(options.prompt))
+          return assistantSays("ok")
+        })
+
+        const init = yield* server.request(1, "initialize", {
+          protocolVersion: 1,
+        })
+        assert.deepStrictEqual(init.result.agentCapabilities.mcpCapabilities, {
+          http: true,
+          sse: false,
+        })
+        assert.isDefined(
+          init.result.agentCapabilities.sessionCapabilities?.close,
+        )
+
+        const created = yield* server.request(2, "session/new", {
+          cwd,
+          mcpServers: [
+            // stdio has no `type`.
+            stdioServer(path, "acpstdio", out),
+            {
+              type: "http",
+              name: "acphttp",
+              url: remote.url,
+              headers: [{ name: "Authorization", value: "Bearer secret" }],
+            },
+            {
+              type: "sse",
+              name: "acplegacy",
+              url: "http://127.0.0.1:9/sse",
+              headers: [],
+            },
+            // A later duplicate is skipped.
+            {
+              name: "acpstdio",
+              command: "/nonexistent/clanka-mcp",
+              args: [],
+              env: [],
+            },
+          ],
+        })
+        assert.isUndefined(created.error)
+        const sessionId: string = created.result.sessionId
+        for (const id of [3, 4]) {
+          yield* server.request(id, "session/prompt", {
+            sessionId,
+            prompt: [{ type: "text", text: "hello" }],
+          })
+        }
+
+        const failures = server
+          .updates(sessionId)
+          .filter(
+            (u) =>
+              u.sessionUpdate === "agent_thought_chunk" &&
+              String(u.content.text).includes("MCP server"),
+          )
+          .map((u) => String(u.content.text))
+        assert.strictEqual(failures.length, 1)
+        assert.include(
+          failures[0],
+          'MCP server "acplegacy" failed: SSE transport is not supported',
+        )
+        assert.notInclude(failures[0], "acpstdio")
+
+        assert.include(systems[0], "acpstdio")
+        assert.include(systems[0], "acphttp")
+        // Stdio servers run in the session's cwd.
+        const started = yield* readStarted(out)
+        assert.strictEqual(started.cwd, yield* fs.realPath(cwd))
+        assert.isNotEmpty(remote.authorization)
+        for (const header of remote.authorization) {
+          assert.strictEqual(header, "Bearer secret")
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    ),
+  )
+
+  it.live(
+    "resume connects the sent servers, which are never persisted, and close ends them",
+    () =>
+      withStore(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const path = yield* Path.Path
+          const kvs = yield* KeyValueStore.KeyValueStore
+          const cwd = yield* fs.makeTempDirectoryScoped()
+          const remote = yield* remoteServer("/BROKER-TOKEN")
+          const systems: Array<string> = []
+          const server = yield* makeServer((options) => {
+            systems.push(systemText(options.prompt))
+            return assistantSays("ok")
+          })
+          const prompt = (id: number, sessionId: string) =>
+            server.request(id, "session/prompt", {
+              sessionId,
+              prompt: [{ type: "text", text: "hello" }],
+            })
+
+          const created = yield* server.request(1, "session/new", {
+            cwd,
+            mcpServers: [
+              stdioServer(path, "acpfirst", path.join(cwd, "first.json")),
+              { type: "http", name: "acpbroker", url: remote.url, headers: [] },
+            ],
+          })
+          const sessionId: string = created.result.sessionId
+          yield* prompt(2, sessionId)
+          const first = yield* readStarted(path.join(cwd, "first.json"))
+
+          const closed = yield* server.request(3, "session/close", {
+            sessionId,
+          })
+          assert.isUndefined(closed.error)
+          yield* exited(first.pid)
+          const afterClose = yield* prompt(4, sessionId)
+          assert.isDefined(afterClose.error)
+
+          const persisted = yield* kvs.get(`session-${sessionId}`)
+          assert.isDefined(persisted)
+          assert.notInclude(persisted, "BROKER-TOKEN")
+
+          const resumed = yield* server.request(5, "session/resume", {
+            sessionId,
+            cwd,
+            mcpServers: [
+              stdioServer(path, "acpsecond", path.join(cwd, "second.json")),
+            ],
+          })
+          assert.isUndefined(resumed.error)
+          yield* prompt(6, sessionId)
+          const system = systems.at(-1)!
+          assert.include(system, "acpsecond")
+          assert.notInclude(system, "acpfirst")
+          assert.notInclude(system, "acpbroker")
+
+          const second = yield* readStarted(path.join(cwd, "second.json"))
+          yield* server.request(7, "session/close", { sessionId })
+          yield* exited(second.pid)
+        }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      ),
+  )
+
+  it.live("starts servers named like Object.prototype members", () =>
+    withStore(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const path = yield* Path.Path
+        const cwd = yield* fs.makeTempDirectoryScoped()
+        const server = yield* makeServer(() => assistantSays("ok"))
+        const names = ["constructor", "__proto__"]
+        const created = yield* server.request(1, "session/new", {
+          cwd,
+          mcpServers: names.map((name) =>
+            stdioServer(path, name, path.join(cwd, `${name}.json`)),
+          ),
+        })
+        assert.isUndefined(created.error)
+        for (const name of names) {
+          assert.isTrue(
+            yield* fs.exists(path.join(cwd, `${name}.json`)),
+            `${name} was not started`,
+          )
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     ),
   )
 })

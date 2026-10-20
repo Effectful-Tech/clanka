@@ -16,6 +16,11 @@ type Precedence = (typeof Precedence)[keyof typeof Precedence]
 export type PrinterOptions = {
   readonly newLine?: "\n" | "\r\n"
   readonly omitTrailingSemicolon?: boolean
+  /**
+   * Leave out `[x: string]: unknown` index signatures, which open objects
+   * imported from JSON Schema carry.
+   */
+  readonly omitUnknownIndexSignatures?: boolean
 }
 
 export type PrintableNode = {
@@ -47,6 +52,7 @@ const normalizeOptions = (
 ): Required<PrinterOptions> => ({
   newLine: options?.newLine ?? "\n",
   omitTrailingSemicolon: options?.omitTrailingSemicolon ?? false,
+  omitUnknownIndexSignatures: options?.omitUnknownIndexSignatures ?? false,
 })
 
 const indent = (level: number): string => "    ".repeat(level)
@@ -79,13 +85,15 @@ const appendSuffix = (
   return lines.join(newLine)
 }
 
-const renderJsDoc = (
+/**
+ * Renders a doc comment, each line prefixed with `indentation`.
+ */
+export const renderJsDoc = (
   documentation: string,
-  indentLevel: number,
-  options: Required<PrinterOptions>,
+  indentation: string,
+  newLine: string = "\n",
 ): string => {
   const safeDocumentation = documentation.replaceAll("*/", "*\\/")
-  const indentation = indent(indentLevel)
   const lines = safeDocumentation.split(/\r?\n/u)
 
   if (lines.length === 1) {
@@ -94,9 +102,9 @@ const renderJsDoc = (
 
   return [
     `${indentation}/**`,
-    ...lines.map((line) => `${indentation} * ${line}`),
+    ...lines.map((line) => `${indentation} * ${line}`.trimEnd()),
     `${indentation} */`,
-  ].join(options.newLine)
+  ].join(newLine)
 }
 
 const parenthesize = (text: string): string => `(${text})`
@@ -276,15 +284,20 @@ const propertySignatureTypeElement = (
     `${indent(indentLevel)}${readonlyModifier}${propertyName(propertySignature.name)}${optionalMarker}: `,
     context.options.newLine,
   )
-  const documentation = resolveDocumentation(propertySignature.type)
+  // Schemas imported from JSON Schema carry `description`. It is read from
+  // the base node: `resolveAt` finds nothing on a node with checks.
+  const documentation =
+    resolveDocumentation(propertySignature.type) ??
+    propertySignature.type.annotations?.["description"]
 
-  return documentation === undefined
+  return typeof documentation !== "string"
     ? propertyText
-    : `${renderJsDoc(documentation, indentLevel, context.options)}${context.options.newLine}${propertyText}`
+    : `${renderJsDoc(documentation, indent(indentLevel), context.options.newLine)}${context.options.newLine}${propertyText}`
 }
 
 const indexSignatureTypeElement = (
   indexSignature: AST.IndexSignature,
+  valueType: RenderedType,
   context: RenderContext,
   indentLevel: number,
 ): string => {
@@ -293,7 +306,6 @@ const indexSignatureTypeElement = (
     context,
     indentLevel,
   )
-  const valueType = toTypeNode(indexSignature.type, context, indentLevel)
 
   return prefixFirstLine(
     appendSuffix(
@@ -315,9 +327,24 @@ const objectsTypeNode = (
     ...ast.propertySignatures.map((propertySignature) =>
       propertySignatureTypeElement(propertySignature, context, indentLevel + 1),
     ),
-    ...ast.indexSignatures.map((indexSignature) =>
-      indexSignatureTypeElement(indexSignature, context, indentLevel + 1),
-    ),
+    ...ast.indexSignatures.flatMap((indexSignature) => {
+      const valueType = toTypeNode(
+        indexSignature.type,
+        context,
+        indentLevel + 1,
+      )
+      return context.options.omitUnknownIndexSignatures &&
+        valueType.text === "unknown"
+        ? []
+        : [
+            indexSignatureTypeElement(
+              indexSignature,
+              valueType,
+              context,
+              indentLevel + 1,
+            ),
+          ]
+    }),
   ]
 
   return {
@@ -664,7 +691,7 @@ export const render = (
       text:
         documentation === undefined
           ? rendered.text
-          : `${renderJsDoc(documentation, 0, printerOptions)}${printerOptions.newLine}${rendered.text}`,
+          : `${renderJsDoc(documentation, "", printerOptions.newLine)}${printerOptions.newLine}${rendered.text}`,
     },
     printerOptions,
   )

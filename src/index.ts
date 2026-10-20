@@ -52,6 +52,11 @@ export * as Image from "./Image.ts"
 /**
  * @since 1.0.0
  */
+export * as McpServers from "./McpServers.ts"
+
+/**
+ * @since 1.0.0
+ */
 export * as Copilot from "./Copilot.ts"
 
 /**

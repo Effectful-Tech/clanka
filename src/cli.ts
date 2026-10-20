@@ -14,6 +14,8 @@ import * as Copilot from "./Copilot.ts"
 import * as Xai from "./Xai.ts"
 import * as Agent from "./Agent.ts"
 import * as Compaction from "./Compaction.ts"
+import * as McpConfig from "./McpConfig.ts"
+import * as McpServers from "./McpServers.ts"
 import * as Stream from "effect/Stream"
 import * as Stdio from "effect/Stdio"
 import { pipe } from "effect/Function"
@@ -170,6 +172,35 @@ const compaction = Flag.Boolean("compaction").pipe(
   ),
 )
 
+// Kill switch: `--no-mcp` or CLANKA_MCP=false.
+const mcp = Flag.Boolean("mcp").pipe(
+  Flag.withDescription(
+    "Start the MCP servers from ~/.config/clanka/mcp.json, ./.mcp.json and --mcp-config. Disable with --no-mcp or CLANKA_MCP=false.",
+  ),
+  Flag.withFallbackConfig(
+    Config.Boolean("CLANKA_MCP").pipe(Config.withDefault(true)),
+  ),
+)
+
+const mcpConfig = Flag.String("mcp-config").pipe(
+  Flag.withDescription(
+    'An MCP config file in the { "mcpServers": { ... } } format. Repeatable; a later file wins.',
+  ),
+  Flag.atLeast(0),
+)
+
+// One line after connecting, such as `MCP: github (26 tools), linear failed: ...`.
+const mcpSummary = (
+  status: Readonly<Record<string, McpServers.ServerStatus>>,
+) =>
+  `MCP: ${Object.entries(status)
+    .map(([name, server]) =>
+      server._tag === "Connected"
+        ? `${name} (${server.tools.length} tools)`
+        : `${name} failed: ${server.error.split("\n")[0]}`,
+    )
+    .join(", ")}`
+
 const Kvs = Layer.unwrap(
   Effect.gen(function* () {
     const path = yield* Path.Path
@@ -276,6 +307,8 @@ Command.make("clanka", {
   compaction,
   apiKey,
   apiUrl,
+  mcp,
+  mcpConfig,
 }).pipe(
   Command.withHandler(
     Effect.fnUntraced(function* ({
@@ -285,8 +318,15 @@ Command.make("clanka", {
       prompt: nonInteractivePrompt,
       apiKey,
       apiUrl,
+      mcp,
+      mcpConfig,
     }) {
       const stdio = yield* Stdio.Stdio
+      const mcpServers = yield* McpConfig.load({
+        cwd: process.cwd(),
+        files: mcpConfig,
+        enabled: mcp,
+      })
       const OutputFormatter = yield* Effect.promise(
         () => import("./OutputFormatter.ts"),
       )
@@ -322,6 +362,11 @@ Command.make("clanka", {
           )
         }
 
+        if (Object.keys(mcpServers).length > 0) {
+          const servers = yield* McpServers.McpServers
+          console.log(mcpSummary(yield* servers.status))
+        }
+
         while (true) {
           const prompt = yield* Prompt.String({
             message: ">",
@@ -347,6 +392,7 @@ Command.make("clanka", {
                 onSome: Search,
               }),
             ),
+            Layer.provideMerge(McpServers.layer(mcpServers)),
           ),
           Model,
         ]),

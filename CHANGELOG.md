@@ -1,5 +1,11 @@
 # clanka
 
+## 0.12.0
+
+### Minor Changes
+
+- [#232](https://github.com/Effectful-Tech/clanka/pull/232) [`4b5c830`](https://github.com/Effectful-Tech/clanka/commit/4b5c83000df6a2bcd0cfc16427cebd4f7de1cfef) Thanks [@tim-smart](https://github.com/tim-smart)! - Add MCP client support. An Agent given `McpServers.layer` can call MCP tools over stdio or streamable HTTP from scripts as `mcp.<server>.<tool>(…)` and find their types with `searchTools`, which lists a server's tools or searches all servers by keyword. The CLI reads servers from `~/.config/clanka/mcp.json`, `.mcp.json` and `--mcp-config` (disable with `--no-mcp` or `CLANKA_MCP=false`), and `clanka acp` accepts `mcpServers` and `session/close`.
+
 ## 0.11.0
 
 ### Minor Changes

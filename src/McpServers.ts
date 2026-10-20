@@ -676,7 +676,7 @@ const connect = Effect.fnUntraced(function* (
     if (
       error instanceof StreamableHTTPError &&
       error.code === 404 &&
-      transport instanceof HttpTransport &&
+      transport instanceof StreamableHTTPClientTransport &&
       transport.sessionId !== undefined
     ) {
       server.dropped ??= error.message

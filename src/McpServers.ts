@@ -8,7 +8,6 @@
  * @since 1.0.0
  */
 import * as NodePath from "node:path"
-import * as Readline from "node:readline"
 import type { Readable } from "node:stream"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
@@ -27,13 +26,18 @@ import * as Context from "effect/Context"
 import * as Data from "effect/Data"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
+import * as Base64 from "effect/encoding/Base64"
 import * as Exit from "effect/Exit"
+import * as Fiber from "effect/Fiber"
 import * as JsonSchema from "effect/JsonSchema"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
+import * as Record from "effect/Record"
 import * as Redacted from "effect/Redacted"
+import * as Result from "effect/Result"
 import * as Schema from "effect/Schema"
 import * as SchemaRepresentation from "effect/SchemaRepresentation"
+import * as Stream from "effect/Stream"
 import type { LoopToolHandlers } from "./AgentExecutor.ts"
 import { defaultMcpCallTimeout, type ImageAttachment } from "./AgentTools.ts"
 import * as Image from "./Image.ts"
@@ -204,11 +208,8 @@ export class McpServers extends Context.Service<
 export const layer = (
   config: Readonly<Record<string, ServerEntry>>,
 ): Layer.Layer<McpServers> =>
-  Layer.effect(
-    McpServers,
-    Effect.suspend(() =>
-      make(Object.entries(config).map(([name, entry]) => toEntry(name, entry))),
-    ),
+  fromEntries(
+    Object.entries(config).map(([name, entry]) => toEntry(name, entry)),
   )
 
 /**
@@ -220,23 +221,17 @@ export const layer = (
 export const layerTransports = (
   servers: Readonly<Record<string, TransportServer>>,
 ): Layer.Layer<McpServers> =>
-  Layer.effect(
-    McpServers,
-    Effect.suspend(() =>
-      make(
-        Object.entries(servers).map(([name, server]): Entry => ({
-          name,
-          open: () => ({ transport: server.transport(), stderr: undefined }),
-          connectTimeout: Duration.fromInputUnsafe(
-            server.connectTimeout ?? defaultConnectTimeout,
-          ),
-          callTimeout: Duration.fromInputUnsafe(
-            server.callTimeout ?? defaultMcpCallTimeout,
-          ),
-        })),
-      ),
-    ),
+  fromEntries(
+    Object.entries(servers).map(([name, server]) => ({
+      name,
+      open: () => ({ transport: server.transport(), stderr: undefined }),
+      connectTimeout: server.connectTimeout,
+      callTimeout: server.callTimeout,
+    })),
   )
+
+const fromEntries = (entries: ReadonlyArray<Entry>): Layer.Layer<McpServers> =>
+  Layer.effect(McpServers, make(entries))
 
 // =============================================================================
 // Naming
@@ -318,8 +313,8 @@ type Entry =
   | {
       readonly name: string
       readonly open: () => Opened
-      readonly connectTimeout: Duration.Duration
-      readonly callTimeout: Duration.Duration
+      readonly connectTimeout?: Duration.Input | undefined
+      readonly callTimeout?: Duration.Input | undefined
     }
   | { readonly name: string; readonly error: string }
 
@@ -343,39 +338,48 @@ const toEntry = (name: string, entry: ServerEntry): Entry => {
             stderr: (transport.stderr as Readable | null) ?? undefined,
           }
         },
-        connectTimeout: entry.connectTimeout ?? defaultConnectTimeout,
-        callTimeout: entry.callTimeout ?? defaultMcpCallTimeout,
+        connectTimeout: entry.connectTimeout,
+        callTimeout: entry.callTimeout,
       }
     case "http":
       return {
         name,
-        open: () => {
-          // Match the SDK defaults while allowing shutdown to disable retries.
-          const reconnectionOptions = {
-            initialReconnectionDelay: 1000,
-            maxReconnectionDelay: 30000,
-            reconnectionDelayGrowFactor: 1.5,
-            maxRetries: 2,
-          }
-          const transport = new StreamableHTTPClientTransport(
+        open: () => ({
+          transport: new HttpTransport(
             new URL(entry.url),
-            {
-              requestInit: { headers: unwrapRecord(entry.headers) },
-              reconnectionOptions,
-            },
-          )
-          const close = transport.close.bind(transport)
-          transport.close = () => {
-            // A failed resumption GET can schedule another retry after onerror
-            // returns, even if close has already cleared the current timer.
-            reconnectionOptions.maxRetries = 0
-            return close()
-          }
-          return { transport: transport as Transport, stderr: undefined }
-        },
-        connectTimeout: entry.connectTimeout ?? defaultConnectTimeout,
-        callTimeout: entry.callTimeout ?? defaultMcpCallTimeout,
+            unwrapRecord(entry.headers),
+          ) as Transport,
+          stderr: undefined,
+        }),
+        connectTimeout: entry.connectTimeout,
+        callTimeout: entry.callTimeout,
       }
+  }
+}
+
+/**
+ * The SDK transport with its retries stopped by `close`. The SDK reads
+ * `maxRetries` when it schedules a retry, and a resumption GET that fails
+ * after `close` would otherwise schedule another one.
+ */
+class HttpTransport extends StreamableHTTPClientTransport {
+  readonly reconnection: { maxRetries: number }
+
+  constructor(url: URL, headers: Record<string, string>) {
+    // The SDK defaults.
+    const reconnection = {
+      initialReconnectionDelay: 1000,
+      maxReconnectionDelay: 30000,
+      reconnectionDelayGrowFactor: 1.5,
+      maxRetries: 2,
+    }
+    super(url, { requestInit: { headers }, reconnectionOptions: reconnection })
+    this.reconnection = reconnection
+  }
+
+  override close(): Promise<void> {
+    this.reconnection.maxRetries = 0
+    return super.close()
   }
 }
 
@@ -389,13 +393,7 @@ const processEnv = (): Record<string, string> => {
 
 const unwrapRecord = (
   record: Readonly<Record<string, Redacted.Redacted<string>>> | undefined,
-): Record<string, string> => {
-  const result: Record<string, string> = {}
-  for (const [key, value] of Object.entries(record ?? {})) {
-    result[key] = Redacted.value(value)
-  }
-  return result
-}
+): Record<string, string> => Record.map(record ?? {}, Redacted.value)
 
 interface ToolEntry {
   readonly id: string
@@ -416,18 +414,37 @@ interface ToolEntry {
   }
 }
 
-interface ServerState {
+interface ConnectedServer {
+  readonly _tag: "Connected"
   readonly name: string
   readonly id: string
   readonly callTimeout: Duration.Duration
-  status: ServerStatus
-  /** The reason a failed server shows in the system prompt. */
-  reason: string
-  client: Client | undefined
-  /** Why a connected server dropped. */
-  disconnected: string | undefined
-  tools: ReadonlyArray<ToolEntry>
+  readonly client: Client
+  readonly status: Connected
+  readonly tools: ReadonlyArray<ToolEntry>
+  /** Why the connection dropped, once it has. Nothing reconnects. */
+  dropped: string | undefined
 }
+
+interface FailedServer {
+  readonly _tag: "Failed"
+  readonly name: string
+  readonly id: string
+  /** The reason, followed by the stderr tail when there is one. */
+  readonly error: string
+}
+
+type ServerState = ConnectedServer | FailedServer
+
+const currentStatus = (server: ServerState): ServerStatus => {
+  if (server._tag === "Failed") return new Failed({ error: server.error })
+  return server.dropped === undefined
+    ? server.status
+    : new Failed({ error: `disconnected: ${server.dropped}` })
+}
+
+/** The first line of a failure, for the system prompt. */
+const shortReason = (error: string): string => error.split("\n")[0]!
 
 // The rolling stderr buffer kept until a stdio server is connected.
 const stderrLines = 20
@@ -461,12 +478,16 @@ const make = Effect.fnUntraced(function* (entries: ReadonlyArray<Entry>) {
     { concurrency: "unbounded" },
   )
 
-  const connected = servers.filter((server) => server.client !== undefined)
+  const connected = servers.filter(
+    (server): server is ConnectedServer => server._tag === "Connected",
+  )
   const searchTools = makeSearchTools(connected)
 
   return McpServers.of({
     status: Effect.sync(() =>
-      Object.fromEntries(servers.map((server) => [server.name, server.status])),
+      Object.fromEntries(
+        servers.map((server) => [server.name, currentStatus(server)]),
+      ),
     ),
     prompt: renderPrompt(servers),
     dts: connected.length > 0 ? searchToolsDts : "",
@@ -499,67 +520,49 @@ const connect = Effect.fnUntraced(function* (
   id: string,
   runFork: <A, E>(effect: Effect.Effect<A, E>) => unknown,
 ) {
-  const server: ServerState = {
-    name: entry.name,
-    id,
-    callTimeout:
-      "callTimeout" in entry ? entry.callTimeout : defaultMcpCallTimeout,
-    status: new Failed({ error: "" }),
-    reason: "",
-    client: undefined,
-    disconnected: undefined,
-    tools: [],
-  }
-  const fail = (reason: string, details?: string) =>
-    Effect.gen(function* () {
-      const error =
-        details === undefined || details === ""
-          ? reason
-          : `${reason}\n${details}`
-      server.reason = reason.replace(/\s+/g, " ")
-      server.status = new Failed({ error })
-      yield* Effect.logWarning("MCP server failed").pipe(
-        Effect.annotateLogs({ server: entry.name, error }),
-      )
-      return server
-    })
+  const fail = (error: string) =>
+    Effect.logWarning("MCP server failed").pipe(
+      Effect.annotateLogs({ server: entry.name, error }),
+      Effect.as<ServerState>({ _tag: "Failed", name: entry.name, id, error }),
+    )
 
   if ("error" in entry) return yield* fail(entry.error)
 
-  const openExit = yield* Effect.exit(
+  const opened = yield* Effect.result(
     Effect.try({ try: entry.open, catch: errorMessage }),
   )
-  if (Exit.isFailure(openExit)) {
-    return yield* fail(
-      Option.getOrElse(Exit.findErrorOption(openExit), () => "failed to start"),
-    )
-  }
-  const opened = openExit.value
+  if (Result.isFailure(opened)) return yield* fail(opened.failure)
+  const { transport, stderr } = opened.success
 
   // stderr goes to the debug log. Until the server is connected, its tail is
   // also kept for the failure message.
   let buffer: Array<string> | undefined = []
-  let stderrEnded: Promise<void> = Promise.resolve()
-  const stderr = opened.stderr
-  if (stderr !== undefined) {
-    stderrEnded = new Promise((resolve) => {
-      stderr.once("end", resolve)
-      stderr.once("close", resolve)
-    })
-    Readline.createInterface({ input: stderr }).on("line", (line) => {
-      runFork(
-        Effect.logDebug(line).pipe(Effect.annotateLogs({ server: entry.name })),
-      )
-      if (buffer === undefined) return
-      buffer.push(line)
-      while (
-        buffer.length > stderrLines ||
-        (buffer.length > 1 && buffer.join("\n").length > stderrChars)
-      ) {
-        buffer.shift()
-      }
-    })
-  }
+  const stderrReader = yield* Effect.forkScoped(
+    stderr === undefined
+      ? Effect.void
+      : Stream.fromAsyncIterable(
+          stderr as AsyncIterable<Uint8Array>,
+          errorMessage,
+        ).pipe(
+          Stream.decodeText,
+          Stream.splitLines,
+          Stream.runForEach((line) => {
+            if (buffer !== undefined) {
+              buffer.push(line)
+              while (
+                buffer.length > stderrLines ||
+                (buffer.length > 1 && buffer.join("\n").length > stderrChars)
+              ) {
+                buffer.shift()
+              }
+            }
+            return Effect.logDebug(line).pipe(
+              Effect.annotateLogs({ server: entry.name }),
+            )
+          }),
+          Effect.ignore,
+        ),
+  )
 
   const client = new Client({ name: "clanka", version: "1.0.0" })
   // Failed initialization starts close without awaiting it. Retain that
@@ -567,35 +570,26 @@ const connect = Effect.fnUntraced(function* (
   const close = client.close.bind(client)
   let closing: Promise<void> | undefined
   client.close = () => (closing ??= close())
-  // The SDK client only has callback properties.
-  // oxlint-disable-next-line unicorn/prefer-add-event-listener
-  client.onerror = (error) => {
-    if (
-      error instanceof StreamableHTTPError &&
-      error.code === 404 &&
-      opened.transport instanceof StreamableHTTPClientTransport &&
-      opened.transport.sessionId !== undefined
-    ) {
-      server.disconnected ??= error.message
-      server.status = new Failed({
-        error: `disconnected: ${server.disconnected}`,
-      })
-      void client.close().catch(() => undefined)
-    }
+  const logError = (error: Error) =>
     runFork(
       Effect.logDebug("MCP client error", error.message).pipe(
         Effect.annotateLogs({ server: entry.name }),
       ),
     )
-  }
+  // The SDK client only has callback properties.
+  // oxlint-disable-next-line unicorn/prefer-add-event-listener
+  client.onerror = logError
   yield* Effect.addFinalizer(() =>
     Effect.promise(() => client.close().catch(() => undefined)),
   )
 
-  const timeout = Duration.toMillis(entry.connectTimeout)
-  const exit = yield* Effect.tryPromise({
+  const connectTimeout = Duration.fromInputUnsafe(
+    entry.connectTimeout ?? defaultConnectTimeout,
+  )
+  const timeout = Duration.toMillis(connectTimeout)
+  const listed = yield* Effect.tryPromise({
     try: async (signal) => {
-      await client.connect(opened.transport, { signal, timeout })
+      await client.connect(transport, { signal, timeout })
       const tools: Array<McpTool> = []
       let cursor: string | undefined = undefined
       do {
@@ -620,34 +614,27 @@ const connect = Effect.fnUntraced(function* (
     catch: errorMessage,
   }).pipe(
     Effect.timeoutOrElse({
-      duration: entry.connectTimeout,
+      duration: connectTimeout,
       orElse: () => Effect.fail(`connection timed out after ${timeout}ms`),
     }),
-    Effect.exit,
+    Effect.result,
   )
 
-  if (Exit.isFailure(exit)) {
-    const reason = Option.getOrElse(
-      Exit.findErrorOption(exit),
-      () => "connection failed",
-    )
-    yield* Effect.promise(async () => {
-      await client.close().catch(() => undefined)
-      await Promise.race([
-        stderrEnded,
-        new Promise((resolve) => setTimeout(resolve, 500)),
-      ])
-    })
+  if (Result.isFailure(listed)) {
+    // Closing ends the process; give its last stderr lines a moment to arrive.
+    yield* Effect.promise(() => client.close().catch(() => undefined))
+    yield* Fiber.join(stderrReader).pipe(Effect.timeoutOption("500 millis"))
     const details = buffer.join("\n")
     buffer = undefined
-    return yield* fail(reason, details)
+    return yield* fail(
+      details === "" ? listed.failure : `${listed.failure}\n${details}`,
+    )
   }
   buffer = undefined
 
-  const listed = exit.value
   const seen = new Set<string>()
   const tools: Array<ToolEntry> = []
-  for (const tool of listed) {
+  for (const tool of listed.success) {
     const toolId = identifier(tool.name)
     if (seen.has(toolId)) {
       yield* Effect.logWarning("MCP tool skipped").pipe(
@@ -663,19 +650,39 @@ const connect = Effect.fnUntraced(function* (
     tools.push(yield* makeTool(entry.name, toolId, tool))
   }
 
-  const instructions = client.getInstructions()
-  server.client = client
-  server.tools = tools
-  server.status = new Connected({
-    tools: listed.map((tool) => tool.name),
-    instructions: Option.fromNullishOr(instructions),
-  })
+  const server: ConnectedServer = {
+    _tag: "Connected",
+    name: entry.name,
+    id,
+    callTimeout: Duration.fromInputUnsafe(
+      entry.callTimeout ?? defaultMcpCallTimeout,
+    ),
+    client,
+    status: new Connected({
+      tools: listed.success.map((tool) => tool.name),
+      instructions: Option.fromNullishOr(client.getInstructions()),
+    }),
+    tools,
+    dropped: undefined,
+  }
   // oxlint-disable-next-line unicorn/prefer-add-event-listener
   client.onclose = () => {
-    server.disconnected ??= "connection closed"
-    server.status = new Failed({
-      error: `disconnected: ${server.disconnected}`,
-    })
+    server.dropped ??= "connection closed"
+  }
+  // oxlint-disable-next-line unicorn/prefer-add-event-listener
+  client.onerror = (error) => {
+    // A 404 on a request carrying the session ID means the server ended the
+    // session. The SDK only reports it, and nothing starts a new session.
+    if (
+      error instanceof StreamableHTTPError &&
+      error.code === 404 &&
+      transport instanceof HttpTransport &&
+      transport.sessionId !== undefined
+    ) {
+      server.dropped ??= error.message
+      void client.close().catch(() => undefined)
+    }
+    logError(error)
   }
   return server
 })
@@ -697,17 +704,6 @@ const importSchema = (schema: object): Schema.Top => {
 
 const indentRest = (text: string, indent: string): string =>
   text.split("\n").join(`\n${indent}`)
-
-const jsDoc = (text: string, indent: string): string => {
-  const lines = text.replaceAll("*/", "*\\/").split(/\r?\n/u)
-  return lines.length === 1
-    ? `${indent}/** ${lines[0]} */`
-    : [
-        `${indent}/**`,
-        ...lines.map((line) => `${indent} * ${line}`.trimEnd()),
-        `${indent} */`,
-      ].join("\n")
-}
 
 const makeTool = Effect.fnUntraced(function* (
   serverName: string,
@@ -770,7 +766,7 @@ const makeTool = Effect.fnUntraced(function* (
     dts:
       docs.length === 0
         ? signature
-        : `${jsDoc(docs.join("\n\n"), "  ")}\n${signature}`,
+        : `${TypeBuilder.renderJsDoc(docs.join("\n\n"), "  ")}\n${signature}`,
     search: {
       names: [tool.name.toLowerCase(), id.toLowerCase()],
       nameTokens: new Set([...tokens(tool.name), ...tokens(id)]),
@@ -809,9 +805,12 @@ const tokens = (text: string): Array<string> =>
     .split(/[^a-z0-9]+/)
     .filter((token) => token !== "")
 
-const score = (tool: ToolEntry, query: string): number => {
-  let total = tool.search.names.includes(query.trim().toLowerCase()) ? 1000 : 0
-  for (const token of tokens(query)) {
+const score = (
+  tool: ToolEntry,
+  query: { readonly text: string; readonly tokens: ReadonlyArray<string> },
+): number => {
+  let total = tool.search.names.includes(query.text) ? 1000 : 0
+  for (const token of query.tokens) {
     if (tool.search.nameTokens.has(token)) total += 10
     else if (tool.search.names.some((name) => name.includes(token))) total += 5
     if (tool.search.parameterTokens.has(token)) total += 3
@@ -820,16 +819,11 @@ const score = (tool: ToolEntry, query: string): number => {
   return total
 }
 
-const makeSearchTools = (servers: ReadonlyArray<ServerState>) => {
+const makeSearchTools = (servers: ReadonlyArray<ConnectedServer>) => {
   const decode = Schema.decodeUnknownEffect(SearchParams)
   const serverList = servers.map((server) => server.id).join(", ")
   const counts = servers
-    .map((server) => {
-      const status = server.status
-      const count =
-        status._tag === "Connected" ? status.tools.length : server.tools.length
-      return `${server.id} (${count} tools)`
-    })
+    .map((server) => `${server.id} (${server.status.tools.length} tools)`)
     .join(", ")
 
   return (params: unknown): Effect.Effect<string, string> =>
@@ -858,12 +852,13 @@ const makeSearchTools = (servers: ReadonlyArray<ServerState>) => {
       }
 
       const limit = Math.min(20, Math.max(1, Math.floor(options.limit ?? 5)))
+      const terms = { text: query.toLowerCase(), tokens: tokens(query) }
       const ranked = candidates
         .flatMap((server) =>
           server.tools.map((tool) => ({
             server,
             tool,
-            score: score(tool, query),
+            score: score(tool, terms),
           })),
         )
         .filter((match) => match.score > 0)
@@ -872,7 +867,7 @@ const makeSearchTools = (servers: ReadonlyArray<ServerState>) => {
       if (ranked.length === 0) {
         return `No MCP tools match "${query}". Servers: ${counts}.`
       }
-      const groups = new Map<ServerState, Array<ToolEntry>>()
+      const groups = new Map<ConnectedServer, Array<ToolEntry>>()
       for (const { server, tool } of ranked) {
         const group = groups.get(server)
         if (group === undefined) groups.set(server, [tool])
@@ -883,7 +878,7 @@ const makeSearchTools = (servers: ReadonlyArray<ServerState>) => {
 }
 
 const renderTools = (
-  groups: ReadonlyArray<readonly [ServerState, ReadonlyArray<ToolEntry>]>,
+  groups: ReadonlyArray<readonly [ConnectedServer, ReadonlyArray<ToolEntry>]>,
 ): string =>
   groups
     .map(
@@ -897,20 +892,20 @@ const renderTools = (
 // =============================================================================
 
 const callTool = (
-  server: ServerState,
+  server: ConnectedServer,
   tool: ToolEntry,
   onImage: (image: ImageAttachment) => Effect.Effect<void>,
   nextImage: () => number,
 ) => {
-  const prefix = `mcp.${server.id}.${tool.id}:`
+  const name = `${server.id}.${tool.id}`
+  const prefix = `mcp.${name}:`
   const timeout = Duration.toMillis(server.callTimeout)
   const timedOut = `${prefix} timed out after ${timeout}ms`
   return (params: unknown): Effect.Effect<unknown, string> =>
     Effect.gen(function* () {
-      const client = server.client
-      if (server.disconnected !== undefined || client === undefined) {
+      if (server.dropped !== undefined) {
         return yield* Effect.fail(
-          `${prefix} MCP server "${server.name}" is not connected: ${server.disconnected ?? "never connected"}`,
+          `${prefix} MCP server "${server.name}" is not connected: ${server.dropped}`,
         )
       }
       const args = params ?? {}
@@ -921,7 +916,7 @@ const callTool = (
       }
       const result = (yield* Effect.tryPromise({
         try: (signal) =>
-          client.callTool(
+          server.client.callTool(
             { name: tool.name, arguments: args as Record<string, unknown> },
             undefined,
             { signal, timeout },
@@ -936,22 +931,20 @@ const callTool = (
           orElse: () => Effect.fail(timedOut),
         }),
       )) as CallToolResult
+      if (result.isError !== true && tool.structured) {
+        return result.structuredContent
+      }
+      const text = yield* renderContent(result.content ?? [], {
+        name,
+        onImage,
+        nextImage,
+      })
       if (result.isError === true) {
-        const text = yield* renderContent(result.content ?? [], {
-          name: `${server.id}.${tool.id}`,
-          onImage,
-          nextImage,
-        })
         return yield* Effect.fail(
           `${prefix} ${text === "" ? "tool returned an error with no message" : text}`,
         )
       }
-      if (tool.structured) return result.structuredContent
-      return yield* renderContent(result.content ?? [], {
-        name: `${server.id}.${tool.id}`,
-        onImage,
-        nextImage,
-      })
+      return text
     })
 }
 
@@ -981,7 +974,12 @@ const renderContent = Effect.fnUntraced(function* (
           parts.push(`[Image omitted (${block.mimeType}): unsupported type]`)
           break
         }
-        const bytes = new Uint8Array(Buffer.from(block.data, "base64"))
+        const decoded = Base64.decode(block.data)
+        if (Result.isFailure(decoded)) {
+          parts.push(`[Image omitted (${block.mimeType}): invalid base64 data]`)
+          break
+        }
+        const bytes = decoded.success
         const prepared = yield* Effect.exit(
           Image.prepare({
             data: bytes,
@@ -1034,10 +1032,10 @@ const maxInstructions = 2000
 
 const renderPrompt = (servers: ReadonlyArray<ServerState>): string => {
   if (servers.length === 0) return ""
-  const anyConnected = servers.some((server) => server.client !== undefined)
+  const anyConnected = servers.some((server) => server._tag === "Connected")
   const lines = servers.map((server) => {
-    if (server.status._tag === "Failed" || server.client === undefined) {
-      return `- ${server.name}: failed to connect: ${server.reason}`
+    if (server._tag === "Failed") {
+      return `- ${server.name}: failed to connect: ${shortReason(server.error)}`
     }
     const header = `- ${server.id} (${server.status.tools.length} tools)`
     return Option.match(server.status.instructions, {

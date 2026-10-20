@@ -10,13 +10,12 @@
  */
 import * as Config from "effect/Config"
 import * as Data from "effect/Data"
-import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as FileSystem from "effect/FileSystem"
 import * as Option from "effect/Option"
 import * as Path from "effect/Path"
-import * as Redacted from "effect/Redacted"
 import * as Schema from "effect/Schema"
+import * as Struct from "effect/Struct"
 import type * as McpServers from "./McpServers.ts"
 
 /**
@@ -30,24 +29,34 @@ export class McpConfigError extends Schema.TaggedError<McpConfigError>()(
   { message: Schema.String },
 ) {}
 
-const ConfigFile = Schema.Struct({
-  mcpServers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
-})
+const ConfigFile = Schema.fromJsonString(
+  Schema.Struct({
+    mcpServers: Schema.optionalKey(
+      Schema.Record(Schema.String, Schema.Unknown),
+    ),
+  }),
+)
+
+const RedactedStrings = Schema.Record(
+  Schema.String,
+  Schema.RedactedFromValue(Schema.String),
+)
 
 // Unknown keys, such as `disabled` or `alwaysAllow`, are dropped.
 const FileEntry = Schema.Struct({
   type: Schema.optionalKey(Schema.Literals(["stdio", "http", "sse"])),
   command: Schema.optionalKey(Schema.String),
   args: Schema.optionalKey(Schema.Array(Schema.String)),
-  env: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  env: Schema.optionalKey(RedactedStrings),
   cwd: Schema.optionalKey(Schema.String),
   url: Schema.optionalKey(Schema.String),
-  headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-  /** Milliseconds. */
-  connectTimeout: Schema.optionalKey(Schema.Finite),
-  /** Milliseconds. */
-  callTimeout: Schema.optionalKey(Schema.Finite),
+  headers: Schema.optionalKey(RedactedStrings),
+  connectTimeout: Schema.optionalKey(Schema.DurationFromMillis),
+  callTimeout: Schema.optionalKey(Schema.DurationFromMillis),
 })
+
+const decodeFile = Schema.decodeUnknownEffect(ConfigFile)
+const decodeFileEntry = Schema.decodeUnknownEffect(FileEntry)
 
 /**
  * Reads and merges the config files. A later source replaces a server of the
@@ -102,23 +111,16 @@ export const load = Effect.fnUntraced(function* (options: {
   for (const { file, required } of sources) {
     const fail = (message: string) =>
       new McpConfigError({ message: `${file}: ${message}` })
-    const exists = yield* fs
-      .exists(file)
-      .pipe(Effect.mapError((error) => fail(error.message)))
-    if (!exists && !required) continue
-    const text = yield* fs
-      .readFileString(file)
-      .pipe(Effect.mapError((error) => fail(error.message)))
-    const json = yield* Effect.try({
-      try: () => JSON.parse(text) as unknown,
-      catch: (error) =>
-        fail(
-          `invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-    })
-    const { mcpServers } = yield* Schema.decodeUnknownEffect(ConfigFile)(
-      json,
-    ).pipe(Effect.mapError((error) => fail(error.message)))
+    const text = yield* fs.readFileString(file).pipe(
+      Effect.catchReason("PlatformError", "NotFound", (_, error) =>
+        required ? Effect.fail(error) : Effect.void,
+      ),
+      Effect.mapError((error) => fail(error.message)),
+    )
+    if (text === undefined) continue
+    const { mcpServers } = yield* decodeFile(text).pipe(
+      Effect.mapError((error) => fail(error.message)),
+    )
     for (const [name, entry] of Object.entries(mcpServers ?? {})) {
       servers[name] = yield* decodeEntry(entry, {
         directory: path.dirname(file),
@@ -130,89 +132,69 @@ export const load = Effect.fnUntraced(function* (options: {
   return servers
 })
 
-const decodeEntry = Effect.fnUntraced(function* (
-  raw: unknown,
-  options: {
-    readonly directory: string
-    readonly fail: (message: string) => McpConfigError
-    readonly resolve: (...segments: ReadonlyArray<string>) => string
+const decodeEntry = Effect.fnUntraced(
+  function* (
+    raw: unknown,
+    options: {
+      readonly directory: string
+      readonly fail: (message: string) => McpConfigError
+      readonly resolve: (...segments: ReadonlyArray<string>) => string
+    },
+  ): Effect.fn.Return<
+    McpServers.ServerEntry,
+    McpConfigError | MissingVariable
+  > {
+    const entry = yield* decodeFileEntry(yield* expandEntry(raw)).pipe(
+      Effect.mapError((error) => options.fail(error.message)),
+    )
+    const type =
+      entry.type ??
+      (entry.command !== undefined
+        ? "stdio"
+        : entry.url !== undefined
+          ? "http"
+          : undefined)
+    switch (type) {
+      case undefined:
+        return yield* options.fail("needs a command or a url")
+      case "sse":
+        return { type: "unavailable", error: "SSE transport is not supported" }
+      case "stdio": {
+        if (entry.command === undefined) {
+          return yield* options.fail("a stdio server needs a command")
+        }
+        return {
+          ...Struct.omit(entry, ["type", "url", "headers", "cwd"]),
+          type: "stdio",
+          command: entry.command,
+          ...(entry.cwd !== undefined
+            ? { cwd: options.resolve(options.directory, entry.cwd) }
+            : {}),
+        }
+      }
+      case "http": {
+        if (entry.url === undefined) {
+          return yield* options.fail("an http server needs a url")
+        }
+        return {
+          ...Struct.omit(entry, ["type", "command", "args", "env", "cwd"]),
+          type: "http",
+          url: entry.url,
+        }
+      }
+    }
   },
-): Effect.fn.Return<McpServers.ServerEntry, McpConfigError> {
-  const expanded = yield* expandEntry(raw)
-  if (expanded._tag === "Missing") {
-    return {
+  Effect.catchTag("MissingVariable", (missing) =>
+    Effect.succeed<McpServers.ServerEntry>({
       type: "unavailable",
-      error: `environment variable ${expanded.name} is not set`,
-    }
-  }
-  const entry = yield* Schema.decodeUnknownEffect(FileEntry)(
-    expanded.value,
-  ).pipe(Effect.mapError((error) => options.fail(error.message)))
-  const type =
-    entry.type ??
-    (entry.command !== undefined
-      ? "stdio"
-      : entry.url !== undefined
-        ? "http"
-        : undefined)
-  const timeouts = {
-    ...(entry.connectTimeout !== undefined
-      ? { connectTimeout: Duration.millis(entry.connectTimeout) }
-      : {}),
-    ...(entry.callTimeout !== undefined
-      ? { callTimeout: Duration.millis(entry.callTimeout) }
-      : {}),
-  }
-  switch (type) {
-    case undefined:
-      return yield* options.fail("needs a command or a url")
-    case "sse":
-      return { type: "unavailable", error: "SSE transport is not supported" }
-    case "stdio": {
-      if (entry.command === undefined) {
-        return yield* options.fail("a stdio server needs a command")
-      }
-      return {
-        type: "stdio",
-        command: entry.command,
-        ...(entry.args !== undefined ? { args: entry.args } : {}),
-        ...(entry.env !== undefined ? { env: redactAll(entry.env) } : {}),
-        ...(entry.cwd !== undefined
-          ? { cwd: options.resolve(options.directory, entry.cwd) }
-          : {}),
-        ...timeouts,
-      }
-    }
-    case "http": {
-      if (entry.url === undefined) {
-        return yield* options.fail("an http server needs a url")
-      }
-      return {
-        type: "http",
-        url: entry.url,
-        ...(entry.headers !== undefined
-          ? { headers: redactAll(entry.headers) }
-          : {}),
-        ...timeouts,
-      }
-    }
-  }
-})
-
-const redactAll = (
-  record: Readonly<Record<string, string>>,
-): Record<string, Redacted.Redacted<string>> =>
-  Object.fromEntries(
-    Object.entries(record).map(([key, value]) => [key, Redacted.make(value)]),
-  )
+      error: `environment variable ${missing.variable} is not set`,
+    }),
+  ),
+)
 
 // =============================================================================
 // Environment variables
 // =============================================================================
-
-type Expanded =
-  | { readonly _tag: "Expanded"; readonly value: unknown }
-  | { readonly _tag: "Missing"; readonly name: string }
 
 class MissingVariable extends Data.TaggedError("MissingVariable")<{
   readonly variable: string
@@ -264,18 +246,11 @@ const expandStrings = (value: unknown) =>
 
 const expandedFields = ["command", "args", "env", "cwd", "url", "headers"]
 
-const expandEntry = (raw: unknown): Effect.Effect<Expanded> =>
-  Effect.gen(function* () {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-      return { _tag: "Expanded", value: raw } as const
-    }
-    const entry: Record<string, unknown> = { ...raw }
-    for (const field of expandedFields) {
-      if (field in entry) entry[field] = yield* expandStrings(entry[field])
-    }
-    return { _tag: "Expanded", value: entry } as const
-  }).pipe(
-    Effect.catch((missing: MissingVariable) =>
-      Effect.succeed({ _tag: "Missing", name: missing.variable } as const),
-    ),
-  )
+const expandEntry = Effect.fnUntraced(function* (raw: unknown) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw
+  const entry: Record<string, unknown> = { ...raw }
+  for (const field of expandedFields) {
+    if (field in entry) entry[field] = yield* expandStrings(entry[field])
+  }
+  return entry
+})

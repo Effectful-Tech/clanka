@@ -205,40 +205,25 @@ export const makeWith = Effect.fnUntraced(function* <
 
   const singleTool = yield* SingleTools.pipe(Effect.provide(SingleToolHandlers))
   const capabilities = yield* executor.capabilities
-  for (const name of [
-    ...capabilities.tools,
-    ...Object.keys(options.loopTools?.tools ?? {}),
-  ]) {
-    if (reservedToolNames.has(name)) {
-      return yield* Effect.die(
-        new Error(`Tool name "${name}" is reserved for MCP tools`),
-      )
-    }
-  }
   // Shared with every sub-agent, so they use the same connections.
-  const mcpServers = yield* Effect.serviceOption(McpServers.McpServers)
-  const mcpDts = Option.match(mcpServers, {
-    onNone: () => "",
-    onSome: (servers) => servers.dts,
-  })
+  const mcpServers = Option.getOrUndefined(
+    yield* Effect.serviceOption(McpServers.McpServers),
+  )
   const loopTools = yield* makeLoopTools({
     loopTools: options.loopTools,
     skills: options.skills,
     executorTools: capabilities.tools,
   })
   const promptTools: PromptTools = {
-    toolsDts: [capabilities.toolsDts, loopTools.dts, mcpDts]
-      .filter((dts, index) => index === 0 || dts !== "")
+    toolsDts: [capabilities.toolsDts, loopTools.dts, mcpServers?.dts ?? ""]
+      .filter((dts) => dts !== "")
       .join("\n\n"),
     offers: (name) => capabilities.tools.includes(name),
     skillsCatalog:
       options.skills === undefined
         ? AgentSkills.renderCatalog(capabilities.skills)
         : AgentSkills.renderProvidedCatalog(options.skills),
-    mcp: Option.match(mcpServers, {
-      onNone: () => "",
-      onSome: (servers) => servers.prompt,
-    }),
+    mcp: mcpServers?.prompt ?? "",
   }
 
   // Steering messages for the root agent. Sub-agents get their own mailbox.
@@ -311,13 +296,10 @@ export const makeWith = Effect.fnUntraced(function* <
         pendingImages.push(image)
       })
     // MCP results attach their images to this agent's next message.
-    const scriptLoopTools = Option.match(mcpServers, {
-      onNone: () => loopTools.handlers,
-      onSome: (servers) => ({
-        ...loopTools.handlers,
-        ...servers.handlers(onImage),
-      }),
-    })
+    const scriptLoopTools =
+      mcpServers === undefined
+        ? loopTools.handlers
+        : { ...loopTools.handlers, ...mcpServers.handlers(onImage) }
     // Whether a script ran in the current response. Their environment
     // update is rendered once, after all of their tool results.
     let scriptsRan = false
@@ -1343,9 +1325,6 @@ interface PromptTools {
   readonly mcp: string
 }
 
-// Script names taken by MCP, whether or not servers are configured.
-const reservedToolNames: ReadonlySet<string> = new Set(["mcp", "searchTools"])
-
 const when = (condition: boolean, text: string) => (condition ? text : "")
 
 const generateSystemTools = (
@@ -1458,6 +1437,9 @@ const ReadSkillTools = Toolkit.make(
   }),
 )
 
+// Script names taken by MCP, whether or not servers are configured.
+const reservedToolNames: ReadonlySet<string> = new Set(["mcp", "searchTools"])
+
 /**
  * Builds the loop-side handlers the executor puts in the sandbox, and their
  * type declarations. Every call is decoded by `Toolkit.handle` before the
@@ -1471,6 +1453,13 @@ const makeLoopTools = Effect.fnUntraced(function* (options: {
   const skills = options.skills ?? []
   const callerTools = Object.keys(options.loopTools?.tools ?? {})
   const names = skills.length > 0 ? [...callerTools, "readSkill"] : callerTools
+  for (const name of [...options.executorTools, ...names]) {
+    if (reservedToolNames.has(name)) {
+      return yield* Effect.die(
+        new Error(`Tool name "${name}" is reserved for MCP tools`),
+      )
+    }
+  }
   for (const name of names) {
     if (
       options.executorTools.includes(name) ||

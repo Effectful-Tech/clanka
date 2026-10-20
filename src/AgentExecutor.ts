@@ -1413,8 +1413,9 @@ function runScriptWorker(load: (id: string) => unknown): void {
     const server = name.slice(0, dot)
     mcp[server] ??= Object.create(null)
     mcp[server]![name.slice(dot + 1)] = call
-    sandbox["mcp"] = mcp
   }
+  // Only bound with servers, so `typeof mcp` tells scripts whether there are any.
+  if (Object.keys(mcp).length > 0) sandbox["mcp"] = mcp
 
   new vm.Script(data.source).runInNewContext(sandbox)
   ;(sandbox.main as () => Promise<void>)().then(

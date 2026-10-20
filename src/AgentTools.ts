@@ -208,6 +208,14 @@ export class ImageAttacher extends Context.Service<
 export const defaultBashTimeout: Duration.Duration = Duration.minutes(10)
 
 /**
+ * The timeout of an MCP tool call when its server sets no `callTimeout`.
+ *
+ * @since 1.0.0
+ * @category Context
+ */
+export const defaultMcpCallTimeout: Duration.Duration = Duration.minutes(10)
+
+/**
  * The limits the `bash` and `gh` handlers apply to a single command. The
  * executor sets them from its `limits` option.
  *

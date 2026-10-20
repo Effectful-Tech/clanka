@@ -17,3 +17,7 @@
   Let a caller leave out built-in tools, supply the project instructions and
   skills, and register tools whose handlers run next to the `Agent` rather than
   in the executor, in local and RPC mode.
+- [MCP client support](./mcp-client.md) - Give an `Agent` MCP servers over
+  stdio or streamable HTTP. Scripts call their tools as
+  `mcp.<server>.<tool>(…)` and find their types with `searchTools`. The CLI
+  reads servers from config files and `clanka acp` from ACP `mcpServers`.

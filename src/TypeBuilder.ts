@@ -16,6 +16,11 @@ type Precedence = (typeof Precedence)[keyof typeof Precedence]
 export type PrinterOptions = {
   readonly newLine?: "\n" | "\r\n"
   readonly omitTrailingSemicolon?: boolean
+  /**
+   * Leave out `[x: string]: unknown` index signatures, which open objects
+   * imported from JSON Schema carry.
+   */
+  readonly omitUnknownIndexSignatures?: boolean
 }
 
 export type PrintableNode = {
@@ -47,6 +52,7 @@ const normalizeOptions = (
 ): Required<PrinterOptions> => ({
   newLine: options?.newLine ?? "\n",
   omitTrailingSemicolon: options?.omitTrailingSemicolon ?? false,
+  omitUnknownIndexSignatures: options?.omitUnknownIndexSignatures ?? false,
 })
 
 const indent = (level: number): string => "    ".repeat(level)
@@ -276,9 +282,13 @@ const propertySignatureTypeElement = (
     `${indent(indentLevel)}${readonlyModifier}${propertyName(propertySignature.name)}${optionalMarker}: `,
     context.options.newLine,
   )
-  const documentation = resolveDocumentation(propertySignature.type)
+  // Schemas imported from JSON Schema carry `description`. It is read from
+  // the base node: `resolveAt` finds nothing on a node with checks.
+  const documentation =
+    resolveDocumentation(propertySignature.type) ??
+    propertySignature.type.annotations?.["description"]
 
-  return documentation === undefined
+  return typeof documentation !== "string"
     ? propertyText
     : `${renderJsDoc(documentation, indentLevel, context.options)}${context.options.newLine}${propertyText}`
 }
@@ -315,9 +325,16 @@ const objectsTypeNode = (
     ...ast.propertySignatures.map((propertySignature) =>
       propertySignatureTypeElement(propertySignature, context, indentLevel + 1),
     ),
-    ...ast.indexSignatures.map((indexSignature) =>
-      indexSignatureTypeElement(indexSignature, context, indentLevel + 1),
-    ),
+    ...ast.indexSignatures
+      .filter(
+        (indexSignature) =>
+          !context.options.omitUnknownIndexSignatures ||
+          toTypeNode(indexSignature.type, context, indentLevel + 1).text !==
+            "unknown",
+      )
+      .map((indexSignature) =>
+        indexSignatureTypeElement(indexSignature, context, indentLevel + 1),
+      ),
   ]
 
   return {

@@ -5,6 +5,7 @@ import * as Model from "effect/ai/Model"
 import type * as Response from "effect/ai/Response"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as AgentSkills from "./AgentSkills.ts"
+import * as McpServers from "./McpServers.ts"
 import { ToolkitRenderer } from "./ToolkitRenderer.ts"
 import { stripWrappingCodeFence } from "./ScriptExtraction.ts"
 import type * as Path from "effect/Path"
@@ -204,21 +205,40 @@ export const makeWith = Effect.fnUntraced(function* <
 
   const singleTool = yield* SingleTools.pipe(Effect.provide(SingleToolHandlers))
   const capabilities = yield* executor.capabilities
+  for (const name of [
+    ...capabilities.tools,
+    ...Object.keys(options.loopTools?.tools ?? {}),
+  ]) {
+    if (reservedToolNames.has(name)) {
+      return yield* Effect.die(
+        new Error(`Tool name "${name}" is reserved for MCP tools`),
+      )
+    }
+  }
+  // Shared with every sub-agent, so they use the same connections.
+  const mcpServers = yield* Effect.serviceOption(McpServers.McpServers)
+  const mcpDts = Option.match(mcpServers, {
+    onNone: () => "",
+    onSome: (servers) => servers.dts,
+  })
   const loopTools = yield* makeLoopTools({
     loopTools: options.loopTools,
     skills: options.skills,
     executorTools: capabilities.tools,
   })
   const promptTools: PromptTools = {
-    toolsDts:
-      loopTools.dts === ""
-        ? capabilities.toolsDts
-        : `${capabilities.toolsDts}\n\n${loopTools.dts}`,
+    toolsDts: [capabilities.toolsDts, loopTools.dts, mcpDts]
+      .filter((dts, index) => index === 0 || dts !== "")
+      .join("\n\n"),
     offers: (name) => capabilities.tools.includes(name),
     skillsCatalog:
       options.skills === undefined
         ? AgentSkills.renderCatalog(capabilities.skills)
         : AgentSkills.renderProvidedCatalog(options.skills),
+    mcp: Option.match(mcpServers, {
+      onNone: () => "",
+      onSome: (servers) => servers.prompt,
+    }),
   }
 
   // Steering messages for the root agent. Sub-agents get their own mailbox.
@@ -286,6 +306,18 @@ export const makeWith = Effect.fnUntraced(function* <
     // Images attached by `readFile` during the current script, spliced onto
     // the Prompt as a user message once the tool result has been recorded.
     const pendingImages: Array<ImageAttachment> = []
+    const onImage = (image: ImageAttachment) =>
+      Effect.sync(() => {
+        pendingImages.push(image)
+      })
+    // MCP results attach their images to this agent's next message.
+    const scriptLoopTools = Option.match(mcpServers, {
+      onNone: () => loopTools.handlers,
+      onSome: (servers) => ({
+        ...loopTools.handlers,
+        ...servers.handlers(onImage),
+      }),
+    })
     // Whether a script ran in the current response. Their environment
     // update is rendered once, after all of their tool results.
     let scriptsRan = false
@@ -797,11 +829,8 @@ ${prompt}`,
             }),
           subagents,
           onTaskComplete,
-          onImage: (image) =>
-            Effect.sync(() => {
-              pendingImages.push(image)
-            }),
-          loopTools: loopTools.handlers,
+          onImage,
+          loopTools: scriptLoopTools,
         }),
         Stream.mkString,
       )
@@ -1310,7 +1339,12 @@ interface PromptTools {
   readonly toolsDts: string
   readonly offers: (name: ExcludableTool) => boolean
   readonly skillsCatalog: Option.Option<string>
+  /** The MCP servers section, or `""` without servers. */
+  readonly mcp: string
 }
+
+// Script names taken by MCP, whether or not servers are configured.
+const reservedToolNames: ReadonlySet<string> = new Set(["mcp", "searchTools"])
 
 const when = (condition: boolean, text: string) => (condition ? text : "")
 
@@ -1372,7 +1406,12 @@ ${tools.toolsDts}
 
 /** The global Fetch API available for making HTTP requests. */
 declare const fetch: typeof globalThis.fetch
-\`\`\`${Option.match(tools.skillsCatalog, {
+\`\`\`${when(
+  tools.mcp !== "",
+  `
+
+${tools.mcp}`,
+)}${Option.match(tools.skillsCatalog, {
   onNone: () => "",
   onSome: (catalog) => `
 

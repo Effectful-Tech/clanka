@@ -9,17 +9,19 @@
  * @since 1.0.0
  */
 import * as Cause from "effect/Cause"
+import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Base64 from "effect/encoding/Base64"
 import * as Exit from "effect/Exit"
 import * as Fiber from "effect/Fiber"
 import * as FileSystem from "effect/FileSystem"
-import type * as Layer from "effect/Layer"
+import * as Layer from "effect/Layer"
 import * as MutableRef from "effect/MutableRef"
 import * as Option from "effect/Option"
 import * as Path from "effect/Path"
 import type * as PlatformError from "effect/PlatformError"
 import * as Queue from "effect/Queue"
+import * as Redacted from "effect/Redacted"
 import * as Schema from "effect/Schema"
 import * as Scope from "effect/Scope"
 import * as Stdio from "effect/Stdio"
@@ -34,6 +36,7 @@ import * as AgentExecutor from "./AgentExecutor.ts"
 import type * as AgentOutput from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Image from "./Image.ts"
+import * as McpServers from "./McpServers.ts"
 
 /**
  * @since 1.0.0
@@ -153,15 +156,91 @@ const decodeIncoming = Schema.decodeEffect(
   Schema.fromJsonString(IncomingMessage),
 )
 
+const NameValue = Schema.Struct({ name: Schema.String, value: Schema.String })
+
+// stdio entries carry no `type`.
+const McpServer = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("http"),
+    name: Schema.String,
+    url: Schema.String,
+    headers: Schema.optionalKey(Schema.Array(NameValue)),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("sse"),
+    name: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.optionalKey(Schema.Literal("stdio")),
+    name: Schema.String,
+    command: Schema.String,
+    args: Schema.optionalKey(Schema.Array(Schema.String)),
+    env: Schema.optionalKey(Schema.Array(NameValue)),
+  }),
+])
+
 const NewSessionParams = Schema.Struct({
   cwd: Schema.String,
   model: Schema.optionalKey(Schema.String),
+  mcpServers: Schema.optionalKey(Schema.Array(McpServer)),
 })
 
 const LoadSessionParams = Schema.Struct({
   sessionId: Schema.String,
   cwd: Schema.optionalKey(Schema.String),
   model: Schema.optionalKey(Schema.String),
+  mcpServers: Schema.optionalKey(Schema.Array(McpServer)),
+})
+
+const redactValues = (
+  entries: ReadonlyArray<typeof NameValue.Type> | undefined,
+): Record<string, Redacted.Redacted<string>> =>
+  Object.fromEntries(
+    (entries ?? []).map(({ name, value }) => [name, Redacted.make(value)]),
+  )
+
+/**
+ * The servers sent with `session/new`, `session/load` or `session/resume`.
+ * stdio servers run in the session's cwd; the first of two servers with the
+ * same name wins.
+ */
+const mcpServerEntries = Effect.fnUntraced(function* (
+  servers: ReadonlyArray<typeof McpServer.Type>,
+  cwd: string,
+) {
+  const entries: Record<string, McpServers.ServerEntry> = {}
+  for (const server of servers) {
+    if (server.name in entries) {
+      yield* Effect.logWarning("Skipping duplicate MCP server").pipe(
+        Effect.annotateLogs({ server: server.name }),
+      )
+      continue
+    }
+    switch (server.type) {
+      case "http":
+        entries[server.name] = {
+          type: "http",
+          url: server.url,
+          headers: redactValues(server.headers),
+        }
+        break
+      case "sse":
+        entries[server.name] = {
+          type: "unavailable",
+          error: "SSE transport is not supported",
+        }
+        break
+      default:
+        entries[server.name] = {
+          type: "stdio",
+          command: server.command,
+          args: server.args ?? [],
+          env: redactValues(server.env),
+          cwd,
+        }
+    }
+  }
+  return entries
 })
 
 const SessionIdParams = Schema.Struct({
@@ -304,6 +383,10 @@ interface Session {
   running: Fiber.Fiber<void, unknown> | undefined
   toolCalls: number
   readonly announcedSubagents: Set<number>
+  /** Owns the Agent and the session's MCP servers. */
+  readonly scope: Scope.Closeable
+  /** Failed MCP servers, reported on the first prompt turn. */
+  mcpFailures: string | undefined
 }
 
 /**
@@ -395,8 +478,31 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
   const openSession = Effect.fnUntraced(function* (
     id: string,
     record: SessionRecord,
+    mcpServers: ReadonlyArray<typeof McpServer.Type>,
   ) {
-    const agent = yield* Scope.provide(options.makeAgent(record.cwd), scope)
+    const sessionScope = yield* Scope.fork(scope)
+    let makeAgent = options.makeAgent(record.cwd)
+    let mcpFailures: string | undefined
+    // Never stored: the servers come with every request that opens the
+    // session, and their URLs can carry tokens.
+    if (mcpServers.length > 0) {
+      const entries = yield* mcpServerEntries(mcpServers, record.cwd)
+      const servers = Context.get(
+        yield* Layer.buildWithScope(McpServers.layer(entries), sessionScope),
+        McpServers.McpServers,
+      )
+      const failures = Object.entries(yield* servers.status).flatMap(
+        ([name, status]) =>
+          status._tag === "Failed"
+            ? [`MCP server "${name}" failed: ${status.error}`]
+            : [],
+      )
+      if (failures.length > 0) mcpFailures = failures.join("\n")
+      makeAgent = makeAgent.pipe(
+        Effect.provideService(McpServers.McpServers, servers),
+      )
+    }
+    const agent = yield* Scope.provide(makeAgent, sessionScope)
     MutableRef.set(agent.history, record.history)
     if (record.environment !== undefined) {
       MutableRef.set(agent.environment, record.environment)
@@ -410,6 +516,8 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       running: undefined,
       toolCalls: 0,
       announcedSubagents: new Set(),
+      scope: sessionScope,
+      mcpFailures,
     }
     sessions.set(id, session)
     return session
@@ -732,14 +840,18 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     agentCapabilities: {
       loadSession: true,
       promptCapabilities: { image: true, audio: false, embeddedContext: true },
-      mcpCapabilities: { http: false, sse: false },
+      mcpCapabilities: { http: true, sse: false },
+      sessionCapabilities: { close: {} },
     },
     authMethods: [],
     agentInfo: { name: "clanka", version: options.version },
   })
 
   const newSession = Effect.fnUntraced(function* (params: unknown) {
-    const { cwd, model } = yield* decodeParams(NewSessionParams, params)
+    const { cwd, model, mcpServers } = yield* decodeParams(
+      NewSessionParams,
+      params,
+    )
     const modelId = model ?? options.defaultModel
     const thoughtLevel = options.defaultThoughtLevel
     yield* requireModel(modelId, thoughtLevel)
@@ -751,6 +863,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         thoughtLevel,
         history: Prompt.empty,
       }),
+      mcpServers ?? [],
     )
     yield* persist(session)
     return { sessionId: session.id, ...sessionState(session) }
@@ -760,7 +873,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     params: unknown,
     replay: boolean,
   ) {
-    const { sessionId, cwd, model } = yield* decodeParams(
+    const { sessionId, cwd, model, mcpServers } = yield* decodeParams(
       LoadSessionParams,
       params,
     )
@@ -793,6 +906,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
           ? { environment: record.value.environment }
           : {}),
       }),
+      mcpServers ?? [],
     )
     if (replay) {
       yield* replayHistory(session)
@@ -834,6 +948,13 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     // Resolve images before the turn starts, so a bad block rejects the
     // request without a model call.
     const input = yield* promptFromBlocks(session.cwd, prompt)
+    if (session.mcpFailures !== undefined) {
+      yield* update(sessionId, {
+        sessionUpdate: "agent_thought_chunk",
+        content: textContent(session.mcpFailures),
+      })
+      session.mcpFailures = undefined
+    }
     session.running = yield* runTurn(session, input).pipe(
       Effect.provide(model),
       Effect.scoped,
@@ -845,6 +966,19 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     if (Exit.isSuccess(exit)) return { stopReason: "end_turn" }
     if (Cause.hasInterruptsOnly(exit.cause)) return { stopReason: "cancelled" }
     return yield* toRpcError(exit.cause)
+  })
+
+  // Ends the session in this process: its prompt, Agent and MCP servers. It
+  // can be loaded again from the store.
+  const closeSession = Effect.fnUntraced(function* (params: unknown) {
+    const { sessionId } = yield* decodeParams(SessionIdParams, params)
+    const session = yield* getSession(sessionId)
+    sessions.delete(sessionId)
+    if (session.running !== undefined) {
+      yield* Fiber.interrupt(session.running)
+    }
+    yield* Scope.close(session.scope, Exit.void)
+    return {}
   })
 
   const cancel = Effect.fnUntraced(function* (params: unknown) {
@@ -873,6 +1007,8 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         return loadSession(params, true)
       case "session/resume":
         return loadSession(params, false)
+      case "session/close":
+        return closeSession(params)
       case "session/set_model":
         return setModel(params)
       case "session/prompt":

@@ -27,3 +27,51 @@ clanka acp --model openai/gpt-6-astra/medium --api-url https://gateway.example.c
 These options configure the chat model, including subagents. Semantic search
 continues to use `OPENAI_API_KEY` and the default OpenAI embeddings endpoint.
 Setting only `OPENAI_API_KEY` does not enable API-key mode for chat.
+
+## MCP servers
+
+clanka can use the tools of MCP servers, over stdio or streamable HTTP. The CLI
+reads servers from these files, later ones winning over earlier ones:
+
+1. `$XDG_CONFIG_HOME/clanka/mcp.json` (or `~/.config/clanka/mcp.json`)
+2. `.mcp.json` in the current directory
+3. each `--mcp-config <path>`, in order
+
+A server defined again in a later file replaces the earlier definition
+entirely. The format is the one Claude Code and Cursor use:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "github-mcp-server",
+      "args": ["stdio"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" }
+    },
+    "linear": {
+      "url": "https://mcp.linear.app/mcp",
+      "headers": { "Authorization": "Bearer ${LINEAR_API_KEY}" }
+    }
+  }
+}
+```
+
+A server with a `command` runs over stdio, one with a `url` over HTTP.
+`${VAR}` and `${VAR:-default}` are expanded in `command`, `args`, `env`, `cwd`,
+`url` and `headers`. A relative `cwd` is relative to the file. `callTimeout`
+sets a per-call timeout in milliseconds (default 10 minutes). Static headers
+are the only HTTP authentication; OAuth and the SSE transport are not
+supported.
+
+**Starting clanka in a repository runs the commands in its `.mcp.json`.**
+There is no confirmation prompt, so check a repository's `.mcp.json` before
+running clanka in it. Pass `--no-mcp`, or set `CLANKA_MCP=false`, to load no
+servers at all.
+
+The model calls MCP tools from its scripts as `mcp.<server>.<tool>(options)`.
+Their type declarations are not in the system prompt: the model looks them up
+with `searchTools({ query })` or `searchTools({ server })`. A server that fails
+to start is reported and skipped.
+
+`clanka acp` ignores these files and connects the servers the ACP client sends
+with `session/new`, `session/load` and `session/resume`.

@@ -12,7 +12,10 @@ import * as Readline from "node:readline"
 import type { Readable } from "node:stream"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+} from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import {
   type CallToolResult,
@@ -346,12 +349,30 @@ const toEntry = (name: string, entry: ServerEntry): Entry => {
     case "http":
       return {
         name,
-        open: () => ({
-          transport: new StreamableHTTPClientTransport(new URL(entry.url), {
-            requestInit: { headers: unwrapRecord(entry.headers) },
-          }) as Transport,
-          stderr: undefined,
-        }),
+        open: () => {
+          // Match the SDK defaults while allowing shutdown to disable retries.
+          const reconnectionOptions = {
+            initialReconnectionDelay: 1000,
+            maxReconnectionDelay: 30000,
+            reconnectionDelayGrowFactor: 1.5,
+            maxRetries: 2,
+          }
+          const transport = new StreamableHTTPClientTransport(
+            new URL(entry.url),
+            {
+              requestInit: { headers: unwrapRecord(entry.headers) },
+              reconnectionOptions,
+            },
+          )
+          const close = transport.close.bind(transport)
+          transport.close = () => {
+            // A failed resumption GET can schedule another retry after onerror
+            // returns, even if close has already cleared the current timer.
+            reconnectionOptions.maxRetries = 0
+            return close()
+          }
+          return { transport: transport as Transport, stderr: undefined }
+        },
         connectTimeout: entry.connectTimeout ?? defaultConnectTimeout,
         callTimeout: entry.callTimeout ?? defaultMcpCallTimeout,
       }
@@ -549,6 +570,18 @@ const connect = Effect.fnUntraced(function* (
   // The SDK client only has callback properties.
   // oxlint-disable-next-line unicorn/prefer-add-event-listener
   client.onerror = (error) => {
+    if (
+      error instanceof StreamableHTTPError &&
+      error.code === 404 &&
+      opened.transport instanceof StreamableHTTPClientTransport &&
+      opened.transport.sessionId !== undefined
+    ) {
+      server.disconnected ??= error.message
+      server.status = new Failed({
+        error: `disconnected: ${server.disconnected}`,
+      })
+      void client.close().catch(() => undefined)
+    }
     runFork(
       Effect.logDebug("MCP client error", error.message).pipe(
         Effect.annotateLogs({ server: entry.name }),

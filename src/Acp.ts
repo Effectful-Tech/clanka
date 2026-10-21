@@ -418,6 +418,19 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
   const scope = yield* Effect.scope
   const sessions = new Map<string, Session>()
 
+  // Whatever ends the server, name the prompts it leaves unfinished. An
+  // interrupted prompt keeps its `running` fiber.
+  yield* Effect.addFinalizer(() => {
+    const running = Array.from(sessions.values())
+      .filter((session) => session.running !== undefined)
+      .map((session) => session.id)
+    return running.length === 0
+      ? Effect.void
+      : Effect.logWarning("ACP server stopping with prompts in progress").pipe(
+          Effect.annotateLogs({ sessions: running.join(", ") }),
+        )
+  })
+
   const notify = (method: string, params: object) =>
     options.send({ jsonrpc: "2.0", method, params })
 

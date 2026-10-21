@@ -1342,17 +1342,15 @@ const reasoning = (content: string): Array<Response.StreamPartEncoded> => [
 ]
 
 // Conversation mode ends the turn on a response without a tool call, so a
-// response that never finished or has no answer must be retried instead.
+// response that never finished or failed must be retried instead.
 describe("Agent incomplete responses", () => {
   const cases: ReadonlyArray<{
     readonly name: string
     readonly response: ReadonlyArray<Response.StreamPartEncoded>
-    readonly reportsError: boolean
   }> = [
     {
       name: "a stream that ends without a finish part",
       response: reasoning("Checking the parser"),
-      reportsError: true,
     },
     {
       name: "an error response",
@@ -1361,16 +1359,10 @@ describe("Agent incomplete responses", () => {
         { type: "error", error: { message: "upstream failed" } },
         finish(100, "error"),
       ],
-      reportsError: true,
-    },
-    {
-      name: "a finished response with only reasoning",
-      response: [...reasoning("Checking the parser"), finish(100, "stop")],
-      reportsError: false,
     },
   ]
 
-  for (const { name, response, reportsError } of cases) {
+  for (const { name, response } of cases) {
     it.live(`retries ${name} instead of ending the turn`, () =>
       Effect.gen(function* () {
         const { exit, calls, outputs } = yield* runAgentCollect({
@@ -1390,12 +1382,28 @@ describe("Agent incomplete responses", () => {
         })
         assert.strictEqual(calls.length, 2, "the model is called again")
         assert.deepStrictEqual(exit, Exit.succeed("the answer"))
-        if (reportsError) {
-          assert.strictEqual(outputsOfTag(outputs, "ErrorRetry").length, 1)
-        }
+        assert.strictEqual(outputsOfTag(outputs, "ErrorRetry").length, 1)
       }),
     )
   }
+
+  // An agent may have nothing to say, so ending the turn silently is valid.
+  it.live("ends the turn on a finished response with no text", () =>
+    Effect.gen(function* () {
+      const { exit, calls, outputs } = yield* runAgentCollect({
+        respond: (_call, index) =>
+          index === 0
+            ? Stream.fromIterable([
+                ...reasoning("Nothing to do"),
+                finish(100, "stop"),
+              ])
+            : Stream.die(`unexpected model call #${index}`),
+      })
+      assert.strictEqual(calls.length, 1)
+      assert.deepStrictEqual(exit, Exit.succeed(""))
+      assert.strictEqual(outputsOfTag(outputs, "ErrorRetry").length, 0)
+    }),
+  )
 
   it.live("keeps a tool result when the response then reports an error", () =>
     Effect.gen(function* () {

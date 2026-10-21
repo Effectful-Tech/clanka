@@ -1387,20 +1387,30 @@ describe("Agent incomplete responses", () => {
     )
   }
 
-  // An agent may have nothing to say, so ending the turn silently is valid.
-  it.live("ends the turn on a finished response with no text", () =>
+  // An empty response is neither an answer nor a failure, so the loop starts
+  // another turn without reporting an error.
+  it.live("starts another turn after a finished response with no text", () =>
     Effect.gen(function* () {
       const { exit, calls, outputs } = yield* runAgentCollect({
-        respond: (_call, index) =>
-          index === 0
-            ? Stream.fromIterable([
+        respond: (_call, index) => {
+          switch (index) {
+            case 0:
+              return Stream.fromIterable([
                 ...reasoning("Nothing to do"),
                 finish(100, "stop"),
               ])
-            : Stream.die(`unexpected model call #${index}`),
+            case 1:
+              return Stream.fromIterable([
+                ...text("the answer"),
+                finish(100, "stop"),
+              ])
+            default:
+              return Stream.die(`unexpected model call #${index}`)
+          }
+        },
       })
-      assert.strictEqual(calls.length, 1)
-      assert.deepStrictEqual(exit, Exit.succeed(""))
+      assert.strictEqual(calls.length, 2, "the model is called again")
+      assert.deepStrictEqual(exit, Exit.succeed("the answer"))
       assert.strictEqual(outputsOfTag(outputs, "ErrorRetry").length, 0)
     }),
   )

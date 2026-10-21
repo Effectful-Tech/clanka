@@ -323,7 +323,7 @@ const toolCall = (id: string, script: string): Response.StreamPartEncoded => ({
 
 const finish = (
   contextTokens: number,
-  reason: "stop" | "tool-calls" = "tool-calls",
+  reason: Response.FinishReason = "tool-calls",
   cache: {
     readonly read?: number | undefined
     readonly write?: number | undefined
@@ -1333,6 +1333,69 @@ describe("Agent retry limit", () => {
         assert.strictEqual(error.error.reason._tag, "InternalProviderError")
       }),
   )
+})
+
+const reasoning = (content: string): Array<Response.StreamPartEncoded> => [
+  { type: "reasoning-start", id: "r" },
+  { type: "reasoning-delta", id: "r", delta: content },
+  { type: "reasoning-end", id: "r" },
+]
+
+// Conversation mode ends the turn on a response without a tool call, so a
+// response that never finished or has no answer must be retried instead.
+describe("Agent incomplete responses", () => {
+  const cases: ReadonlyArray<{
+    readonly name: string
+    readonly response: ReadonlyArray<Response.StreamPartEncoded>
+    readonly reportsError: boolean
+  }> = [
+    {
+      name: "a stream that ends without a finish part",
+      response: reasoning("Checking the parser"),
+      reportsError: true,
+    },
+    {
+      name: "an error response",
+      response: [
+        ...reasoning("Checking the parser"),
+        { type: "error", error: { message: "upstream failed" } },
+        finish(100, "error"),
+      ],
+      reportsError: true,
+    },
+    {
+      name: "a finished response with only reasoning",
+      response: [...reasoning("Checking the parser"), finish(100, "stop")],
+      reportsError: false,
+    },
+  ]
+
+  for (const { name, response, reportsError } of cases) {
+    it.live(`retries ${name} instead of ending the turn`, () =>
+      Effect.gen(function* () {
+        const { exit, calls, outputs } = yield* runAgentCollect({
+          respond: (_call, index) => {
+            switch (index) {
+              case 0:
+                return Stream.fromIterable(response)
+              case 1:
+                return Stream.fromIterable([
+                  ...text("the answer"),
+                  finish(100, "stop"),
+                ])
+              default:
+                return Stream.die(`unexpected model call #${index}`)
+            }
+          },
+        })
+        assert.strictEqual(calls.length, 2, "the model is called again")
+        assert.deepStrictEqual(exit, Exit.succeed("the answer"))
+        if (reportsError) {
+          assert.strictEqual(outputsOfTag(outputs, "ErrorRetry").length, 1)
+        }
+      }),
+    )
+  }
 })
 
 describe("Agent history events", () => {

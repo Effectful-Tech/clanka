@@ -1,5 +1,11 @@
 # clanka
 
+## 0.12.1
+
+### Patch Changes
+
+- [#234](https://github.com/Effectful-Tech/clanka/pull/234) [`95b680b`](https://github.com/Effectful-Tech/clanka/commit/95b680ba49426a39e121278ff0b1d47b44c831e2) Thanks [@tim-smart](https://github.com/tim-smart)! - Log a warning to stderr when the ACP server stops with prompts still running, naming their session ids.
+
 ## 0.12.0
 
 ### Minor Changes

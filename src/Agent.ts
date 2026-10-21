@@ -924,47 +924,41 @@ ${Compaction.capOutput(turn.output ?? "").output}
           ),
         )
 
+        // Per attempt: the parts received, and what they reported.
         // oxlint-disable-next-line typescript/no-explicit-any
         let response = Array.empty<Response.StreamPart<any>>()
+        let hadToolCall = false
+        let finished = false
+        let failure: string | undefined
         const discardAttempt = () => {
           response = []
           pendingImages.length = 0
+          hadToolCall = false
+          finished = false
+          failure = undefined
         }
         let reasoningStarted = false
         let hadReasoningDelta = false
-        let hadToolCall = false
-        // Per attempt, to tell a failed or empty response from an answer.
-        let hadText = false
-        let finished = false
-        let failure: unknown = undefined
-        let steered = false
-        const resetAttempt = () => {
-          hadToolCall = false
-          hadText = false
-          finished = false
-          failure = undefined
-          steered = false
-        }
         // A response that would end the turn must be an answer. One that
-        // failed, or has no text and no tool call, takes the retry path.
+        // failed, or has nothing to return, takes the retry path instead.
         // Once a tool call is in the response its tool may have run, so the
-        // response is kept and the loop continues with the result instead.
+        // response is kept and the loop continues with the result.
         const checkResponse = () => {
           if (failure !== undefined && !hadToolCall) {
             return Effect.fail(
-              incompleteResponseError(
-                `The model response failed: ${errorMessage(failure)}`,
-              ),
+              incompleteResponseError(`The model response failed: ${failure}`),
             )
           }
+          // The condition that ends the turn after the model call below.
           const endsTurn =
             conversationMode &&
-            !steered &&
             !hadToolCall &&
             mailbox.messages.size === 0 &&
             runningChildren().length === 0 &&
             !hasUndelivered()
-          if (!endsTurn || hadText) return Effect.void
+          if (!endsTurn || responseToSummary(response).trim() !== "") {
+            return Effect.void
+          }
           return Effect.fail(
             incompleteResponseError(
               finished
@@ -987,21 +981,19 @@ ${Compaction.capOutput(turn.output ?? "").output}
           return true
         }
         const runModel = pipe(
-          Stream.suspend(() => {
-            resetAttempt()
-            return ai.streamText({
+          Stream.suspend(() =>
+            ai.streamText({
               prompt: sendImages
                 ? prompt.current
                 : Image.stripImages(prompt.current),
               toolkit: singleTool,
-            })
-          }),
+            }),
+          ),
           Stream.takeUntil((part) => {
             if (
               (part.type === "text-end" || part.type === "reasoning-end") &&
               mailbox.messages.size > 0
             ) {
-              steered = true
               return true
             }
             return false
@@ -1018,9 +1010,6 @@ ${Compaction.capOutput(turn.output ?? "").output}
                   break
                 case "text-delta":
                 case "reasoning-delta":
-                  if (part.type === "text-delta" && part.delta.trim() !== "") {
-                    hadText = true
-                  }
                   hadReasoningDelta = true
                   if (reasoningStarted) {
                     reasoningStarted = false
@@ -1081,7 +1070,7 @@ ${Compaction.capOutput(turn.output ?? "").output}
                   hadToolCall = true
                   break
                 case "error":
-                  failure ??= part.error
+                  failure ??= errorMessage(part.error)
                   break
               }
             }

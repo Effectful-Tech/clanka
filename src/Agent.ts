@@ -941,8 +941,8 @@ ${Compaction.capOutput(turn.output ?? "").output}
         let hadReasoningDelta = false
         // A response that would end the turn must be complete. One that
         // failed, or stopped before it finished with nothing to return, takes
-        // the retry path instead. A finished response with no text is the
-        // model choosing to end the turn silently.
+        // the retry path instead. A finished response with no text starts
+        // another turn below.
         // Once a tool call is in the response its tool may have run, so the
         // response is kept and the loop continues with the result.
         const checkResponse = () => {
@@ -1192,7 +1192,10 @@ ${Compaction.capOutput(turn.output ?? "").output}
             yield* waitForActivity
             continue
           }
-          finalSummary = Option.some(responseToSummary(response))
+          const summary = responseToSummary(response)
+          // An empty response is not an answer, so ask the model again.
+          if (summary.trim() === "") continue
+          finalSummary = Option.some(summary)
         }
       }
     }).pipe(

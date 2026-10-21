@@ -939,8 +939,10 @@ ${Compaction.capOutput(turn.output ?? "").output}
         }
         let reasoningStarted = false
         let hadReasoningDelta = false
-        // A response that would end the turn must be an answer. One that
-        // failed, or has nothing to return, takes the retry path instead.
+        // A response that would end the turn must be complete. One that
+        // failed, or stopped before it finished with nothing to return, takes
+        // the retry path instead. A finished response with no text is the
+        // model choosing to end the turn silently.
         // Once a tool call is in the response its tool may have run, so the
         // response is kept and the loop continues with the result.
         const checkResponse = () => {
@@ -956,14 +958,16 @@ ${Compaction.capOutput(turn.output ?? "").output}
             mailbox.messages.size === 0 &&
             runningChildren().length === 0 &&
             !hasUndelivered()
-          if (!endsTurn || responseToSummary(response).trim() !== "") {
+          if (
+            !endsTurn ||
+            finished ||
+            responseToSummary(response).trim() !== ""
+          ) {
             return Effect.void
           }
           return Effect.fail(
             incompleteResponseError(
-              finished
-                ? "The model response had no text and no tool call"
-                : "The model response ended before it finished",
+              "The model response ended before it finished",
             ),
           )
         }

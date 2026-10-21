@@ -1,13 +1,19 @@
 import { assert, describe, it } from "@effect/vitest"
 import * as NodeServices from "@effect/platform-node/NodeServices"
+import type * as Cause from "effect/Cause"
 import * as Context from "effect/Context"
+import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
 import * as FileSystem from "effect/FileSystem"
 import * as Fiber from "effect/Fiber"
 import * as Layer from "effect/Layer"
+import * as Logger from "effect/Logger"
 import * as Option from "effect/Option"
 import * as Path from "effect/Path"
+import * as Queue from "effect/Queue"
 import * as Schedule from "effect/Schedule"
+import * as Sink from "effect/Sink"
+import * as Stdio from "effect/Stdio"
 import * as Stream from "effect/Stream"
 import * as FetchHttpClient from "effect/http/FetchHttpClient"
 import * as Prompt from "effect/ai/Prompt"
@@ -950,6 +956,106 @@ await changeDirectory("sub")`),
           assert.deepStrictEqual(done.result, { stopReason: "cancelled" })
         }),
       ),
+    ),
+  )
+
+  it.effect("reports prompts still running when stdin ends", () =>
+    withStore(
+      Effect.gen(function* () {
+        const modelCalled = yield* Deferred.make<void>()
+        const languageModel = yield* LanguageModel.make({
+          generateText: () => Effect.succeed([]),
+          streamText: () =>
+            Stream.fromEffect(Deferred.succeed(modelCalled, undefined)).pipe(
+              Stream.drain,
+              Stream.concat(Stream.never),
+            ),
+        })
+        const modelLayer = Layer.mergeAll(
+          Layer.succeed(LanguageModel.LanguageModel, languageModel),
+          Layer.succeed(Model.ProviderName, "test"),
+          Layer.succeed(Model.ModelName, "model"),
+        )
+
+        const decoder = new TextDecoder()
+        const decode = (chunk: string | Uint8Array) =>
+          typeof chunk === "string" ? chunk : decoder.decode(chunk)
+        const stdin = yield* Queue.unbounded<Uint8Array, Cause.Done>()
+        const stdout = yield* Queue.unbounded<string>()
+        const stdoutLines: Array<string> = []
+        // Both the stderr sink and log output reach stderr in the CLI.
+        const stderr: Array<string> = []
+        const stdio = Stdio.layerTest({
+          stdin: Stream.fromQueue(stdin),
+          stdout: () =>
+            Sink.forEach((chunk) =>
+              Effect.sync(() => {
+                for (const line of decode(chunk).split("\n")) {
+                  if (line === "") continue
+                  stdoutLines.push(line)
+                  Queue.offerUnsafe(stdout, line)
+                }
+              }),
+            ),
+          stderr: () =>
+            Sink.forEach((chunk) =>
+              Effect.sync(() => {
+                stderr.push(decode(chunk))
+              }),
+            ),
+        })
+        const logger = Logger.layer([
+          Logger.make((options) => {
+            stderr.push(Logger.formatSimple.log(options))
+          }),
+        ])
+
+        const send = (message: object) =>
+          Queue.offer(
+            stdin,
+            new TextEncoder().encode(
+              `${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`,
+            ),
+          )
+        const response = (id: number) =>
+          Queue.take(stdout).pipe(
+            Effect.map((line): Message => JSON.parse(line)),
+            Effect.repeat({ until: (message) => message.id === id }),
+          )
+
+        const server = yield* Acp.runStdio({
+          version: "test",
+          defaultModel: "test:model",
+          defaultThoughtLevel: "medium",
+          makeAgent: () =>
+            Agent.make.pipe(
+              Effect.provideService(AgentExecutor.AgentExecutor, executor),
+            ),
+          makeModel: () =>
+            Option.some(
+              Layer.merge(modelLayer, Agent.layerSubagentModel(modelLayer)),
+            ),
+        }).pipe(Effect.provide([stdio, logger]), Effect.forkChild)
+
+        yield* send({ id: 1, method: "session/new", params: { cwd: "/tmp" } })
+        const sessionId: string = (yield* response(1)).result.sessionId
+        yield* send({
+          id: 2,
+          method: "session/prompt",
+          params: { sessionId, prompt: [{ type: "text", text: "hello" }] },
+        })
+        yield* Deferred.await(modelCalled)
+        yield* Queue.end(stdin)
+        yield* Fiber.join(server)
+
+        for (const line of stdoutLines) {
+          assert.strictEqual(JSON.parse(line).jsonrpc, "2.0")
+        }
+        assert.isTrue(
+          stderr.some((line) => line.includes(sessionId)),
+          `expected a stderr diagnostic naming session ${sessionId}, got: ${JSON.stringify(stderr)}`,
+        )
+      }),
     ),
   )
 })

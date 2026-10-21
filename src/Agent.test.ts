@@ -1396,6 +1396,45 @@ describe("Agent incomplete responses", () => {
       }),
     )
   }
+
+  it.live("keeps a tool result when the response then reports an error", () =>
+    Effect.gen(function* () {
+      let executions = 0
+      const { exit, calls } = yield* runAgentCollect({
+        executor: makeExecutor(() =>
+          Stream.sync(() => {
+            executions++
+            return "wrote notes.txt"
+          }),
+        ),
+        respond: (call, index) => {
+          if (index === 0) {
+            return Stream.fromIterable([
+              toolCall("call-1", "await writeFile('notes.txt')"),
+              { type: "error", error: { message: "upstream failed" } },
+              finish(100),
+            ])
+          }
+          if (index > 2) return Stream.die(`unexpected model call #${index}`)
+          // Without the result, a model asks for the same write again.
+          return promptJson(call.prompt).includes("wrote notes.txt")
+            ? Stream.fromIterable([...text("the answer"), finish(100, "stop")])
+            : Stream.fromIterable([
+                toolCall(`call-${index + 1}`, "await writeFile('notes.txt')"),
+                finish(100),
+              ])
+        },
+      })
+      assert.deepStrictEqual(
+        {
+          executions,
+          resultSent: promptJson(calls[1]!.prompt).includes("wrote notes.txt"),
+        },
+        { executions: 1, resultSent: true },
+      )
+      assert.deepStrictEqual(exit, Exit.succeed("the answer"))
+    }),
+  )
 })
 
 describe("Agent history events", () => {

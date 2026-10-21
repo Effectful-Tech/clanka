@@ -1,5 +1,11 @@
 # clanka
 
+## 0.12.3
+
+### Patch Changes
+
+- [#238](https://github.com/Effectful-Tech/clanka/pull/238) [`cd4af72`](https://github.com/Effectful-Tech/clanka/commit/cd4af7270dc65c411c5aca74f8d76bb58fb0d6c6) Thanks [@tim-smart](https://github.com/tim-smart)! - Start another model turn when a conversation-mode response finishes with no text and no tool call, instead of retrying it as an error until `RetriesExhausted`. Responses that fail or stop before they finish are still retried.
+
 ## 0.12.2
 
 ### Patch Changes

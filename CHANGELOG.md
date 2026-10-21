@@ -1,5 +1,11 @@
 # clanka
 
+## 0.12.2
+
+### Patch Changes
+
+- [#236](https://github.com/Effectful-Tech/clanka/pull/236) [`9999f7b`](https://github.com/Effectful-Tech/clanka/commit/9999f7b089e68bcb8173c3c1ea0d19df530bb69f) Thanks [@tim-smart](https://github.com/tim-smart)! - Retry model responses that failed without making a tool call, or that would end a conversation-mode turn with no text and no tool call, instead of ending the turn with an empty answer. Retries use the existing `MaxRetries` limit. A failed response that made a tool call keeps the call and its result, and the turn continues.
+
 ## 0.12.1
 
 ### Patch Changes

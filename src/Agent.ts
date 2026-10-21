@@ -947,8 +947,10 @@ ${Compaction.capOutput(turn.output ?? "").output}
         }
         // A response that would end the turn must be an answer. One that
         // failed, or has no text and no tool call, takes the retry path.
+        // Once a tool call is in the response its tool may have run, so the
+        // response is kept and the loop continues with the result instead.
         const checkResponse = () => {
-          if (failure !== undefined) {
+          if (failure !== undefined && !hadToolCall) {
             return Effect.fail(
               incompleteResponseError(
                 `The model response failed: ${errorMessage(failure)}`,

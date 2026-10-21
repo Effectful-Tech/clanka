@@ -924,15 +924,49 @@ ${Compaction.capOutput(turn.output ?? "").output}
           ),
         )
 
+        // Per attempt: the parts received, and what they reported.
         // oxlint-disable-next-line typescript/no-explicit-any
         let response = Array.empty<Response.StreamPart<any>>()
+        let hadToolCall = false
+        let finished = false
+        let failure: string | undefined
         const discardAttempt = () => {
           response = []
           pendingImages.length = 0
+          hadToolCall = false
+          finished = false
+          failure = undefined
         }
         let reasoningStarted = false
         let hadReasoningDelta = false
-        let hadToolCall = false
+        // A response that would end the turn must be an answer. One that
+        // failed, or has nothing to return, takes the retry path instead.
+        // Once a tool call is in the response its tool may have run, so the
+        // response is kept and the loop continues with the result.
+        const checkResponse = () => {
+          if (failure !== undefined && !hadToolCall) {
+            return Effect.fail(
+              incompleteResponseError(`The model response failed: ${failure}`),
+            )
+          }
+          // The condition that ends the turn after the model call below.
+          const endsTurn =
+            conversationMode &&
+            !hadToolCall &&
+            mailbox.messages.size === 0 &&
+            runningChildren().length === 0 &&
+            !hasUndelivered()
+          if (!endsTurn || responseToSummary(response).trim() !== "") {
+            return Effect.void
+          }
+          return Effect.fail(
+            incompleteResponseError(
+              finished
+                ? "The model response had no text and no tool call"
+                : "The model response ended before it finished",
+            ),
+          )
+        }
         // Retries of this model call so far, and the error that used up the
         // last one.
         let retries = 0
@@ -1003,6 +1037,10 @@ ${Compaction.capOutput(turn.output ?? "").output}
                   }
                   break
                 case "finish":
+                  finished = true
+                  if (part.reason === "error") {
+                    failure ??= "finish reason error"
+                  }
                   const usage = part.usage
                   if (usage.outputTokens.total !== undefined) {
                     outputTokens += usage.outputTokens.total
@@ -1031,10 +1069,14 @@ ${Compaction.capOutput(turn.output ?? "").output}
                 case "tool-call":
                   hadToolCall = true
                   break
+                case "error":
+                  failure ??= errorMessage(part.error)
+                  break
               }
             }
             return Effect.void
           }),
+          Effect.andThen(checkResponse),
           modelConfig.systemPromptTransform
             ? (effect) => modelConfig.systemPromptTransform!(system, effect)
             : identity,
@@ -1262,6 +1304,13 @@ const turnTimeoutError = AiError.make({
     description: "TurnTimeout was reached",
   }),
 })
+
+const incompleteResponseError = (description: string) =>
+  AiError.make({
+    module: "clanka/Agent",
+    method: "send",
+    reason: new AiError.InternalProviderError({ description }),
+  })
 
 const retryPolicy = Schedule.min([
   Schedule.exponential(100, 1.5),

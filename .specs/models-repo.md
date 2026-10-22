@@ -72,8 +72,10 @@ a request; an older one is refreshed, and kept if the refresh fails.
 
 ## CLI
 
-- `clanka` with no `--model`: a `Prompt.Select` over the catalog entries for
-  the chosen provider, then a `Prompt.Select` over that model's `efforts`
+- `clanka` with no `--model`: a `Prompt.AutoComplete` over the catalog entries
+  for the chosen provider, filtered by model name as the user types and
+  preselecting the provider's `fallback` model, then a `Prompt.Select` over
+  that model's `efforts`
   (preselecting `medium` when offered). A model with no `efforts` skips the
   second prompt and is created with `reasoning: null`, which `Codex`, `Xai`
   and `Copilot` read as "send no reasoning options"; omitting `reasoning`

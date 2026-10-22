@@ -42,7 +42,8 @@ type Provider = ModelsRepo.Provider
 
 const providers = ModelsRepo.Provider.literals
 
-// Pick a model from the catalog, then one of its reasoning efforts.
+// Pick a model from the catalog, filtering by name as the user types, then
+// one of its reasoning efforts.
 const selectModel = Effect.fnUntraced(function* (provider: Provider) {
   const repo = yield* ModelsRepo.ModelsRepo
   const catalog = (yield* repo.models).filter(
@@ -55,7 +56,7 @@ const selectModel = Effect.fnUntraced(function* (provider: Provider) {
   const defaultId = ModelsRepo.fallback.find(
     (model) => model.provider === provider,
   )?.id
-  const model = yield* Prompt.Select({
+  const model = yield* Prompt.AutoComplete({
     message: "Select a model",
     choices: models.map((model) => ({
       title: model.name,

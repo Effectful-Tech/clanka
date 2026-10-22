@@ -113,12 +113,60 @@ describe("Xai provider", () => {
         )
         assert.lengthOf(http.requests, 0)
         assert.lengthOf(requests, 2)
-        for (const request of requests) assert.strictEqual(request.store, true)
+        for (const request of requests) {
+          assert.strictEqual(request.store, true)
+          assert.strictEqual(request.reasoning?.effort, "high")
+        }
         assert.isUndefined(requests[0]!.max_output_tokens)
         assert.strictEqual(requests[1]!.max_output_tokens, 4000)
       }),
     )
   }
+
+  it.effect("sends no WebSocket reasoning when reasoning is null", () =>
+    Effect.gen(function* () {
+      const requests: Array<
+        Parameters<
+          OpenAiClient.OpenAiSocket["Service"]["createResponseStream"]
+        >[0]
+      > = []
+      yield* Effect.gen(function* () {
+        const ai = yield* LanguageModel.LanguageModel
+        yield* ai
+          .streamText({ prompt: "hello" })
+          .pipe(Stream.runDrain, Effect.exit)
+      }).pipe(
+        Effect.provideService(OpenAiClient.OpenAiSocket, {
+          createResponseStream: (request) =>
+            Effect.sync(() => {
+              requests.push(request)
+              return [
+                HttpClientResponse.fromWeb(
+                  HttpClientRequest.post("https://api.x.ai/v1/responses"),
+                  new Response(),
+                ),
+                Stream.empty,
+              ] as const
+            }),
+        }),
+        Effect.provide(
+          Xai.modelWebSocket("grok-build-0.1", { reasoning: null }).pipe(
+            Layer.provide(
+              OpenAiClient.layer({ apiUrl: "https://api.x.ai/v1" }),
+            ),
+            Layer.provide(capture().layer),
+            Layer.provide(
+              Layer.succeed(Socket.WebSocketConstructor, () => {
+                throw new Error("Unexpected live WebSocket")
+              }),
+            ),
+          ),
+        ),
+      )
+      assert.lengthOf(requests, 1)
+      assert.isUndefined(requests[0]!.reasoning)
+    }),
+  )
 
   it("exports Xai, but not XaiAuth, from the public entry point", () => {
     assert.strictEqual(Public.Xai, Xai)
@@ -126,10 +174,11 @@ describe("Xai provider", () => {
     assert.strictEqual(Xai.model("grok-4.6").provider, "xai")
   })
 
-  for (const effort of [undefined, "low"] as const) {
+  // `null` is how the CLI asks for no reasoning on models without efforts.
+  for (const effort of [undefined, "low", null] as const) {
     it.effect(
       "uses authenticated HTTP Responses with " +
-        (effort ?? "default high") +
+        (effort === undefined ? "default high" : (effort ?? "no")) +
         " reasoning",
       () =>
         Effect.gen(function* () {
@@ -152,7 +201,9 @@ describe("Xai provider", () => {
             Effect.provide(
               Xai.model(
                 "grok-4.6",
-                effort === undefined ? undefined : { reasoning: { effort } },
+                effort === undefined
+                  ? undefined
+                  : { reasoning: effort === null ? null : { effort } },
               ).pipe(
                 Layer.provide(Xai.layerClient),
                 Layer.provide(http.layer),
@@ -175,9 +226,13 @@ describe("Xai provider", () => {
             store: false,
             stream: true,
           })
-          assert.deepInclude(body(request).reasoning, {
-            effort: effort ?? "high",
-          })
+          if (effort === null) {
+            assert.isFalse("reasoning" in body(request))
+          } else {
+            assert.deepInclude(body(request).reasoning, {
+              effort: effort ?? "high",
+            })
+          }
           assert.isFalse("max_output_tokens" in body(request))
         }).pipe(Effect.provide(KeyValueStore.layerMemory)),
     )

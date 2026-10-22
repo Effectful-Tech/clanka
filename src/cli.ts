@@ -9,13 +9,11 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
 import * as GlobalWebSocket from "./GlobalWebSocket.ts"
 import * as Acp from "./Acp.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
-import * as Codex from "./Codex.ts"
-import * as Copilot from "./Copilot.ts"
-import * as Xai from "./Xai.ts"
 import * as Agent from "./Agent.ts"
 import * as Compaction from "./Compaction.ts"
 import * as McpConfig from "./McpConfig.ts"
 import * as McpServers from "./McpServers.ts"
+import * as ModelLayer from "./ModelLayer.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
 import * as Stream from "effect/Stream"
 import * as Stdio from "effect/Stdio"
@@ -24,8 +22,6 @@ import * as Layer from "effect/Layer"
 import * as Logger from "effect/Logger"
 import * as Path from "effect/Path"
 import * as Schema from "effect/Schema"
-import type * as LanguageModel from "effect/ai/LanguageModel"
-import type * as Model from "effect/ai/Model"
 import * as Config from "effect/Config"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Option from "effect/Option"
@@ -45,51 +41,6 @@ const HttpClientLive = NodeHttpClient.layerNodeHttpNoAgent.pipe(
 type Provider = ModelsRepo.Provider
 
 const providers = ModelsRepo.Provider.literals
-
-const withSubagentModel = <E, R>(
-  model: Layer.Layer<
-    LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName,
-    E,
-    R
-  >,
-) => Layer.merge(model, Agent.layerSubagentModel(model))
-
-// `effort` is null for catalog models that take no reasoning effort, and
-// undefined to keep the provider's default effort.
-const modelLayer = (
-  provider: Provider,
-  model: string,
-  effort: string | null | undefined,
-  openai: OpenAiClient.Options,
-) => {
-  const options =
-    effort === undefined
-      ? undefined
-      : { reasoning: effort === null ? null : { effort: effort as any } }
-  return provider === "openai"
-    ? openai.apiKey !== undefined
-      ? withSubagentModel(Codex.model(model, options)).pipe(
-          Layer.provide(OpenAiClient.layer(openai)),
-        )
-      : withSubagentModel(Codex.modelWebSocket(model, options)).pipe(
-          Layer.provide(Codex.layerClient),
-        )
-    : provider === "xai"
-      ? withSubagentModel(Xai.modelWebSocket(model, options)).pipe(
-          Layer.provide(Xai.layerClient),
-        )
-      : withSubagentModel(Copilot.model(model, options)).pipe(
-          Layer.provide(Copilot.layerClient),
-        )
-}
-
-// `<provider>:<id>` ids for the ACP `availableModels` list. The provider is
-// part of the name because providers share model names.
-const acpModels = (models: ReadonlyArray<ModelsRepo.ModelInfo>) =>
-  models.map((model) => ({
-    modelId: `${model.provider}:${model.id}`,
-    name: `${model.name} (${model.provider})`,
-  }))
 
 // Pick a model from the catalog, then one of its reasoning efforts.
 const selectModel = Effect.fnUntraced(function* (provider: Provider) {
@@ -127,8 +78,7 @@ const selectModel = Effect.fnUntraced(function* (provider: Provider) {
   return { model: model.id, effort }
 })
 
-const isProvider = (provider: string | undefined): provider is Provider =>
-  providers.includes(provider as Provider)
+const isProvider = Schema.is(ModelsRepo.Provider)
 
 // `<provider>/<model>/<effort>` as accepted by the `acp` --model flag.
 const parseModelId = (modelId: string) => {
@@ -138,14 +88,6 @@ const parseModelId = (modelId: string) => {
     Schema.is(Acp.ThoughtLevel)(effort) &&
     rest.length === 0
     ? Option.some({ model: `${provider}:${model}`, thoughtLevel: effort })
-    : Option.none()
-}
-
-// `<provider>:<model>` as advertised over ACP.
-const parseAcpModelId = (modelId: string) => {
-  const [provider, model, ...rest] = modelId.split(":")
-  return isProvider(provider) && model !== undefined && rest.length === 0
-    ? Option.some({ provider, model })
     : Option.none()
 }
 
@@ -328,18 +270,18 @@ const acp = Command.make("acp", {
         version,
         defaultModel: model.model,
         defaultThoughtLevel: model.thoughtLevel,
-        availableModels: Effect.map(repo.models, acpModels),
+        availableModels: Effect.map(repo.models, ModelLayer.acpModels),
         makeAgent: (cwd) =>
           Agent.make.pipe(
             Effect.provide(AgentExecutor.layerLocal({ directory: cwd })),
           ),
-        makeModel: (modelId, thoughtLevel) =>
-          Option.map(parseAcpModelId(modelId), ({ provider, model }) =>
-            modelLayer(provider, model, thoughtLevel, {
-              apiKey: Option.getOrUndefined(apiKey),
-              apiUrl: Option.getOrUndefined(apiUrl),
-            }),
-          ),
+        makeModel: ModelLayer.makeAcp({
+          models: repo.models,
+          openai: {
+            apiKey: Option.getOrUndefined(apiKey),
+            apiUrl: Option.getOrUndefined(apiUrl),
+          },
+        }),
       })
     }),
   ),
@@ -394,7 +336,7 @@ Command.make("clanka", {
         },
         onNone: () => selectModel(provider),
       })
-      const Model = modelLayer(provider, model, effort, {
+      const Model = ModelLayer.make(provider, model, effort, {
         apiKey: Option.getOrUndefined(apiKey),
         apiUrl: Option.getOrUndefined(apiUrl),
       })

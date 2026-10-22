@@ -87,6 +87,12 @@ a request; an older one is refreshed, and kept if the refresh fails.
   the default model when the catalog does not already list them, so sessions
   on an unlisted model keep a valid `currentModelId`. Without the option the
   server keeps advertising only the session and default model.
+- The CLI builds model layers through `src/ModelLayer.ts`. Its
+  `ModelLayer.makeAcp({ models, openai })` is the `makeModel` callback for
+  `clanka acp`: ids that do not parse as `<provider>:<model>` stay unknown, a
+  model the catalog lists with no `efforts` runs with `reasoning: null`
+  whatever the session thought level, and any other model runs at the session
+  thought level. `Acp.Options.makeModel` keeps its signature.
 - `ModelsRepo.layerModelsDev()` is provided at the CLI root next to `Kvs` and
   `HttpClientLive`, so the cache lives in `~/.config/clanka`.
 

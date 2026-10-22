@@ -74,8 +74,11 @@ a request; an older one is refreshed, and kept if the refresh fails.
 
 - `clanka` with no `--model`: a `Prompt.Select` over the catalog entries for
   the chosen provider, then a `Prompt.Select` over that model's `efforts`
-  (preselecting `medium` when offered). `--model <model>/<effort>` is unchanged
-  and is not checked against the catalog.
+  (preselecting `medium` when offered). A model with no `efforts` skips the
+  second prompt and is created with `reasoning: null`, which `Codex`, `Xai`
+  and `Copilot` read as "send no reasoning options"; omitting `reasoning`
+  keeps each provider's default effort. `--model <model>/<effort>` is
+  unchanged and is not checked against the catalog.
 - `clanka acp`: `Acp.Options` gains `availableModels`, an
   `Effect<ReadonlyArray<{ modelId: string; name: string }>>`. The CLI passes the
   catalog as `<provider>:<id>` ids named `<ModelInfo.name> (<provider>)`,

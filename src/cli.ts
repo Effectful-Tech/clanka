@@ -54,15 +54,18 @@ const withSubagentModel = <E, R>(
   >,
 ) => Layer.merge(model, Agent.layerSubagentModel(model))
 
-// `effort` is undefined for models that take no reasoning effort.
+// `effort` is null for catalog models that take no reasoning effort, and
+// undefined to keep the provider's default effort.
 const modelLayer = (
   provider: Provider,
   model: string,
-  effort: string | undefined,
+  effort: string | null | undefined,
   openai: OpenAiClient.Options,
 ) => {
   const options =
-    effort === undefined ? {} : { reasoning: { effort: effort as any } }
+    effort === undefined
+      ? undefined
+      : { reasoning: effort === null ? null : { effort: effort as any } }
   return provider === "openai"
     ? openai.apiKey !== undefined
       ? withSubagentModel(Codex.model(model, options)).pipe(
@@ -111,7 +114,7 @@ const selectModel = Effect.fnUntraced(function* (provider: Provider) {
     })),
   })
   if (model.efforts.length === 0) {
-    return { model: model.id, effort: undefined }
+    return { model: model.id, effort: null }
   }
   const effort = yield* Prompt.Select({
     message: "Select a reasoning effort",
@@ -383,7 +386,10 @@ Command.make("clanka", {
       )
       const { model, effort } = yield* Option.match(modelRaw, {
         onSome: (selected) => {
-          const [model, effort] = selected.split("/") as [string, string]
+          const [model, effort] = selected.split("/") as [
+            string,
+            string | undefined,
+          ]
           return Effect.succeed({ model, effort })
         },
         onNone: () => selectModel(provider),

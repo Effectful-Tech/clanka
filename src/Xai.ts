@@ -21,14 +21,27 @@ export const layerClient = OpenAiClient.layer({
 }).pipe(Layer.provide(XaiAuth.layerClient))
 
 /**
+ * Options for a model. `reasoning: null` sends no reasoning options, for
+ * models that accept none; omitting `reasoning` keeps the default effort.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export type ModelOptions = Omit<
+  OpenAiLanguageModel.Config["Service"],
+  "reasoning"
+> & {
+  readonly reasoning?:
+    OpenAiLanguageModel.Config["Service"]["reasoning"] | null | undefined
+} & typeof AgentModelConfig.Service
+
+/**
  * @since 1.0.0
  * @category Layers
  */
 export const model = (
   model: string,
-  options?:
-    | (OpenAiLanguageModel.Config["Service"] & typeof AgentModelConfig.Service)
-    | undefined,
+  options?: ModelOptions | undefined,
 ): Model.Model<"xai", LanguageModel.LanguageModel, OpenAiClient.OpenAiClient> =>
   Model.make(
     "xai",
@@ -38,11 +51,15 @@ export const model = (
         model,
         config: {
           ...Struct.omit(options ?? {}, [
+            "reasoning",
             "systemPromptTransform",
             "supportsImages",
           ]),
           store: options?.store ?? false,
-          reasoning: { effort: "high", ...options?.reasoning },
+          reasoning:
+            options?.reasoning === null
+              ? undefined
+              : { effort: "high", ...options?.reasoning },
         },
       }),
       AgentModelConfig.layer({
@@ -64,9 +81,7 @@ export const model = (
  */
 export const modelWebSocket = (
   model: string,
-  options?:
-    | (OpenAiLanguageModel.Config["Service"] & typeof AgentModelConfig.Service)
-    | undefined,
+  options?: ModelOptions | undefined,
 ): Model.Model<
   "xai",
   | LanguageModel.LanguageModel
@@ -82,13 +97,17 @@ export const modelWebSocket = (
         model,
         config: {
           ...Struct.omit(options ?? {}, [
+            "reasoning",
             "systemPromptTransform",
             "supportsImages",
           ]),
           // xAI needs stored responses to resolve previous_response_id.
           store: true,
           useItemReferences: false,
-          reasoning: { effort: "high", ...options?.reasoning },
+          reasoning:
+            options?.reasoning === null
+              ? undefined
+              : { effort: "high", ...options?.reasoning },
         },
       }),
       AgentModelConfig.layer({

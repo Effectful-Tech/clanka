@@ -20,14 +20,27 @@ export const layerClient = OpenAiClient.layer({
 }).pipe(Layer.provide(CodexAuth.layerClient))
 
 /**
+ * Options for a model. `reasoning: null` sends no reasoning options, for
+ * models that accept none; omitting `reasoning` keeps the default effort.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export type ModelOptions = Omit<
+  OpenAiLanguageModel.Config["Service"],
+  "reasoning"
+> & {
+  readonly reasoning?:
+    OpenAiLanguageModel.Config["Service"]["reasoning"] | null | undefined
+} & typeof AgentModelConfig.Service
+
+/**
  * @since 1.0.0
  * @category Layers
  */
 export const model = (
   model: (string & {}) | OpenAiLanguageModel.Model,
-  options?:
-    | (OpenAiLanguageModel.Config["Service"] & typeof AgentModelConfig.Service)
-    | undefined,
+  options?: ModelOptions | undefined,
 ): Model.Model<
   "openai",
   LanguageModel.LanguageModel,
@@ -40,9 +53,7 @@ export const model = (
  */
 export const modelWebSocket = (
   model: (string & {}) | OpenAiLanguageModel.Model,
-  options?:
-    | (OpenAiLanguageModel.Config["Service"] & typeof AgentModelConfig.Service)
-    | undefined,
+  options?: ModelOptions | undefined,
 ): Model.Model<
   "openai",
   | LanguageModel.LanguageModel
@@ -60,9 +71,7 @@ export const modelWebSocket = (
 
 const layerModel = (
   model: (string & {}) | OpenAiLanguageModel.Model,
-  options?:
-    | (OpenAiLanguageModel.Config["Service"] & typeof AgentModelConfig.Service)
-    | undefined,
+  options?: ModelOptions | undefined,
 ) =>
   OpenAiLanguageModel.layer({
     model,
@@ -73,11 +82,14 @@ const layerModel = (
         "supportsImages",
       ]),
       store: false,
-      reasoning: {
-        effort: "medium",
-        summary: "auto",
-        ...(options?.reasoning as any),
-      },
+      reasoning:
+        options?.reasoning === null
+          ? undefined
+          : {
+              effort: "medium",
+              summary: "auto",
+              ...(options?.reasoning as any),
+            },
     },
   }).pipe(
     Layer.merge(

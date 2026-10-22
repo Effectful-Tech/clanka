@@ -5,6 +5,7 @@ import * as HttpClient from "effect/http/HttpClient"
 import * as HttpClientError from "effect/http/HttpClientError"
 import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
+import * as TestClock from "effect/testing/TestClock"
 import * as ModelsRepo from "./ModelsRepo.ts"
 
 // A trimmed `https://models.dev/api.json`: one provider clanka does not
@@ -145,16 +146,24 @@ const online = HttpClient.make((request) =>
   ),
 )
 
-const offline = HttpClient.make((request) =>
-  Effect.fail(
-    new HttpClientError.HttpClientError({
-      reason: new HttpClientError.TransportError({
-        request,
-        cause: new Error("getaddrinfo ENOTFOUND models.dev"),
-      }),
+// Fails every request and counts the attempts.
+const offline = () => {
+  let requests = 0
+  const client = HttpClient.make((request) =>
+    Effect.suspend(() => {
+      requests++
+      return Effect.fail(
+        new HttpClientError.HttpClientError({
+          reason: new HttpClientError.TransportError({
+            request,
+            cause: new Error("getaddrinfo ENOTFOUND models.dev"),
+          }),
+        }),
+      )
     }),
-  ),
-)
+  )
+  return { client, requests: () => requests }
+}
 
 const modelsWith = (client: HttpClient.HttpClient) =>
   Effect.flatMap(ModelsRepo.ModelsRepo, (repo) => repo.models).pipe(
@@ -174,10 +183,24 @@ describe("ModelsRepo.layerModelsDev", () => {
       }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   )
 
-  it.effect("serves the cached catalog when models.dev is unreachable", () =>
+  it.effect("serves an expired cached catalog when the refresh fails", () =>
     Effect.gen(function* () {
       yield* modelsWith(online)
-      assert.deepStrictEqual(yield* modelsWith(offline), catalog)
+      yield* TestClock.adjust("25 hours")
+      const http = offline()
+      assert.deepStrictEqual(yield* modelsWith(http.client), catalog)
+      assert.strictEqual(http.requests(), 1)
     }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  )
+
+  it.effect(
+    "serves the built-in catalog when models.dev is unreachable and nothing is cached",
+    () =>
+      Effect.gen(function* () {
+        assert.deepStrictEqual(
+          yield* modelsWith(offline().client),
+          ModelsRepo.fallback,
+        )
+      }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   )
 })

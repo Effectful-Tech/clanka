@@ -470,14 +470,24 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     },
   ]
 
-  const sessionState = (session: Session) => ({
-    models: {
-      availableModels: [...new Set([session.model, options.defaultModel])].map(
-        (modelId) => ({ modelId, name: modelId }),
-      ),
-      currentModelId: session.model,
-    },
-    configOptions: configOptions(session),
+  const sessionState = Effect.fnUntraced(function* (session: Session) {
+    const catalog =
+      options.availableModels === undefined
+        ? []
+        : yield* options.availableModels
+    const listed = new Set(catalog.map((model) => model.modelId))
+    return {
+      models: {
+        availableModels: [
+          ...catalog,
+          ...[...new Set([session.model, options.defaultModel])]
+            .filter((modelId) => !listed.has(modelId))
+            .map((modelId) => ({ modelId, name: modelId })),
+        ],
+        currentModelId: session.model,
+      },
+      configOptions: configOptions(session),
+    }
   })
 
   const persist = (session: Session) =>
@@ -889,7 +899,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       mcpServers ?? [],
     )
     yield* persist(session)
-    return { sessionId: session.id, ...sessionState(session) }
+    return { sessionId: session.id, ...(yield* sessionState(session)) }
   })
 
   const loadSession = Effect.fnUntraced(function* (
@@ -902,7 +912,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     )
     const existing = sessions.get(sessionId)
     if (existing !== undefined) {
-      return sessionState(existing)
+      return yield* sessionState(existing)
     }
     const record = yield* store
       .get(sessionId)
@@ -934,7 +944,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     if (replay) {
       yield* replayHistory(session)
     }
-    return sessionState(session)
+    return yield* sessionState(session)
   })
 
   const setModel = Effect.fnUntraced(function* (params: unknown) {

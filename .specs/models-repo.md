@@ -78,7 +78,8 @@ a request; an older one is refreshed, and kept if the refresh fails.
   and is not checked against the catalog.
 - `clanka acp`: `Acp.Options` gains `availableModels`, an
   `Effect<ReadonlyArray<{ modelId: string; name: string }>>`. The CLI passes the
-  catalog as `<provider>:<id>` ids with the `ModelInfo.name` as the name.
+  catalog as `<provider>:<id>` ids named `<ModelInfo.name> (<provider>)`,
+  since providers share model names.
   `sessionState` lists `availableModels` first, then the session model and
   the default model when the catalog does not already list them, so sessions
   on an unlisted model keep a valid `currentModelId`. Without the option the

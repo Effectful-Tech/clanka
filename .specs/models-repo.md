@@ -91,8 +91,12 @@ a request; an older one is refreshed, and kept if the refresh fails.
   `ModelLayer.makeAcp({ models, openai })` is the `makeModel` callback for
   `clanka acp`: ids that do not parse as `<provider>:<model>` stay unknown, a
   model the catalog lists with no `efforts` runs with `reasoning: null`
-  whatever the session thought level, and any other model runs at the session
-  thought level. `Acp.Options.makeModel` keeps its signature.
+  whatever the session thought level, and an unlisted model runs at the
+  session thought level. A listed model whose `efforts` include the session
+  thought level runs at it; otherwise it runs at the supported effort nearest
+  to it in `Acp.ThoughtLevel` order, the higher one on a tie (`medium` on
+  `[low, high]` runs at `high`). ACP keeps displaying the session thought
+  level. `Acp.Options.makeModel` keeps its signature.
 - `ModelsRepo.layerModelsDev()` is provided at the CLI root next to `Kvs` and
   `HttpClientLive`, so the cache lives in `~/.config/clanka`.
 

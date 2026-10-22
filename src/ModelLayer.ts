@@ -11,7 +11,7 @@ import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as Schema from "effect/Schema"
-import type * as Acp from "./Acp.ts"
+import { ThoughtLevel } from "./Acp.ts"
 import * as Agent from "./Agent.ts"
 import * as Codex from "./Codex.ts"
 import * as Copilot from "./Copilot.ts"
@@ -89,11 +89,37 @@ export const acpModels = (models: ReadonlyArray<ModelsRepo.ModelInfo>) =>
     name: `${model.name} (${model.provider})`,
   }))
 
+const rank = (level: ThoughtLevel) => ThoughtLevel.literals.indexOf(level)
+
+// The effort a catalog model with `efforts` runs at for a session
+// `thoughtLevel`: `null` for no efforts, else the nearest supported effort,
+// breaking ties upward.
+const resolveEffort = (
+  efforts: ReadonlyArray<ThoughtLevel>,
+  thoughtLevel: ThoughtLevel,
+): ThoughtLevel | null => {
+  const distance = (level: ThoughtLevel) =>
+    Math.abs(rank(level) - rank(thoughtLevel))
+  let resolved: ThoughtLevel | null = null
+  for (const effort of efforts) {
+    if (
+      resolved === null ||
+      distance(effort) < distance(resolved) ||
+      (distance(effort) === distance(resolved) && rank(effort) > rank(resolved))
+    ) {
+      resolved = effort
+    }
+  }
+  return resolved
+}
+
 /**
  * An `Acp.Options.makeModel` callback. Ids that do not parse as
  * `<provider>:<model>` are unknown models. A model the catalog lists without
- * efforts runs with no reasoning options, whatever the session thought level;
- * any other model runs at the session thought level.
+ * efforts runs with no reasoning options, whatever the session thought level.
+ * A listed model that does not support the session thought level runs at the
+ * supported effort nearest to it in `ThoughtLevel` order, the higher one on a
+ * tie. Unlisted models run at the session thought level.
  *
  * @since 1.0.0
  * @category ACP
@@ -103,7 +129,7 @@ export const makeAcp =
     readonly models: Effect.Effect<ReadonlyArray<ModelsRepo.ModelInfo>>
     readonly openai: OpenAiClient.Options
   }) =>
-  (modelId: string, thoughtLevel: Acp.ThoughtLevel) =>
+  (modelId: string, thoughtLevel: ThoughtLevel) =>
     Option.map(parseAcpModelId(modelId), ({ provider, model }) =>
       Layer.unwrap(
         Effect.map(options.models, (catalog) => {
@@ -113,9 +139,9 @@ export const makeAcp =
           return make(
             provider,
             model,
-            info !== undefined && info.efforts.length === 0
-              ? null
-              : thoughtLevel,
+            info === undefined
+              ? thoughtLevel
+              : resolveEffort(info.efforts, thoughtLevel),
             options.openai,
           )
         }),

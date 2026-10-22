@@ -68,6 +68,7 @@ const makeServer = (
   streamText: Parameters<typeof LanguageModel.make>[0]["streamText"],
   agentExecutor = executor,
   onMakeModel?: (modelId: string, thoughtLevel: string) => void,
+  availableModels?: Acp.Options<never, never>["availableModels"],
 ) =>
   Effect.gen(function* () {
     const sent: Array<Message> = []
@@ -100,6 +101,7 @@ const makeServer = (
             )
           : Option.none()
       },
+      availableModels,
     })
     const request = (id: number, method: string, params?: unknown) =>
       server
@@ -650,6 +652,31 @@ describe("Acp", () => {
           }),
         ),
       ),
+  )
+
+  it.effect("advertises the model catalog ahead of the session model", () =>
+    withStore(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* makeServer(
+            () => assistantSays("done"),
+            executor,
+            undefined,
+            Effect.succeed([{ modelId: "other:model", name: "Other model" }]),
+          )
+          const created = yield* server.request(1, "session/new", {
+            cwd: "/tmp",
+          })
+          assert.deepStrictEqual(created.result.models, {
+            availableModels: [
+              { modelId: "other:model", name: "Other model" },
+              { modelId: "test:model", name: "test:model" },
+            ],
+            currentModelId: "test:model",
+          })
+        }),
+      ),
+    ),
   )
 
   it.effect("reports canonical state for new and loaded sessions", () =>

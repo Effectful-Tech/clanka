@@ -21,3 +21,8 @@
   stdio or streamable HTTP. Scripts call their tools as
   `mcp.<server>.<tool>(…)` and find their types with `searchTools`. The CLI
   reads servers from config files and `clanka acp` from ACP `mcpServers`.
+- [Models catalog from models.dev](./models-repo.md) - A `ModelsRepo` service
+  that lists the chat models clanka can run. Its models.dev implementation
+  fetches `api.json`, keeps the `openai`, `github-copilot` and `xai` text
+  models, caches the result in the `KeyValueStore`, and feeds the CLI model
+  prompt and the ACP `availableModels` list.

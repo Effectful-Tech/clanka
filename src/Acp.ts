@@ -81,6 +81,16 @@ export interface Options<RAgent, RModel> {
     modelId: string,
     thoughtLevel: ThoughtLevel,
   ) => Option.Option<Layer.Layer<ModelServices, never, RModel>>
+  /**
+   * Models to advertise as `availableModels`, listed first in this order. The
+   * session model and `defaultModel` are appended when missing. Ids stay
+   * opaque: `makeModel` alone decides what runs. Defaults to only those two.
+   */
+  readonly availableModels?:
+    | Effect.Effect<
+        ReadonlyArray<{ readonly modelId: string; readonly name: string }>
+      >
+    | undefined
 }
 
 /**

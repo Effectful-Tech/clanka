@@ -32,6 +32,11 @@ export * as Codex from "./Codex.ts"
 /**
  * @since 1.0.0
  */
+export * as ModelsRepo from "./ModelsRepo.ts"
+
+/**
+ * @since 1.0.0
+ */
 export * as CodeChunker from "./CodeChunker.ts"
 
 /**

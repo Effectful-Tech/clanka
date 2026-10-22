@@ -10,6 +10,7 @@ import type * as HttpClientRequest from "effect/http/HttpClientRequest"
 import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Socket from "effect/socket/Socket"
+import type * as Acp from "./Acp.ts"
 import { DeviceCodeHandler } from "./DeviceCodeHandler.ts"
 import * as ModelLayer from "./ModelLayer.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
@@ -27,6 +28,12 @@ const makeModel = ModelLayer.makeAcp({
       id: "gpt-6-astra",
       name: "GPT-6 Astra",
       efforts: ["low", "high"],
+    }),
+    new ModelsRepo.ModelInfo({
+      provider: "openai",
+      id: "gpt-5-pro",
+      name: "GPT-5 Pro",
+      efforts: ["high"],
     }),
   ]),
   openai: {
@@ -48,8 +55,11 @@ const unused = Layer.mergeAll(
 )
 
 // The request body the model for `modelId` sends at session thought level
-// `high`.
-const requestBody = Effect.fnUntraced(function* (modelId: string) {
+// `thoughtLevel`.
+const requestBody = Effect.fnUntraced(function* (
+  modelId: string,
+  thoughtLevel: Acp.ThoughtLevel = "high",
+) {
   const requests: Array<HttpClientRequest.HttpClientRequest> = []
   const client = HttpClient.make((request) =>
     Effect.sync(() => {
@@ -60,7 +70,7 @@ const requestBody = Effect.fnUntraced(function* (modelId: string) {
       )
     }),
   )
-  const model = Option.getOrThrow(makeModel(modelId, "high"))
+  const model = Option.getOrThrow(makeModel(modelId, thoughtLevel))
   yield* Effect.gen(function* () {
     const ai = yield* LanguageModel.LanguageModel
     yield* ai.streamText({ prompt: "hello" }).pipe(Stream.runDrain, Effect.exit)
@@ -94,6 +104,17 @@ describe("ModelLayer.makeAcp", () => {
       }),
     )
   }
+
+  it.effect(
+    "sends a supported effort when the catalog model lacks the session effort",
+    () =>
+      Effect.gen(function* () {
+        assert.strictEqual(
+          (yield* requestBody("openai:gpt-5-pro", "medium")).reasoning?.effort,
+          "high",
+        )
+      }),
+  )
 
   it("rejects ids that are not <provider>:<model>", () => {
     assert.isTrue(Option.isNone(makeModel("nope", "high")))

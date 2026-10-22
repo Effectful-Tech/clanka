@@ -9,13 +9,12 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
 import * as GlobalWebSocket from "./GlobalWebSocket.ts"
 import * as Acp from "./Acp.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
-import * as Codex from "./Codex.ts"
-import * as Copilot from "./Copilot.ts"
-import * as Xai from "./Xai.ts"
 import * as Agent from "./Agent.ts"
 import * as Compaction from "./Compaction.ts"
 import * as McpConfig from "./McpConfig.ts"
 import * as McpServers from "./McpServers.ts"
+import * as ModelLayer from "./ModelLayer.ts"
+import * as ModelsRepo from "./ModelsRepo.ts"
 import * as Stream from "effect/Stream"
 import * as Stdio from "effect/Stdio"
 import { pipe } from "effect/Function"
@@ -23,8 +22,6 @@ import * as Layer from "effect/Layer"
 import * as Logger from "effect/Logger"
 import * as Path from "effect/Path"
 import * as Schema from "effect/Schema"
-import type * as LanguageModel from "effect/ai/LanguageModel"
-import type * as Model from "effect/ai/Model"
 import * as Config from "effect/Config"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Option from "effect/Option"
@@ -41,44 +38,48 @@ const HttpClientLive = NodeHttpClient.layerNodeHttpNoAgent.pipe(
   Layer.provide(NodeHttpClient.layerAgentOptions({ keepAlive: true })),
 )
 
-type Provider = "openai" | "copilot" | "xai"
+type Provider = ModelsRepo.Provider
 
-const providers: ReadonlyArray<Provider> = ["openai", "copilot", "xai"]
+const providers = ModelsRepo.Provider.literals
 
-const withSubagentModel = <E, R>(
-  model: Layer.Layer<
-    LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName,
-    E,
-    R
-  >,
-) => Layer.merge(model, Agent.layerSubagentModel(model))
+// Pick a model from the catalog, filtering by name as the user types, then
+// one of its reasoning efforts.
+const selectModel = Effect.fnUntraced(function* (provider: Provider) {
+  const repo = yield* ModelsRepo.ModelsRepo
+  const catalog = (yield* repo.models).filter(
+    (model) => model.provider === provider,
+  )
+  const models =
+    catalog.length > 0
+      ? catalog
+      : ModelsRepo.fallback.filter((model) => model.provider === provider)
+  const defaultId = ModelsRepo.fallback.find(
+    (model) => model.provider === provider,
+  )?.id
+  const model = yield* Prompt.AutoComplete({
+    message: "Select a model",
+    choices: models.map((model) => ({
+      title: model.name,
+      description: model.id,
+      value: model,
+      selected: model.id === defaultId,
+    })),
+  })
+  if (model.efforts.length === 0) {
+    return { model: model.id, effort: null }
+  }
+  const effort = yield* Prompt.Select({
+    message: "Select a reasoning effort",
+    choices: model.efforts.map((effort) => ({
+      title: effort,
+      value: effort,
+      selected: effort === "medium",
+    })),
+  })
+  return { model: model.id, effort }
+})
 
-const modelLayer = (
-  provider: Provider,
-  model: string,
-  effort: string,
-  openai: OpenAiClient.Options,
-) =>
-  provider === "openai"
-    ? openai.apiKey !== undefined
-      ? withSubagentModel(
-          Codex.model(model, { reasoning: { effort: effort as any } }),
-        ).pipe(Layer.provide(OpenAiClient.layer(openai)))
-      : withSubagentModel(
-          Codex.modelWebSocket(model, { reasoning: { effort: effort as any } }),
-        ).pipe(Layer.provide(Codex.layerClient))
-    : provider === "xai"
-      ? withSubagentModel(
-          Xai.modelWebSocket(model, {
-            reasoning: { effort: effort as any },
-          }),
-        ).pipe(Layer.provide(Xai.layerClient))
-      : withSubagentModel(Copilot.model(model, { reasoning: { effort } })).pipe(
-          Layer.provide(Copilot.layerClient),
-        )
-
-const isProvider = (provider: string | undefined): provider is Provider =>
-  providers.includes(provider as Provider)
+const isProvider = Schema.is(ModelsRepo.Provider)
 
 // `<provider>/<model>/<effort>` as accepted by the `acp` --model flag.
 const parseModelId = (modelId: string) => {
@@ -88,14 +89,6 @@ const parseModelId = (modelId: string) => {
     Schema.is(Acp.ThoughtLevel)(effort) &&
     rest.length === 0
     ? Option.some({ model: `${provider}:${model}`, thoughtLevel: effort })
-    : Option.none()
-}
-
-// `<provider>:<model>` as advertised over ACP.
-const parseAcpModelId = (modelId: string) => {
-  const [provider, model, ...rest] = modelId.split(":")
-  return isProvider(provider) && model !== undefined && rest.length === 0
-    ? Option.some({ provider, model })
     : Option.none()
 }
 
@@ -272,21 +265,25 @@ const acp = Command.make("acp", {
     "Run as an Agent Client Protocol (ACP) server over stdio",
   ),
   Command.withHandler(({ model, apiKey, apiUrl }) =>
-    Acp.runStdio({
-      version,
-      defaultModel: model.model,
-      defaultThoughtLevel: model.thoughtLevel,
-      makeAgent: (cwd) =>
-        Agent.make.pipe(
-          Effect.provide(AgentExecutor.layerLocal({ directory: cwd })),
-        ),
-      makeModel: (modelId, thoughtLevel) =>
-        Option.map(parseAcpModelId(modelId), ({ provider, model }) =>
-          modelLayer(provider, model, thoughtLevel, {
+    Effect.gen(function* () {
+      const repo = yield* ModelsRepo.ModelsRepo
+      return yield* Acp.runStdio({
+        version,
+        defaultModel: model.model,
+        defaultThoughtLevel: model.thoughtLevel,
+        availableModels: Effect.map(repo.models, ModelLayer.acpModels),
+        makeAgent: (cwd) =>
+          Agent.make.pipe(
+            Effect.provide(AgentExecutor.layerLocal({ directory: cwd })),
+          ),
+        makeModel: ModelLayer.makeAcp({
+          models: repo.models,
+          openai: {
             apiKey: Option.getOrUndefined(apiKey),
             apiUrl: Option.getOrUndefined(apiUrl),
-          }),
-        ),
+          },
+        }),
+      })
     }),
   ),
   Command.provide(({ compaction }) =>
@@ -330,22 +327,17 @@ Command.make("clanka", {
       const OutputFormatter = yield* Effect.promise(
         () => import("./OutputFormatter.ts"),
       )
-      const selectedModel = yield* Option.match(modelRaw, {
-        onSome: Effect.succeed,
-        onNone: () =>
-          Prompt.String({
-            message: "Enter a model",
-            default:
-              provider === "xai" ? "grok-4.6/high" : "gpt-6-astra/medium",
-            validate(value) {
-              return value.split("/").length === 2
-                ? Effect.succeed(value)
-                : Effect.fail("Invalid model")
-            },
-          }),
+      const { model, effort } = yield* Option.match(modelRaw, {
+        onSome: (selected) => {
+          const [model, effort] = selected.split("/") as [
+            string,
+            string | undefined,
+          ]
+          return Effect.succeed({ model, effort })
+        },
+        onNone: () => selectModel(provider),
       })
-      const [model, reasoning] = selectedModel.split("/") as [string, string]
-      const Model = modelLayer(provider, model, reasoning, {
+      const Model = ModelLayer.make(provider, model, effort, {
         apiKey: Option.getOrUndefined(apiKey),
         apiUrl: Option.getOrUndefined(apiUrl),
       })
@@ -411,8 +403,9 @@ Command.make("clanka", {
   }),
   Effect.provide([
     NodeServices.layer,
-    Kvs,
-    HttpClientLive,
+    ModelsRepo.ModelsRepo.layerModelsDev().pipe(
+      Layer.provideMerge([Kvs, HttpClientLive]),
+    ),
     GlobalWebSocket.layerWebSocketConstructor,
     DeviceCodeHandler.layerConsole,
   ]),

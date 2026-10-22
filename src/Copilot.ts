@@ -38,10 +38,13 @@ export const model = (
     Layer.mergeAll(
       OpenAiLanguageModel.layer({
         model,
-        config: Struct.omit(options ?? {}, [
-          "systemPromptTransform",
-          "supportsImages",
-        ]),
+        // `reasoning: null` asks for no reasoning options.
+        config: Struct.omit(
+          options ?? {},
+          options?.reasoning === null
+            ? ["reasoning", "systemPromptTransform", "supportsImages"]
+            : ["systemPromptTransform", "supportsImages"],
+        ),
       }),
       AgentModelConfig.layer({
         systemPromptTransform: options?.systemPromptTransform,

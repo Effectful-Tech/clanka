@@ -1,5 +1,11 @@
 # clanka
 
+## 0.13.1
+
+### Patch Changes
+
+- [#242](https://github.com/Effectful-Tech/clanka/pull/242) [`7895325`](https://github.com/Effectful-Tech/clanka/commit/7895325116d0dc405765170a2f0fcf1a339e69c7) Thanks [@tim-smart](https://github.com/tim-smart)! - `clanka acp` returns the session's `configOptions` from `session/set_model`, as `session/set_config_option` already does. ACP clients that read the thought level catalog from that response, instead of waiting for a session update, now see it after switching models.
+
 ## 0.13.0
 
 ### Minor Changes

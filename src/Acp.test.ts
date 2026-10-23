@@ -326,10 +326,14 @@ describe("Acp", () => {
           })
           const sessionId: string = created.result.sessionId
 
-          yield* server.request(2, "session/set_model", {
+          const switched = yield* server.request(2, "session/set_model", {
             sessionId,
             modelId: "other:model",
           })
+          assert.strictEqual(
+            switched.result.configOptions[0].id,
+            "thought_level",
+          )
 
           const configured = yield* server.request(
             3,

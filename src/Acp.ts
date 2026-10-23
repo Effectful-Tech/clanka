@@ -953,7 +953,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     yield* requireModel(modelId, session.thoughtLevel)
     session.model = modelId
     yield* persist(session)
-    return {}
+    return { configOptions: configOptions(session) }
   })
 
   const setConfigOption = Effect.fnUntraced(function* (params: unknown) {

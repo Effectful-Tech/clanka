@@ -1,5 +1,11 @@
 # clanka
 
+## 0.15.0
+
+### Minor Changes
+
+- [#248](https://github.com/Effectful-Tech/clanka/pull/248) [`d8d6acf`](https://github.com/Effectful-Tech/clanka/commit/d8d6acf4f681128b53723b6751059b819709ba07) Thanks [@tim-smart](https://github.com/tim-smart)! - Support running as kiro-cli: a `_session/steer` ACP method, skills from `.kiro/skills`, a top-level `--reported-version` flag, and `acp --trust-all-tools`
+
 ## 0.14.0
 
 ### Minor Changes

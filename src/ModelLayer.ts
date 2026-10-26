@@ -27,9 +27,20 @@ const withSubagentModel = <E, R>(
 ) => Layer.merge(model, Agent.layerSubagentModel(model))
 
 /**
+ * Whether a provider supports fast mode. Only OpenAI does, through the
+ * `priority` service tier.
+ *
+ * @since 1.0.0
+ * @category Fast mode
+ */
+export const supportsFastMode = (provider: ModelsRepo.Provider) =>
+  provider === "openai"
+
+/**
  * The model layer for a provider and model id. `effort` is `null` for models
  * that take no reasoning effort, and `undefined` to keep the provider's
- * default effort.
+ * default effort. `fastMode` requests the `priority` service tier and is
+ * ignored for providers without fast mode.
  *
  * @since 1.0.0
  * @category Layers
@@ -39,17 +50,21 @@ export const make = (
   model: string,
   effort: string | null | undefined,
   openai: OpenAiClient.Options,
+  fastMode = false,
 ) => {
   const options =
     effort === undefined
       ? undefined
       : { reasoning: effort === null ? null : { effort: effort as any } }
+  const openaiOptions = fastMode
+    ? { ...options, service_tier: "priority" }
+    : options
   return provider === "openai"
     ? openai.apiKey !== undefined
-      ? withSubagentModel(Codex.model(model, options)).pipe(
+      ? withSubagentModel(Codex.model(model, openaiOptions)).pipe(
           Layer.provide(OpenAiClient.layer(openai)),
         )
-      : withSubagentModel(Codex.modelWebSocket(model, options)).pipe(
+      : withSubagentModel(Codex.modelWebSocket(model, openaiOptions)).pipe(
           Layer.provide(Codex.layerClient),
         )
     : provider === "xai"
@@ -75,6 +90,17 @@ export const parseAcpModelId = (modelId: string) => {
     ? Option.some({ provider, model })
     : Option.none()
 }
+
+/**
+ * An `Acp.Options.supportsFastMode` callback for `<provider>:<model>` ids.
+ *
+ * @since 1.0.0
+ * @category ACP
+ */
+export const acpSupportsFastMode = (modelId: string) =>
+  Option.exists(parseAcpModelId(modelId), ({ provider }) =>
+    supportsFastMode(provider),
+  )
 
 /**
  * The catalog as ACP `availableModels`, with `<provider>:<id>` ids. The
@@ -119,7 +145,8 @@ const resolveEffort = (
  * efforts runs with no reasoning options, whatever the session thought level.
  * A listed model that does not support the session thought level runs at the
  * supported effort nearest to it in `ThoughtLevel` order, the higher one on a
- * tie. Unlisted models run at the session thought level.
+ * tie. Unlisted models run at the session thought level. Fast mode applies
+ * to OpenAI models only.
  *
  * @since 1.0.0
  * @category ACP
@@ -129,7 +156,7 @@ export const makeAcp =
     readonly models: Effect.Effect<ReadonlyArray<ModelsRepo.ModelInfo>>
     readonly openai: OpenAiClient.Options
   }) =>
-  (modelId: string, thoughtLevel: ThoughtLevel) =>
+  (modelId: string, thoughtLevel: ThoughtLevel, fastMode = false) =>
     Option.map(parseAcpModelId(modelId), ({ provider, model }) =>
       Layer.unwrap(
         Effect.map(options.models, (catalog) => {
@@ -143,6 +170,7 @@ export const makeAcp =
               ? thoughtLevel
               : resolveEffort(info.efforts, thoughtLevel),
             options.openai,
+            fastMode,
           )
         }),
       ),

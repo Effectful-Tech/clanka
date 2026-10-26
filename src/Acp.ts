@@ -64,6 +64,15 @@ export interface Options<RAgent, RModel> {
    */
   readonly defaultThoughtLevel: ThoughtLevel
   /**
+   * Whether new sessions start in fast mode. Defaults to `false`.
+   */
+  readonly defaultFastMode?: boolean | undefined
+  /**
+   * Whether a model id supports fast mode. The `fast_mode` config option is
+   * offered only while the session model does. Defaults to no model.
+   */
+  readonly supportsFastMode?: ((modelId: string) => boolean) | undefined
+  /**
    * Write one JSON-RPC message to the client.
    */
   readonly send: (message: object) => Effect.Effect<void>
@@ -74,12 +83,14 @@ export interface Options<RAgent, RModel> {
     cwd: string,
   ) => Effect.Effect<Agent.Agent, never, Scope.Scope | RAgent>
   /**
-   * Resolve a model id and thought level to the services an Agent needs.
+   * Resolve a model id, thought level and fast mode to the services an Agent
+   * needs. `fastMode` is only `true` for models `supportsFastMode` accepts.
    * `None` rejects the combination.
    */
   readonly makeModel: (
     modelId: string,
     thoughtLevel: ThoughtLevel,
+    fastMode: boolean,
   ) => Option.Option<Layer.Layer<ModelServices, never, RModel>>
   /**
    * Models to advertise as `availableModels`, listed first in this order. The
@@ -138,6 +149,11 @@ export class SessionRecord extends Schema.Class<SessionRecord>(
   cwd: Schema.String,
   model: Schema.String,
   thoughtLevel: ThoughtLevel,
+  /**
+   * The session's fast mode setting. It is kept across model switches and
+   * applies while the session model supports fast mode.
+   */
+  fastMode: Schema.optionalKey(Schema.Boolean),
   history: Prompt.Prompt,
   /**
    * The agent's executor environment, such as its working directory.
@@ -262,11 +278,22 @@ const SetModelParams = Schema.Struct({
   modelId: Schema.String,
 })
 
-const SetConfigOptionParams = Schema.Struct({
-  sessionId: Schema.String,
-  configId: Schema.Literal("thought_level"),
-  value: ThoughtLevel,
-})
+// The `fast_mode` select values. A select works with every client; a
+// `boolean` option needs the client's `configOptions.boolean` capability.
+const FastModeValue = Schema.Literals(["off", "on"])
+
+const SetConfigOptionParams = Schema.Union([
+  Schema.Struct({
+    sessionId: Schema.String,
+    configId: Schema.Literal("thought_level"),
+    value: ThoughtLevel,
+  }),
+  Schema.Struct({
+    sessionId: Schema.String,
+    configId: Schema.Literal("fast_mode"),
+    value: FastModeValue,
+  }),
+])
 
 const TextBlock = Schema.Struct({
   type: Schema.Literal("text"),
@@ -389,6 +416,7 @@ interface Session {
   readonly cwd: string
   model: string
   thoughtLevel: ThoughtLevel
+  fastMode: boolean
   readonly agent: Agent.Agent
   running: Fiber.Fiber<void, unknown> | undefined
   toolCalls: number
@@ -452,9 +480,20 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       sessionNotFound(sessionId),
     )
 
-  const requireModel = (modelId: string, thoughtLevel: ThoughtLevel) =>
+  const supportsFastMode = (modelId: string) =>
+    options.supportsFastMode?.(modelId) ?? false
+
+  const requireModel = (
+    modelId: string,
+    thoughtLevel: ThoughtLevel,
+    fastMode: boolean,
+  ) =>
     Effect.fromOption(
-      options.makeModel(modelId, thoughtLevel),
+      options.makeModel(
+        modelId,
+        thoughtLevel,
+        fastMode && supportsFastMode(modelId),
+      ),
       () =>
         new RpcError({ code: -32602, message: `Unknown model: ${modelId}` }),
     )
@@ -468,6 +507,22 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       currentValue: session.thoughtLevel,
       options: ThoughtLevel.literals.map((value) => ({ value, name: value })),
     },
+    ...(supportsFastMode(session.model)
+      ? [
+          {
+            id: "fast_mode",
+            name: "Fast mode",
+            description: "Faster responses at a higher cost",
+            category: "model_config",
+            type: "select",
+            currentValue: session.fastMode ? "on" : "off",
+            options: [
+              { value: "off", name: "Off" },
+              { value: "on", name: "On" },
+            ],
+          },
+        ]
+      : []),
   ]
 
   const sessionState = Effect.fnUntraced(function* (session: Session) {
@@ -498,6 +553,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
           cwd: session.cwd,
           model: session.model,
           thoughtLevel: session.thoughtLevel,
+          fastMode: session.fastMode,
           history: session.agent.history.current,
           environment: session.agent.environment.current,
         }),
@@ -545,6 +601,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       cwd: record.cwd,
       model: record.model,
       thoughtLevel: record.thoughtLevel,
+      fastMode: record.fastMode ?? false,
       agent,
       running: undefined,
       toolCalls: 0,
@@ -887,13 +944,15 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     )
     const modelId = model ?? options.defaultModel
     const thoughtLevel = options.defaultThoughtLevel
-    yield* requireModel(modelId, thoughtLevel)
+    const fastMode = options.defaultFastMode ?? false
+    yield* requireModel(modelId, thoughtLevel, fastMode)
     const session = yield* openSession(
       crypto.randomUUID(),
       new SessionRecord({
         cwd,
         model: modelId,
         thoughtLevel,
+        fastMode,
         history: Prompt.empty,
       }),
       mcpServers ?? [],
@@ -925,13 +984,15 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       return yield* sessionNotFound(sessionId)
     }
     const modelId = model ?? record.value.model
-    yield* requireModel(modelId, record.value.thoughtLevel)
+    const fastMode = record.value.fastMode ?? false
+    yield* requireModel(modelId, record.value.thoughtLevel, fastMode)
     const session = yield* openSession(
       sessionId,
       new SessionRecord({
         cwd: cwd ?? record.value.cwd,
         model: modelId,
         thoughtLevel: record.value.thoughtLevel,
+        fastMode,
         history: record.value.history,
         // The stored environment belongs to the stored cwd.
         ...(record.value.environment !== undefined &&
@@ -950,20 +1011,28 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
   const setModel = Effect.fnUntraced(function* (params: unknown) {
     const { sessionId, modelId } = yield* decodeParams(SetModelParams, params)
     const session = yield* getSession(sessionId)
-    yield* requireModel(modelId, session.thoughtLevel)
+    yield* requireModel(modelId, session.thoughtLevel, session.fastMode)
     session.model = modelId
     yield* persist(session)
     return { configOptions: configOptions(session) }
   })
 
   const setConfigOption = Effect.fnUntraced(function* (params: unknown) {
-    const { sessionId, value } = yield* decodeParams(
-      SetConfigOptionParams,
-      params,
-    )
-    const session = yield* getSession(sessionId)
-    yield* requireModel(session.model, value)
-    session.thoughtLevel = value
+    const option = yield* decodeParams(SetConfigOptionParams, params)
+    const session = yield* getSession(option.sessionId)
+    if (option.configId === "thought_level") {
+      yield* requireModel(session.model, option.value, session.fastMode)
+      session.thoughtLevel = option.value
+    } else {
+      const fastMode = option.value === "on"
+      if (fastMode && !supportsFastMode(session.model)) {
+        return yield* invalidParams(
+          `Fast mode is not supported by model: ${session.model}`,
+        )
+      }
+      yield* requireModel(session.model, session.thoughtLevel, fastMode)
+      session.fastMode = fastMode
+    }
     yield* persist(session)
     return { configOptions: configOptions(session) }
   })
@@ -977,7 +1046,11 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         message: `Session ${sessionId} already has a prompt in progress`,
       })
     }
-    const model = yield* requireModel(session.model, session.thoughtLevel)
+    const model = yield* requireModel(
+      session.model,
+      session.thoughtLevel,
+      session.fastMode,
+    )
     // Resolve images before the turn starts, so a bad block rejects the
     // request without a model call.
     const input = yield* promptFromBlocks(session.cwd, prompt)

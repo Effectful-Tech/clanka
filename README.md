@@ -43,6 +43,12 @@ new sessions, and ACP clients can switch it per session with the `fast_mode`
 config option. The option is offered only while the session model is an
 OpenAI model.
 
+Fast mode is best effort. clanka requests the `priority` tier for any OpenAI
+model, but not every model, region or project serves it, and OpenAI decides
+which tier actually handles a request. Without fast mode clanka sends no
+service tier, so the account or project default applies, which may itself be
+fast; the ACP option labels this choice "Default".
+
 ## MCP servers
 
 clanka can use the tools of MCP servers, over stdio or streamable HTTP. The CLI

@@ -516,8 +516,10 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
             category: "model_config",
             type: "select",
             currentValue: session.fastMode ? "on" : "off",
+            // "off" sends no service tier, so the account or project default
+            // applies, and that default can itself be fast.
             options: [
-              { value: "off", name: "Off" },
+              { value: "off", name: "Default" },
               { value: "on", name: "On" },
             ],
           },
@@ -1014,7 +1016,14 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     yield* requireModel(modelId, session.thoughtLevel, session.fastMode)
     session.model = modelId
     yield* persist(session)
-    return { configOptions: configOptions(session) }
+    // The options depend on the model, and the `session/set_model` response
+    // has no `configOptions` field in the ACP schema.
+    const options = configOptions(session)
+    yield* update(sessionId, {
+      sessionUpdate: "config_option_update",
+      configOptions: options,
+    })
+    return { configOptions: options }
   })
 
   const setConfigOption = Effect.fnUntraced(function* (params: unknown) {

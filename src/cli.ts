@@ -142,6 +142,16 @@ const apiUrl = Flag.String("api-url").pipe(
   Flag.optional,
 )
 
+// OpenAI's `priority` service tier.
+const fast = Flag.Boolean("fast").pipe(
+  Flag.withDescription(
+    "Use OpenAI fast mode (the priority service tier) for faster responses at a higher cost. Applies to the openai provider only; also CLANKA_FAST=true.",
+  ),
+  Flag.withFallbackConfig(
+    Config.Boolean("CLANKA_FAST").pipe(Config.withDefault(false)),
+  ),
+)
+
 const semantic = Flag.Directory("search").pipe(
   Flag.withDescription(
     "Directory for semantic search data (uses OPENAI_API_KEY env var)",
@@ -257,6 +267,7 @@ const acpModel = Flag.String("model").pipe(
 
 const acp = Command.make("acp", {
   model: acpModel,
+  fast,
   compaction,
   apiKey,
   apiUrl,
@@ -264,13 +275,15 @@ const acp = Command.make("acp", {
   Command.withDescription(
     "Run as an Agent Client Protocol (ACP) server over stdio",
   ),
-  Command.withHandler(({ model, apiKey, apiUrl }) =>
+  Command.withHandler(({ model, fast, apiKey, apiUrl }) =>
     Effect.gen(function* () {
       const repo = yield* ModelsRepo.ModelsRepo
       return yield* Acp.runStdio({
         version,
         defaultModel: model.model,
         defaultThoughtLevel: model.thoughtLevel,
+        defaultFastMode: fast,
+        supportsFastMode: ModelLayer.acpSupportsFastMode,
         availableModels: Effect.map(repo.models, ModelLayer.acpModels),
         makeAgent: (cwd) =>
           Agent.make.pipe(
@@ -299,6 +312,7 @@ const acp = Command.make("acp", {
 Command.make("clanka", {
   provider,
   model,
+  fast,
   semantic,
   prompt,
   compaction,
@@ -311,6 +325,7 @@ Command.make("clanka", {
     Effect.fnUntraced(function* ({
       provider,
       model: modelRaw,
+      fast,
       semantic,
       prompt: nonInteractivePrompt,
       apiKey,
@@ -337,10 +352,16 @@ Command.make("clanka", {
         },
         onNone: () => selectModel(provider),
       })
-      const Model = ModelLayer.make(provider, model, effort, {
-        apiKey: Option.getOrUndefined(apiKey),
-        apiUrl: Option.getOrUndefined(apiUrl),
-      })
+      const Model = ModelLayer.make(
+        provider,
+        model,
+        effort,
+        {
+          apiKey: Option.getOrUndefined(apiKey),
+          apiUrl: Option.getOrUndefined(apiUrl),
+        },
+        fast,
+      )
 
       return yield* Effect.gen(function* () {
         const agent = yield* Agent.Agent

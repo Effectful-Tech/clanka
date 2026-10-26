@@ -59,6 +59,7 @@ const unused = Layer.mergeAll(
 const requestBody = Effect.fnUntraced(function* (
   modelId: string,
   thoughtLevel: Acp.ThoughtLevel = "high",
+  fastMode = false,
 ) {
   const requests: Array<HttpClientRequest.HttpClientRequest> = []
   const client = HttpClient.make((request) =>
@@ -70,7 +71,7 @@ const requestBody = Effect.fnUntraced(function* (
       )
     }),
   )
-  const model = Option.getOrThrow(makeModel(modelId, thoughtLevel))
+  const model = Option.getOrThrow(makeModel(modelId, thoughtLevel, fastMode))
   yield* Effect.gen(function* () {
     const ai = yield* LanguageModel.LanguageModel
     yield* ai.streamText({ prompt: "hello" }).pipe(Stream.runDrain, Effect.exit)
@@ -114,6 +115,18 @@ describe("ModelLayer.makeAcp", () => {
           "high",
         )
       }),
+  )
+
+  it.effect("sends the priority service tier in fast mode only", () =>
+    Effect.gen(function* () {
+      assert.strictEqual(
+        (yield* requestBody("openai:gpt-6-astra", "high", true)).service_tier,
+        "priority",
+      )
+      assert.isFalse(
+        "service_tier" in (yield* requestBody("openai:gpt-6-astra")),
+      )
+    }),
   )
 
   it("rejects ids that are not <provider>:<model>", () => {

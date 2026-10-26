@@ -69,6 +69,7 @@ const makeServer = (
   agentExecutor = executor,
   onMakeModel?: (modelId: string, thoughtLevel: string) => void,
   availableModels?: Acp.Options<never, never>["availableModels"],
+  supportsFastMode?: Acp.Options<never, never>["supportsFastMode"],
 ) =>
   Effect.gen(function* () {
     const sent: Array<Message> = []
@@ -102,6 +103,7 @@ const makeServer = (
           : Option.none()
       },
       availableModels,
+      supportsFastMode,
     })
     const request = (id: number, method: string, params?: unknown) =>
       server
@@ -358,6 +360,41 @@ describe("Acp", () => {
             prompt: [{ type: "text", text: "use the selected model" }],
           })
           assert.deepStrictEqual(resolved, [["other:model", "high"]])
+        }),
+      ),
+    ),
+  )
+
+  it.effect("notifies the config options a model switch changes", () =>
+    withStore(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* makeServer(
+            () => assistantSays("done"),
+            executor,
+            undefined,
+            undefined,
+            (modelId) => modelId === "other:model",
+          )
+          const created = yield* server.request(1, "session/new", {
+            cwd: "/tmp",
+          })
+          const sessionId: string = created.result.sessionId
+          assert.deepStrictEqual(
+            created.result.configOptions.map((option: any) => option.id),
+            ["thought_level"],
+          )
+
+          yield* server.request(2, "session/set_model", {
+            sessionId,
+            modelId: "other:model",
+          })
+          const [notified] = server.updates(sessionId)
+          assert.strictEqual(notified.sessionUpdate, "config_option_update")
+          assert.deepInclude(notified.configOptions[1], {
+            id: "fast_mode",
+            currentValue: "off",
+          })
         }),
       ),
     ),

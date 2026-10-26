@@ -28,6 +28,27 @@ These options configure the chat model, including subagents. Semantic search
 continues to use `OPENAI_API_KEY` and the default OpenAI embeddings endpoint.
 Setting only `OPENAI_API_KEY` does not enable API-key mode for chat.
 
+## Fast mode
+
+OpenAI fast mode sends requests on the `priority` service tier: faster
+responses at a higher cost. Pass `--fast` or set `CLANKA_FAST=true`:
+
+```sh
+clanka --provider openai --model gpt-6-astra/medium --fast
+```
+
+It applies to the openai provider, with Codex authentication or an API key, and
+is ignored for Copilot and xAI. In `clanka acp`, `--fast` sets the default for
+new sessions, and ACP clients can switch it per session with the `fast_mode`
+config option. The option is offered only while the session model is an
+OpenAI model.
+
+Fast mode is best effort. clanka requests the `priority` tier for any OpenAI
+model, but not every model, region or project serves it, and OpenAI decides
+which tier actually handles a request. Without fast mode clanka sends no
+service tier, so the account or project default applies, which may itself be
+fast; the ACP option labels this choice "Default".
+
 ## MCP servers
 
 clanka can use the tools of MCP servers, over stdio or streamable HTTP. The CLI

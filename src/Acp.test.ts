@@ -146,6 +146,36 @@ const runsScript = (script: string) => {
       : assistantSays("done")
 }
 
+const callsExecute = parts({
+  type: "tool-call",
+  id: "call-1",
+  name: "execute",
+  params: { script: "work" },
+})
+
+// An executor whose script signals `started`, then runs until `release`.
+// With `completesTask` it calls taskComplete first.
+const gatedScript = (options?: { readonly completesTask?: boolean }) =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const gated = AgentExecutor.AgentExecutor.of({
+      ...executor,
+      execute: ({ onTaskComplete }) =>
+        Stream.fromEffect(
+          Effect.gen(function* () {
+            if (options?.completesTask) {
+              yield* Effect.ignore(onTaskComplete("finished"))
+            }
+            yield* Deferred.succeed(started, undefined)
+            yield* Deferred.await(release)
+            return "script output"
+          }),
+        ),
+    })
+    return { started, release, executor: gated }
+  })
+
 const message = (role: "user" | "assistant", text: string) =>
   Prompt.makeMessage(role, {
     content: [Prompt.makePart("text", { text })],
@@ -1025,6 +1055,120 @@ await changeDirectory("sub")`),
         }),
       ),
     ),
+  )
+
+  it.effect("queues a steer message into the running prompt", () =>
+    withStore(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const script = yield* gatedScript()
+          const prompts: Array<Prompt.Prompt> = []
+          const server = yield* makeServer((options) => {
+            prompts.push(options.prompt)
+            return prompts.length === 1 ? callsExecute : assistantSays("done")
+          }, script.executor)
+          const created = yield* server.request(1, "session/new", {
+            cwd: "/tmp",
+          })
+          const sessionId: string = created.result.sessionId
+          const prompt = yield* server
+            .request(2, "session/prompt", {
+              sessionId,
+              prompt: [{ type: "text", text: "hello" }],
+            })
+            .pipe(Effect.forkScoped)
+          yield* Deferred.await(script.started)
+
+          // Answered while the script still runs, before the agent reads it.
+          const steered = yield* server.request(3, "_session/steer", {
+            sessionId,
+            message: "also update the docs",
+          })
+          assert.deepStrictEqual(steered.result, { queued: true })
+
+          yield* Deferred.succeed(script.release, undefined)
+          const done = yield* Fiber.join(prompt)
+          assert.deepStrictEqual(done.result, { stopReason: "end_turn" })
+          assert.include(JSON.stringify(prompts.at(-1)), "also update the docs")
+        }),
+      ),
+    ),
+  )
+
+  it.effect("does not queue a steer message without a running prompt", () =>
+    withStore(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* makeServer(() => assistantSays("done"))
+          const created = yield* server.request(1, "session/new", {
+            cwd: "/tmp",
+          })
+          const sessionId: string = created.result.sessionId
+          const steer = (id: number) =>
+            server.request(id, "_session/steer", {
+              sessionId,
+              message: "also update the docs",
+            })
+
+          const idle = yield* steer(2)
+          yield* server.request(3, "session/prompt", {
+            sessionId,
+            prompt: [{ type: "text", text: "hello" }],
+          })
+          const afterTurn = yield* steer(4)
+
+          for (const response of [idle, afterTurn]) {
+            assert.notStrictEqual(response.error?.code, -32601)
+            assert.notDeepEqual(response.result, { queued: true })
+          }
+        }),
+      ),
+    ),
+  )
+
+  it.effect(
+    "does not lose a steer message queued while the turn completes",
+    () =>
+      withStore(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const script = yield* gatedScript({ completesTask: true })
+            const prompts: Array<Prompt.Prompt> = []
+            const server = yield* makeServer((options) => {
+              prompts.push(options.prompt)
+              return prompts.length === 1 ? callsExecute : assistantSays("done")
+            }, script.executor)
+            const created = yield* server.request(1, "session/new", {
+              cwd: "/tmp",
+            })
+            const sessionId: string = created.result.sessionId
+            const prompt = yield* server
+              .request(2, "session/prompt", {
+                sessionId,
+                prompt: [{ type: "text", text: "hello" }],
+              })
+              .pipe(Effect.forkScoped)
+            // The script has called taskComplete and is still running.
+            yield* Deferred.await(script.started)
+
+            const steered = yield* server.request(3, "_session/steer", {
+              sessionId,
+              message: "also update the docs",
+            })
+            yield* Deferred.succeed(script.release, undefined)
+            yield* Fiber.join(prompt)
+
+            // Either refused, or queued and seen by the model.
+            assert.isBoolean(steered.result?.queued)
+            if (steered.result.queued) {
+              assert.include(
+                JSON.stringify(prompts.at(-1)),
+                "also update the docs",
+              )
+            }
+          }),
+        ),
+      ),
   )
 
   it.effect("reports prompts still running when stdin ends", () =>

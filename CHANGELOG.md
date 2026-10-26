@@ -1,5 +1,11 @@
 # clanka
 
+## 0.13.2
+
+### Patch Changes
+
+- [#244](https://github.com/Effectful-Tech/clanka/pull/244) [`b9446f8`](https://github.com/Effectful-Tech/clanka/commit/b9446f838cb68b75ab6ea81b01d78a6f7edbd945) Thanks [@tim-smart](https://github.com/tim-smart)! - Turn off conversation mode for the `acp` server, so ACP sessions run until the agent calls `taskComplete`
+
 ## 0.13.1
 
 ### Patch Changes

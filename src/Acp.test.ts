@@ -1089,6 +1089,9 @@ await changeDirectory("sub")`),
           yield* Deferred.succeed(script.release, undefined)
           const done = yield* Fiber.join(prompt)
           assert.deepStrictEqual(done.result, { stopReason: "end_turn" })
+          // Read within the turn: one model call before it and one after,
+          // with no extra turn to replay it.
+          assert.strictEqual(prompts.length, 2)
           assert.include(JSON.stringify(prompts.at(-1)), "also update the docs")
         }),
       ),

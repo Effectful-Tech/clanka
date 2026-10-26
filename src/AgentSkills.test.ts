@@ -221,8 +221,10 @@ describe("AgentSkills", () => {
             assert.deepStrictEqual(reads, [
               path.join(roots.project, ".agents", "skills"),
               path.join(roots.project, ".agents", "skills", "proj"),
+              path.join(roots.project, ".kiro", "skills"),
               path.join(roots.home, ".agents", "skills"),
               path.join(roots.home, ".agents", "skills", "usr"),
+              path.join(roots.home, ".kiro", "skills"),
             ])
         }),
       ).pipe(Effect.provide(NodeServices.layer)),

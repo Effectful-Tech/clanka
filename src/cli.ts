@@ -4,6 +4,7 @@ import * as Prompt from "effect/cli/Prompt"
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient"
 import * as Command from "effect/cli/Command"
 import * as Flag from "effect/cli/Flag"
+import * as GlobalFlag from "effect/cli/GlobalFlag"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
 import * as GlobalWebSocket from "./GlobalWebSocket.ts"
@@ -29,7 +30,31 @@ import { OpenAiClient, OpenAiEmbeddingModel } from "@effect/ai-openai"
 import * as DeviceCodeHandler from "./DeviceCodeHandler.ts"
 import packageJson from "../package.json" with { type: "json" }
 
-const version = packageJson.version
+// `--reported-version` replaces the version clanka reports, for `--version`
+// and to ACP clients, so it can pass the version gates of kiro launchers such
+// as Multica. The built-in `--version` prints the version given to
+// `Command.run`, so the value is read from argv before the CLI parses it.
+const ReportedVersion = GlobalFlag.Setting("reported-version")({
+  flag: Flag.String("reported-version").pipe(
+    Flag.withDescription(
+      "Report this version instead of clanka's own, for --version and to ACP clients",
+    ),
+    Flag.optional,
+  ),
+})
+
+const reportedVersion = (args: ReadonlyArray<string>) => {
+  for (const [index, arg] of args.entries()) {
+    if (arg === "--") return undefined
+    if (arg === "--reported-version") return args[index + 1]
+    if (arg.startsWith("--reported-version=")) {
+      return arg.slice("--reported-version=".length)
+    }
+  }
+  return undefined
+}
+
+const version = reportedVersion(process.argv.slice(2)) ?? packageJson.version
 
 // node:http instead of undici: the undici package adds ~15 MB of RSS on top of
 // the HTTP stack Node loads anyway, and unlike fetch it imposes no request
@@ -265,8 +290,17 @@ const acpModel = Flag.String("model").pipe(
   Flag.map((modelId) => Option.getOrThrow(parseModelId(modelId))),
 )
 
+// kiro launchers pass it to every `acp` run; clanka has no tool permissions to
+// skip.
+const trustAllTools = Flag.Boolean("trust-all-tools").pipe(
+  Flag.withDescription(
+    "Accepted for kiro-cli compatibility. Has no effect: clanka runs every tool call without asking.",
+  ),
+)
+
 const acp = Command.make("acp", {
   model: acpModel,
+  trustAllTools,
   fast,
   compaction,
   apiKey,
@@ -419,6 +453,7 @@ Command.make("clanka", {
     ),
   ),
   Command.withSubcommands([acp]),
+  Command.withGlobalFlags([ReportedVersion]),
   Command.run({
     version,
   }),

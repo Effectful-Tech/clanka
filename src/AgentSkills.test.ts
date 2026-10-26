@@ -27,10 +27,11 @@ const writeSkill = Effect.fnUntraced(function* (
   root: string,
   dir: string,
   content: string,
+  configDir = ".agents",
 ) {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
-  const skillDir = path.join(root, ".agents", "skills", dir)
+  const skillDir = path.join(root, configDir, "skills", dir)
   yield* fs.makeDirectory(skillDir, { recursive: true })
   yield* fs.writeFileString(path.join(skillDir, "SKILL.md"), content)
   return path.join(skillDir, "SKILL.md")
@@ -220,8 +221,10 @@ describe("AgentSkills", () => {
             assert.deepStrictEqual(reads, [
               path.join(roots.project, ".agents", "skills"),
               path.join(roots.project, ".agents", "skills", "proj"),
+              path.join(roots.project, ".kiro", "skills"),
               path.join(roots.home, ".agents", "skills"),
               path.join(roots.home, ".agents", "skills", "usr"),
+              path.join(roots.home, ".kiro", "skills"),
             ])
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
@@ -571,6 +574,37 @@ describe("AgentSkills", () => {
         assert.strictEqual(skills[0]!.name, "notes")
         assert.strictEqual(skills[0]!.location, location)
         assert.strictEqual(skills[0]!.source, "user")
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  )
+
+  it.effect("catalogs project and user skills from .kiro/skills", () =>
+    withRoots(
+      Effect.fnUntraced(function* (roots) {
+        const projectLocation = yield* writeSkill(
+          roots.project,
+          "deploy",
+          skillFile("deploy", "Deploy the service"),
+          ".kiro",
+        )
+        const userLocation = yield* writeSkill(
+          roots.home,
+          "notes",
+          skillFile("notes", "Take notes"),
+          ".kiro",
+        )
+        const skills = yield* discover(roots)
+        assert.deepStrictEqual(
+          skills.map(({ name, location, source }) => ({
+            name,
+            location,
+            source,
+          })),
+          [
+            { name: "deploy", location: projectLocation, source: "project" },
+            { name: "notes", location: userLocation, source: "user" },
+          ],
+        )
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   )

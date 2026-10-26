@@ -36,9 +36,17 @@ export class Skill extends Schema.Class<Skill>("Skill")({
   source: SkillSource,
 }) {}
 
+// The `skills` directories under a project or home directory, in priority
+// order. `.kiro/skills` is where kiro launchers such as Multica write skills.
+const skillsRoots = (path: Path.Path, directory: string) => [
+  path.resolve(directory, ".agents", "skills"),
+  path.resolve(directory, ".kiro", "skills"),
+]
+
 /**
- * Scan project and user `.agents/skills/<dir>/SKILL.md` files, plus
- * `<hermesHome>/skills/<dir>/SKILL.md` when explicitly configured.
+ * Scan project and user `.agents/skills/<dir>/SKILL.md` and
+ * `.kiro/skills/<dir>/SKILL.md` files, plus `<hermesHome>/skills/<dir>/SKILL.md`
+ * when explicitly configured.
  *
  * Project names override Hermes names, which override user names.
  * The first name wins within each scope; an empty Hermes home is ignored.
@@ -59,12 +67,10 @@ export const discover: (options: {
   const path = yield* Path.Path
 
   const roots: Array<{ readonly root: string; readonly source: SkillSource }> =
-    [
-      {
-        root: path.resolve(options.directory, ".agents", "skills"),
-        source: "project",
-      },
-    ]
+    skillsRoots(path, options.directory).map((root) => ({
+      root,
+      source: "project",
+    }))
   if (
     options.hermesHome &&
     Option.isSome(options.hermesHome) &&
@@ -76,10 +82,9 @@ export const discover: (options: {
     })
   }
   if (Option.isSome(options.homeDirectory)) {
-    roots.push({
-      root: path.resolve(options.homeDirectory.value, ".agents", "skills"),
-      source: "user",
-    })
+    for (const root of skillsRoots(path, options.homeDirectory.value)) {
+      roots.push({ root, source: "user" })
+    }
   }
 
   const byName = new Map<string, Skill>()
@@ -93,8 +98,9 @@ export const discover: (options: {
 })
 
 /**
- * Scan only `<directory>/.agents/skills/<dir>/SKILL.md`, as `discover` does
- * for the project.
+ * Scan only `<directory>/.agents/skills/<dir>/SKILL.md` and
+ * `<directory>/.kiro/skills/<dir>/SKILL.md`, as `discover` does for the
+ * project.
  *
  * @since 1.0.0
  * @category Discovery
@@ -107,7 +113,13 @@ export const discoverProject: (
   FileSystem.FileSystem | Path.Path
 > = Effect.fnUntraced(function* (directory) {
   const path = yield* Path.Path
-  return yield* scan(path.resolve(directory, ".agents", "skills"), "project")
+  const byName = new Map<string, Skill>()
+  for (const root of skillsRoots(path, directory)) {
+    for (const skill of yield* scan(root, "project")) {
+      if (!byName.has(skill.name)) byName.set(skill.name, skill)
+    }
+  }
+  return Array.from(byName.values())
 })
 
 // The skills in one `skills` directory. The first name wins.

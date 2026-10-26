@@ -273,6 +273,11 @@ const SessionIdParams = Schema.Struct({
   sessionId: Schema.String,
 })
 
+const SteerParams = Schema.Struct({
+  sessionId: Schema.String,
+  message: Schema.String,
+})
+
 const SetModelParams = Schema.Struct({
   sessionId: Schema.String,
   modelId: Schema.String,
@@ -419,12 +424,22 @@ interface Session {
   fastMode: boolean
   readonly agent: Agent.Agent
   running: Fiber.Fiber<void, unknown> | undefined
+  /**
+   * The `_session/steer` messages sent to the running prompt, each delivered
+   * to the Agent by its fiber. `undefined` while the session takes none.
+   */
+  steers: Array<Steer> | undefined
   toolCalls: number
   readonly announcedSubagents: Set<number>
   /** Owns the Agent and the session's MCP servers. */
   readonly scope: Scope.Closeable
   /** Failed MCP servers, reported on the first prompt turn. */
   mcpFailures: string | undefined
+}
+
+interface Steer {
+  readonly message: string
+  readonly fiber: Fiber.Fiber<void>
 }
 
 /**
@@ -606,6 +621,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       fastMode: record.fastMode ?? false,
       agent,
       running: undefined,
+      steers: undefined,
       toolCalls: 0,
       announcedSubagents: new Set(),
       scope: sessionScope,
@@ -927,6 +943,59 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     )
   })
 
+  // Take back the steer messages the Agent has not read, in the order they
+  // were sent. A message read while it is taken back stays read.
+  const withdrawSteers = Effect.fnUntraced(function* (session: Session) {
+    const unread = (session.steers ?? []).filter(
+      ({ fiber }) => fiber.pollUnsafe() === undefined,
+    )
+    session.steers = []
+    yield* Fiber.interruptAll(unread.map(({ fiber }) => fiber))
+    return unread
+      .filter(({ fiber }) => {
+        const exit = fiber.pollUnsafe()
+        return exit === undefined || !Exit.isSuccess(exit)
+      })
+      .map(({ message }) => message)
+  })
+
+  // A turn can end with steer messages unread, for example when the model
+  // calls taskComplete while they arrive. They were reported as queued, so
+  // they start another turn of the same prompt.
+  const runPrompt = Effect.fnUntraced(
+    function* (session: Session, prompt: Prompt.RawInput) {
+      yield* Effect.scoped(runTurn(session, prompt))
+      while (true) {
+        // No yield between this check and closing the session to steering,
+        // so no message can arrive in between.
+        if (
+          session.steers!.every(({ fiber }) => fiber.pollUnsafe() !== undefined)
+        ) {
+          session.steers = undefined
+          return
+        }
+        const messages = yield* withdrawSteers(session)
+        if (messages.length > 0) {
+          yield* Effect.scoped(
+            runTurn(
+              session,
+              messages.map((content) => ({ role: "user", content })),
+            ),
+          )
+        }
+      }
+    },
+    // A failed or cancelled prompt drops the messages it has not read.
+    (effect, session) =>
+      effect.pipe(
+        Effect.onExit(() => {
+          const steers = session.steers ?? []
+          session.steers = undefined
+          return Fiber.interruptAll(steers.map(({ fiber }) => fiber))
+        }),
+      ),
+  )
+
   const initialize = Effect.succeed({
     protocolVersion: 1,
     agentCapabilities: {
@@ -1070,9 +1139,9 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       })
       session.mcpFailures = undefined
     }
-    session.running = yield* runTurn(session, input).pipe(
+    session.steers = []
+    session.running = yield* runPrompt(session, input).pipe(
       Effect.provide(model),
-      Effect.scoped,
       Effect.forkChild,
     )
     const exit = yield* Effect.exit(Fiber.join(session.running))
@@ -1081,6 +1150,20 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     if (Exit.isSuccess(exit)) return { stopReason: "end_turn" }
     if (Cause.hasInterruptsOnly(exit.cause)) return { stopReason: "cancelled" }
     return yield* toRpcError(exit.cause)
+  })
+
+  // Adds a message to the running prompt, like kiro-cli's `_session/steer`.
+  // `queued: true` promises the running prompt reads it, so the reply cannot
+  // wait for the Agent, which reads messages between model calls.
+  const steer = Effect.fnUntraced(function* (params: unknown) {
+    const { sessionId, message } = yield* decodeParams(SteerParams, params)
+    const session = sessions.get(sessionId)
+    if (session?.steers === undefined) return { queued: false }
+    const fiber = yield* session.agent
+      .steer(message)
+      .pipe(Effect.forkIn(session.scope, { startImmediately: true }))
+    session.steers.push({ message, fiber })
+    return { queued: true }
   })
 
   // Ends the session in this process: its prompt, Agent and MCP servers. It
@@ -1128,6 +1211,8 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
         return setModel(params)
       case "session/prompt":
         return prompt(params)
+      case "_session/steer":
+        return steer(params)
       default:
         return Effect.fail(
           new RpcError({

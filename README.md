@@ -97,3 +97,26 @@ that fails to start is reported and skipped.
 
 `clanka acp` ignores these files and connects the servers the ACP client sends
 with `session/new`, `session/load` and `session/resume`.
+
+## Running as kiro-cli
+
+Launchers built for kiro-cli, such as Multica's `kiro` provider, can run
+clanka in its place. They start `clanka acp --trust-all-tools`, a flag clanka
+accepts and ignores, and enable features by kiro-cli version. Pass
+`--reported-version` to set the version clanka reports, for `--version` and in
+the ACP `initialize` response:
+
+```sh
+clanka --reported-version 2.33.0 --version
+```
+
+Put the flag in the launcher's fixed arguments, before the subcommand, so both
+the version probe and `clanka acp` see it.
+
+`_session/steer`, kiro-cli's extension method, adds a message to the prompt a
+session is running. It takes `{ sessionId, message }` and returns
+`{ "queued": true }` when the running prompt will read the message, or
+`{ "queued": false }` when the session has no prompt running.
+
+Skills are also discovered in `.kiro/skills/<name>/SKILL.md`, in the project
+and in the home directory, next to `.agents/skills`.

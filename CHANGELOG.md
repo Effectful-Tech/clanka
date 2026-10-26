@@ -1,5 +1,11 @@
 # clanka
 
+## 0.14.0
+
+### Minor Changes
+
+- [#246](https://github.com/Effectful-Tech/clanka/pull/246) [`f8b765d`](https://github.com/Effectful-Tech/clanka/commit/f8b765dac2c776d53bae1ac58dcea37bd0fbd127) Thanks [@tim-smart](https://github.com/tim-smart)! - Add OpenAI fast mode (the `priority` service tier) with a `--fast` flag, and a `fast_mode` ACP session config option for OpenAI models
+
 ## 0.13.2
 
 ### Patch Changes

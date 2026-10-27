@@ -1,5 +1,11 @@
 # clanka
 
+## 0.16.0
+
+### Minor Changes
+
+- [#253](https://github.com/Effectful-Tech/clanka/pull/253) [`56f257f`](https://github.com/Effectful-Tech/clanka/commit/56f257f825b1c8ca0efbdf6887816d88208b9bea) Thanks [@tim-smart](https://github.com/tim-smart)! - Add `CLANKA_REASONING` to set the default reasoning effort for `clanka acp`, and make the effort in `acp --model` optional
+
 ## 0.15.1
 
 ### Patch Changes

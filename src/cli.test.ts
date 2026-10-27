@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import * as NodeServices from "@effect/platform-node/NodeServices"
+import * as Data from "effect/Data"
 import * as Effect from "effect/Effect"
 import * as FileSystem from "effect/FileSystem"
 import { execFile, spawn } from "node:child_process"
@@ -31,25 +32,30 @@ const run = (args: ReadonlyArray<string>) =>
     )
   })
 
-// Starts `clanka <args>` as an ACP server and returns its reply to
-// `initialize`.
-const initialize = (args: ReadonlyArray<string>) =>
+class ClankaExited extends Data.TaggedError("ClankaExited")<{
+  readonly message: string
+}> {}
+
+// Starts `clanka <args>` as an ACP server, sends it `requests` in order and
+// returns its reply to the last one. Fails if clanka exits before replying.
+const acp = (
+  args: ReadonlyArray<string>,
+  requests: ReadonlyArray<{ readonly method: string; readonly params: object }>,
+  extraEnv: Record<string, string | undefined> = {},
+) =>
   Effect.gen(function* () {
-    const env = yield* cliEnv
+    const env = { ...(yield* cliEnv), ...extraEnv }
     const child = yield* Effect.acquireRelease(
       Effect.sync(() => spawn(process.execPath, [cli, ...args], { env })),
       (child) => Effect.sync(() => child.kill()),
     )
-    child.stdin.write(
-      `${JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: { protocolVersion: 1 },
-      })}\n`,
+    requests.forEach(({ method, params }, index) =>
+      child.stdin.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id: index + 1, method, params })}\n`,
+      ),
     )
-    return yield* Effect.promise(
-      () =>
+    return yield* Effect.tryPromise({
+      try: () =>
         new Promise<any>((resolve, reject) => {
           let output = ""
           child.stderr.on("data", (chunk) => {
@@ -62,13 +68,38 @@ const initialize = (args: ReadonlyArray<string>) =>
               return
             }
             const message = JSON.parse(line)
-            if (message.id === 1) resolve(message)
+            if (message.id === requests.length) resolve(message)
           })
           child.on("exit", (code) =>
-            reject(new Error(`clanka exited with code ${code}:\n${output}`)),
+            reject(
+              new ClankaExited({
+                message: `clanka exited with code ${code}:\n${output}`,
+              }),
+            ),
           )
         }),
+      catch: (error) => error as ClankaExited,
+    })
+  })
+
+const initialize = { method: "initialize", params: { protocolVersion: 1 } }
+
+// The `thought_level` a new session starts with under `clanka <args>`.
+const newSessionThoughtLevel = (
+  args: ReadonlyArray<string>,
+  reasoning: string | undefined,
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const cwd = yield* fs.makeTempDirectoryScoped()
+    const response = yield* acp(
+      args,
+      [initialize, { method: "session/new", params: { cwd, mcpServers: [] } }],
+      { CLANKA_REASONING: reasoning },
     )
+    return response.result.configOptions.find(
+      (option: any) => option.id === "thought_level",
+    )?.currentValue
   })
 
 describe("cli", () => {
@@ -86,13 +117,55 @@ describe("cli", () => {
     "runs acp with --trust-all-tools and the --reported-version override",
     () =>
       Effect.gen(function* () {
-        const response = yield* initialize([
-          "--reported-version",
-          "2.33.0",
-          "acp",
-          "--trust-all-tools",
-        ])
+        const response = yield* acp(
+          ["--reported-version", "2.33.0", "acp", "--trust-all-tools"],
+          [initialize],
+        )
         assert.strictEqual(response.result.agentInfo.version, "2.33.0")
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    60_000,
+  )
+  it.effect(
+    "acp defaults the thought level to medium when --model has no effort",
+    () =>
+      Effect.gen(function* () {
+        const level = yield* newSessionThoughtLevel(
+          ["acp", "--model", "openai/gpt-6-astra"],
+          undefined,
+        )
+        assert.strictEqual(level, "medium")
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    60_000,
+  )
+
+  it.effect(
+    "acp takes the default thought level from CLANKA_REASONING, unless --model has an effort",
+    () =>
+      Effect.gen(function* () {
+        assert.strictEqual(
+          yield* newSessionThoughtLevel(["acp"], "high"),
+          "high",
+        )
+        assert.strictEqual(
+          yield* newSessionThoughtLevel(
+            ["acp", "--model", "openai/gpt-6-astra/low"],
+            "high",
+          ),
+          "low",
+        )
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    60_000,
+  )
+
+  it.effect(
+    "acp fails to start with an invalid CLANKA_REASONING",
+    () =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(
+          acp(["acp"], [initialize], { CLANKA_REASONING: "bogus" }),
+        )
+        assert.include(error.message, "CLANKA_REASONING")
+        assert.notInclude(error.message, "exited with code 0")
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     60_000,
   )

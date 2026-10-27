@@ -106,14 +106,19 @@ const selectModel = Effect.fnUntraced(function* (provider: Provider) {
 
 const isProvider = Schema.is(ModelsRepo.Provider)
 
-// `<provider>/<model>/<effort>` as accepted by the `acp` --model flag.
+const isThoughtLevel = Schema.is(Acp.ThoughtLevel)
+
+// `<provider>/<model>[/<effort>]` as accepted by the `acp` --model flag.
 const parseModelId = (modelId: string) => {
   const [provider, model, effort, ...rest] = modelId.split("/")
   return isProvider(provider) &&
     model !== undefined &&
-    Schema.is(Acp.ThoughtLevel)(effort) &&
+    (effort === undefined || isThoughtLevel(effort)) &&
     rest.length === 0
-    ? Option.some({ model: `${provider}:${model}`, thoughtLevel: effort })
+    ? Option.some({
+        model: `${provider}:${model}`,
+        thoughtLevel: Option.fromUndefinedOr(effort),
+      })
     : Option.none()
 }
 
@@ -122,7 +127,7 @@ const ModelId = Schema.String.pipe(
     Schema.makeFilter(
       (modelId: string) =>
         Option.isSome(parseModelId(modelId)) ||
-        `Invalid model "${modelId}", expected <provider>/<model>/<effort> with effort one of ${Acp.ThoughtLevel.literals.join(", ")}`,
+        `Invalid model "${modelId}", expected <provider>/<model>[/<effort>] with effort one of ${Acp.ThoughtLevel.literals.join(", ")}`,
     ),
   ),
 )
@@ -283,10 +288,10 @@ const Search = (directory: string) =>
 const acpModel = Flag.String("model").pipe(
   Flag.withAlias("m"),
   Flag.withDescription(
-    "Default model as <provider>/<model>/<effort>, e.g. openai/gpt-6-astra/medium",
+    "Default model as <provider>/<model>[/<effort>], e.g. openai/gpt-6-astra/medium. Without an effort, uses CLANKA_REASONING, or medium.",
   ),
   Flag.withSchema(ModelId),
-  Flag.withDefault("openai/gpt-6-astra/medium"),
+  Flag.withDefault("openai/gpt-6-astra"),
   Flag.map((modelId) => Option.getOrThrow(parseModelId(modelId))),
 )
 
@@ -297,6 +302,12 @@ const trustAllTools = Flag.Boolean("trust-all-tools").pipe(
     "Accepted for kiro-cli compatibility. Has no effect: clanka runs every tool call without asking.",
   ),
   Flag.withDefault(false),
+)
+
+// The effort for an `acp` --model without one. Read even when --model has an
+// effort, so an invalid value always fails startup.
+const reasoning = Config.schema(Acp.ThoughtLevel, "CLANKA_REASONING").pipe(
+  Config.withDefault("medium"),
 )
 
 const acp = Command.make("acp", {
@@ -313,10 +324,14 @@ const acp = Command.make("acp", {
   Command.withHandler(({ model, fast, apiKey, apiUrl }) =>
     Effect.gen(function* () {
       const repo = yield* ModelsRepo.ModelsRepo
+      const defaultThoughtLevel = yield* reasoning
       return yield* Acp.runStdio({
         version,
         defaultModel: model.model,
-        defaultThoughtLevel: model.thoughtLevel,
+        defaultThoughtLevel: Option.getOrElse(
+          model.thoughtLevel,
+          () => defaultThoughtLevel,
+        ),
         defaultFastMode: fast,
         supportsFastMode: ModelLayer.acpSupportsFastMode,
         availableModels: Effect.map(repo.models, ModelLayer.acpModels),

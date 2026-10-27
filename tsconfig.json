@@ -42,7 +42,9 @@
           "@effect/sql-sqlite-node"
         ],
         "diagnosticSeverity": {
-          "unstableApiUsage": "off"
+          "unstableApiUsage": "off",
+          "experimentalApiUsage": "off",
+          "schemaClassMissingBrand": "off"
         }
       }
     ]

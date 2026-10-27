@@ -83,6 +83,16 @@ describe("cli", () => {
   )
 
   it.effect(
+    "runs acp without --trust-all-tools",
+    () =>
+      Effect.gen(function* () {
+        const response = yield* initialize(["acp"])
+        assert.isDefined(response.result)
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    60_000,
+  )
+
+  it.effect(
     "runs acp with --trust-all-tools and the --reported-version override",
     () =>
       Effect.gen(function* () {

@@ -296,6 +296,7 @@ const trustAllTools = Flag.Boolean("trust-all-tools").pipe(
   Flag.withDescription(
     "Accepted for kiro-cli compatibility. Has no effect: clanka runs every tool call without asking.",
   ),
+  Flag.withDefault(false),
 )
 
 const acp = Command.make("acp", {

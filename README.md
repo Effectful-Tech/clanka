@@ -113,6 +113,20 @@ clanka --reported-version 2.33.0 --version
 Put the flag in the launcher's fixed arguments, before the subcommand, so both
 the version probe and `clanka acp` see it.
 
+Set `CLANKA_REASONING` to choose the reasoning effort new sessions start with,
+for launchers that have no effort setting of their own:
+
+```sh
+CLANKA_REASONING=high clanka acp
+```
+
+It applies when `--model` has no effort, as in `--model openai/gpt-6-astra`.
+An effort in `--model`, such as `openai/gpt-6-astra/low`, takes precedence, and
+without either the effort is `medium`. The value must be one of `none`,
+`minimal`, `low`, `medium`, `high`, `xhigh` or `max`; anything else stops
+`clanka acp` at startup. The ACP client can still change the effort of a
+session, and loaded sessions keep the effort they were saved with.
+
 `_session/steer`, kiro-cli's extension method, adds a message to the prompt a
 session is running. It takes `{ sessionId, message }` and returns
 `{ "queued": true }` when the running prompt will read the message, or

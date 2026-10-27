@@ -1,5 +1,11 @@
 # clanka
 
+## 0.15.1
+
+### Patch Changes
+
+- [`61ae251`](https://github.com/Effectful-Tech/clanka/commit/61ae251ea8ffe97df5f1c6f697f864037038585a) Thanks [@tim-smart](https://github.com/tim-smart)! - fix flag
+
 ## 0.15.0
 
 ### Minor Changes

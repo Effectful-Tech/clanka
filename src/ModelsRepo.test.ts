@@ -110,16 +110,16 @@ const apiJson = {
 
 const catalog = [
   new ModelsRepo.ModelInfo({
-    provider: "openai",
-    id: "gpt-6-astra",
-    name: "GPT-6 Astra",
-    efforts: ["low", "medium", "high", "xhigh", "max"],
-  }),
-  new ModelsRepo.ModelInfo({
     provider: "copilot",
     id: "claude-fable-5.1",
     name: "Claude Fable 5.1",
     efforts: ["low", "high"],
+  }),
+  new ModelsRepo.ModelInfo({
+    provider: "openai",
+    id: "gpt-6-astra",
+    name: "GPT-6 Astra",
+    efforts: ["low", "medium", "high", "xhigh", "max"],
   }),
   new ModelsRepo.ModelInfo({
     provider: "xai",

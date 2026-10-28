@@ -84,6 +84,7 @@ const ModelsDevModel = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   type: Schema.optionalKey(Schema.String),
+  release_date: Schema.optionalKey(Schema.String),
   status: Schema.optionalKey(Schema.String),
   tool_call: Schema.optionalKey(Schema.Boolean),
   reasoning_options: Schema.optionalKey(
@@ -100,7 +101,7 @@ const ModelsDevProvider = Schema.Struct({
   models: Schema.Record(Schema.String, Schema.Unknown),
 })
 
-// models.dev provider id to clanka provider, in catalog order.
+// models.dev provider id to clanka provider.
 const providerIds: ReadonlyArray<readonly [string, Provider]> = [
   ["openai", "openai"],
   ["github-copilot", "copilot"],
@@ -117,30 +118,38 @@ const decodeModel = Schema.decodeUnknownOption(ModelsDevModel)
 const isThoughtLevel = Schema.is(ThoughtLevel)
 
 const toCatalog = (api: typeof ModelsDevApi.Type): ReadonlyArray<ModelInfo> =>
-  providerIds.flatMap(([id, provider]) =>
-    Object.values(api[id]?.models ?? {}).flatMap((entry) => {
-      const model = Option.getOrUndefined(decodeModel(entry))
-      if (
-        model === undefined ||
-        model.type !== undefined ||
-        model.status === "deprecated" ||
-        model.tool_call !== true
-      ) {
-        return []
-      }
+  providerIds
+    .flatMap(([id, provider]) =>
+      Object.values(api[id]?.models ?? {}).flatMap((entry) => {
+        const model = Option.getOrUndefined(decodeModel(entry))
+        if (
+          model === undefined ||
+          model.type !== undefined ||
+          model.status === "deprecated" ||
+          model.tool_call !== true
+        ) {
+          return []
+        }
+        return [{ ...model, provider }]
+      }),
+    )
+    .toSorted(
+      (a, b) =>
+        (b.release_date ?? "").localeCompare(a.release_date ?? "") ||
+        a.name.localeCompare(b.name),
+    )
+    .slice(0, 10)
+    .map((model) => {
       const effort = model.reasoning_options?.find(
         (option) => option.type === "effort",
       )
-      return [
-        new ModelInfo({
-          provider,
-          id: model.id,
-          name: model.name,
-          efforts: (effort?.values ?? []).filter(isThoughtLevel),
-        }),
-      ]
-    }),
-  )
+      return new ModelInfo({
+        provider: model.provider,
+        id: model.id,
+        name: model.name,
+        efforts: (effort?.values ?? []).filter(isThoughtLevel),
+      })
+    })
 
 class CachedCatalog extends Schema.Class<CachedCatalog>(
   "clanka/ModelsRepo/CachedCatalog",
@@ -177,7 +186,9 @@ export class ModelsRepo extends Context.Service<
   /**
    * The catalog built from `https://models.dev/api.json`: the `openai`,
    * `github-copilot` and `xai` text models that are not deprecated and accept
-   * tool calls, cached in the `KeyValueStore` for `ttl` (default 24 hours).
+   * tool calls. Keeps the 10 newest models by release date, then name
+   * alphabetically, with undated models last. Cached in the `KeyValueStore`
+   * for `ttl` (default 24 hours).
    * Serves the cached catalog when the fetch fails, then `fallback`.
    *
    * @since 1.0.0

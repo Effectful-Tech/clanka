@@ -45,7 +45,7 @@ ModelsRepo.fallback: ReadonlyArray<ModelInfo>
 ### models.dev mapping
 
 `api.json` is keyed by models.dev provider id, each holding a `models` record.
-Only three providers are read, in this order:
+Only three providers are read:
 
 | models.dev       | clanka    |
 | ---------------- | --------- |
@@ -55,8 +55,9 @@ Only three providers are read, in this order:
 
 A model is kept when it is a text model (no `type` field; `image`, `embedding`,
 `realtime` and `video` entries are dropped), is not `status: "deprecated"` and
-has `tool_call: true` — clanka drives every turn through a tool call. Models
-keep their `api.json` order within a provider.
+has `tool_call: true` — clanka drives every turn through a tool call. The combined
+catalog is sorted by `release_date` newest first, then by display name
+alphabetically, and capped at 10 models. Models without a release date sort last.
 
 `efforts` is the `values` of the `reasoning_options` entry with
 `type: "effort"`, filtered to `Acp.ThoughtLevel` literals. Models without an

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.16.1
+
+### Patch Changes
+
+- [#255](https://github.com/Effectful-Tech/clanka/pull/255) [`ee04f03`](https://github.com/Effectful-Tech/clanka/commit/ee04f03f7f57cb46dee1be7adea9f124b843964c) Thanks [@tim-smart](https://github.com/tim-smart)! - Sort the models.dev catalog by newest release date, then alphabetically by name, and keep only the top 10 models.
+
 ## 0.16.0
 
 ### Minor Changes

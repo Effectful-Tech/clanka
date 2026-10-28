@@ -110,16 +110,16 @@ const apiJson = {
 
 const catalog = [
   new ModelsRepo.ModelInfo({
-    provider: "openai",
-    id: "gpt-6-astra",
-    name: "GPT-6 Astra",
-    efforts: ["low", "medium", "high", "xhigh", "max"],
-  }),
-  new ModelsRepo.ModelInfo({
     provider: "copilot",
     id: "claude-fable-5.1",
     name: "Claude Fable 5.1",
     efforts: ["low", "high"],
+  }),
+  new ModelsRepo.ModelInfo({
+    provider: "openai",
+    id: "gpt-6-astra",
+    name: "GPT-6 Astra",
+    efforts: ["low", "medium", "high", "xhigh", "max"],
   }),
   new ModelsRepo.ModelInfo({
     provider: "xai",
@@ -181,6 +181,54 @@ describe("ModelsRepo.layerModelsDev", () => {
       Effect.gen(function* () {
         assert.deepStrictEqual(yield* modelsWith(online), catalog)
       }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  )
+
+  it.effect("keeps the 10 newest models, breaking date ties by name", () =>
+    Effect.gen(function* () {
+      const models = Object.fromEntries(
+        [
+          ["oldest", "Alpha old", "2020-01-01"],
+          ["undated-z", "Zulu undated"],
+          ["first-tie", "Zulu tie", "2026-06-01"],
+          ["march", "Gamma", "2026-03-01"],
+          ["newest", "Zulu newest", "2026-10-01"],
+          ["january", "Delta", "2026-01-01"],
+          ["undated-a", "Alpha undated"],
+          ["december", "Epsilon", "2025-12-01"],
+          ["second-tie", "Alpha tie", "2026-06-01"],
+          ["november", "Eta", "2025-11-01"],
+          ["older", "Theta", "2024-01-01"],
+        ].map(([id, name, release_date]) => [
+          id,
+          { id, name, release_date, tool_call: true },
+        ]),
+      )
+      const client = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(JSON.stringify({ openai: { models } }), {
+              headers: { "content-type": "application/json" },
+            }),
+          ),
+        ),
+      )
+      assert.deepStrictEqual(
+        (yield* modelsWith(client)).map((model) => model.id),
+        [
+          "newest",
+          "second-tie",
+          "first-tie",
+          "march",
+          "january",
+          "december",
+          "november",
+          "older",
+          "oldest",
+          "undated-a",
+        ],
+      )
+    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   )
 
   it.effect("serves an expired cached catalog when the refresh fails", () =>

@@ -1,5 +1,15 @@
 # clanka
 
+## 0.17.0
+
+### Minor Changes
+
+- [#257](https://github.com/Effectful-Tech/clanka/pull/257) [`a71204a`](https://github.com/Effectful-Tech/clanka/commit/a71204af6fb632ded7286691341828269ef16ce7) Thanks [@tim-smart](https://github.com/tim-smart)! - Add a `claude` provider that runs models through the Claude Agent SDK and your locally installed Claude Code
+
+### Patch Changes
+
+- [#257](https://github.com/Effectful-Tech/clanka/pull/257) [`a71204a`](https://github.com/Effectful-Tech/clanka/commit/a71204af6fb632ded7286691341828269ef16ce7) Thanks [@tim-smart](https://github.com/tim-smart)! - Cap the models.dev catalog at 10 models per provider instead of 10 overall, so Claude models such as Opus and Fable are no longer crowded out of the model selector.
+
 ## 0.16.1
 
 ### Patch Changes

@@ -1,8 +1,19 @@
+import type {
+  Options,
+  query as SdkQuery,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk"
 import { assert, describe, it } from "@effect/vitest"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import * as Effect from "effect/Effect"
 import * as Base64 from "effect/encoding/Base64"
+import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
+import * as LanguageModel from "effect/ai/LanguageModel"
 import * as Prompt from "effect/ai/Prompt"
+import * as Tool from "effect/ai/Tool"
+import * as Toolkit from "effect/ai/Toolkit"
 import * as ClaudeAgent from "./ClaudeAgent.ts"
 import { tinyPng } from "./fixtures/TestImages.ts"
 
@@ -256,5 +267,214 @@ describe("ClaudeAgent", () => {
       assert.strictEqual(finish[0]!.usage.inputTokens.total, 160)
       assert.strictEqual(finish[0]!.usage.outputTokens.total, 20)
     }),
+  )
+})
+
+// A fake Claude Code behind the SDK's `query()`. `run` plays one session
+// against its input, its PreToolUse hook and clanka's MCP server.
+interface FakeSession {
+  readonly options: Options
+  readonly input: AsyncIterator<SDKUserMessage>
+  closed: boolean
+}
+
+const fakeClaude = (run: (session: FakeSession) => AsyncGenerator<object>) => {
+  const sessions: Array<FakeSession> = []
+  const query = (params: {
+    readonly prompt: AsyncIterable<SDKUserMessage>
+    readonly options: Options
+  }) => {
+    const session: FakeSession = {
+      options: params.options,
+      input: params.prompt[Symbol.asyncIterator](),
+      closed: false,
+    }
+    sessions.push(session)
+    return Object.assign(run(session), {
+      initializationResult: async () => ({ claude_code_version: "2.1.312" }),
+      close: () => {
+        session.closed = true
+      },
+    })
+  }
+  return { sessions, query: query as unknown as typeof SdkQuery }
+}
+
+// Claude Code calling clanka's `execute` tool: the PreToolUse hooks, then the
+// MCP calls, each tagged with its tool use id.
+const callExecute = async (
+  session: FakeSession,
+  calls: ReadonlyArray<readonly [id: string, script: string]>,
+) => {
+  const server = session.options.mcpServers?.clanka as {
+    readonly instance: {
+      connect: (transport: InMemoryTransport) => Promise<void>
+    }
+  }
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair()
+  await server.instance.connect(serverTransport)
+  const client = new Client({ name: "claude-code", version: "0.0.0" })
+  await client.connect(clientTransport)
+  const hook = session.options.hooks!.PreToolUse![0]!.hooks[0]!
+  for (const [id, script] of calls) {
+    await hook(
+      {
+        hook_event_name: "PreToolUse",
+        tool_name: "mcp__clanka__execute",
+        tool_input: { script },
+        tool_use_id: id,
+        session_id: "s",
+        transcript_path: "",
+        cwd: "",
+      } as any,
+      id,
+      { signal: new AbortController().signal },
+    )
+  }
+  return Promise.all(
+    calls.map(([id, script]) =>
+      client.callTool({
+        name: "execute",
+        arguments: { script },
+        _meta: { "claudecode/toolUseId": id },
+      }),
+    ),
+  )
+}
+
+// One API message calling `execute` once per call.
+const executeStep = (calls: ReadonlyArray<readonly [string, string]>) => [
+  event({
+    type: "message_start",
+    message: {
+      id: "msg_tools",
+      type: "message",
+      role: "assistant",
+      model: "claude-opus-5-5",
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 1 },
+    },
+  }),
+  ...calls.map(([id, script]) =>
+    assistant({
+      type: "tool_use",
+      id,
+      name: "mcp__clanka__execute",
+      input: { script },
+    }),
+  ),
+  event({
+    type: "message_delta",
+    delta: { stop_reason: "tool_use", stop_sequence: null },
+    usage: { output_tokens: 5 },
+  }),
+  event({ type: "message_stop" }),
+]
+
+const finalStep = [
+  assistant({ type: "text", text: "Done." }),
+  {
+    ...frame,
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "Done.",
+    stop_reason: "end_turn",
+    usage: { input_tokens: 10, output_tokens: 2 },
+  },
+]
+
+const Execute = Toolkit.make(
+  Tool.make("execute", {
+    parameters: Schema.Struct({ script: Schema.String }),
+    success: Schema.String,
+  }),
+)
+
+const ExecuteHandlers = Execute.toLayer({
+  execute: ({ script }) => Effect.succeed(`ran ${script}`),
+})
+
+const runSteps = Effect.fnUntraced(function* (
+  fake: ReturnType<typeof fakeClaude>,
+  next: (first: Prompt.Prompt, response: Prompt.Prompt) => Prompt.Prompt,
+) {
+  const first = Prompt.fromMessages([system, user("go")])
+  yield* Effect.gen(function* () {
+    const ai = yield* LanguageModel.LanguageModel
+    const parts = yield* ai
+      .streamText({ prompt: first, toolkit: Execute })
+      .pipe(Stream.runCollect)
+    yield* ai
+      .streamText({
+        prompt: next(first, Prompt.fromResponseParts(parts)),
+        toolkit: Execute,
+      })
+      .pipe(Stream.runCollect)
+  }).pipe(
+    Effect.provide(
+      ClaudeAgent.model("claude-opus-5-5", {
+        executable: "/fake/claude",
+        query: fake.query,
+      }),
+    ),
+    Effect.provide(ExecuteHandlers),
+  )
+})
+
+describe("ClaudeAgent.model", () => {
+  it.effect("hands each parked call the result of its own tool use", () =>
+    Effect.gen(function* () {
+      const calls = [
+        ["toolu_a", "a"],
+        ["toolu_b", "b"],
+      ] as const
+      let results: ReadonlyArray<unknown> = []
+      const fake = fakeClaude(async function* (session) {
+        await session.input.next()
+        yield* executeStep(calls)
+        results = await callExecute(session, calls)
+        yield* finalStep
+      })
+      yield* runSteps(fake, (first, response) => Prompt.concat(first, response))
+      assert.deepStrictEqual(
+        results.map((result: any) => result.content),
+        [[{ type: "text", text: "ran a" }], [{ type: "text", text: "ran b" }]],
+      )
+    }),
+  )
+
+  it.effect(
+    "starts over when the prompt's tool call is not the one Claude made",
+    () =>
+      Effect.gen(function* () {
+        const fake = fakeClaude(async function* (session) {
+          await session.input.next()
+          yield* executeStep([["toolu_a", "a"]])
+          await callExecute(session, [["toolu_a", "a"]])
+          yield* finalStep
+        })
+        yield* runSteps(fake, (first, response) =>
+          Prompt.fromMessages([
+            ...first.content,
+            Prompt.makeMessage("assistant", {
+              content: [
+                Prompt.makePart("tool-call", {
+                  id: "toolu_a",
+                  name: "execute",
+                  params: { script: "edited" },
+                  providerExecuted: false,
+                }),
+              ],
+            }),
+            ...response.content.filter((message) => message.role === "tool"),
+          ]),
+        )
+        assert.lengthOf(fake.sessions, 2)
+        assert.isTrue(fake.sessions[0]!.closed)
+      }),
   )
 })

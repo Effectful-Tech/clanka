@@ -7,6 +7,7 @@ import { assert, describe, it } from "@effect/vitest"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import * as Effect from "effect/Effect"
+import * as Layer from "effect/Layer"
 import * as Base64 from "effect/encoding/Base64"
 import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
@@ -318,6 +319,8 @@ const callExecute = async (
   await client.connect(clientTransport)
   const hook = session.options.hooks!.PreToolUse![0]!.hooks[0]!
   for (const [id, script] of calls) {
+    // Claude Code runs the hooks in order.
+    // oxlint-disable-next-line no-await-in-loop
     await hook(
       {
         hook_event_name: "PreToolUse",
@@ -416,12 +419,14 @@ const runSteps = Effect.fnUntraced(function* (
       .pipe(Stream.runCollect)
   }).pipe(
     Effect.provide(
-      ClaudeAgent.model("claude-opus-5-5", {
-        executable: "/fake/claude",
-        query: fake.query,
-      }),
+      Layer.merge(
+        ClaudeAgent.model("claude-opus-5-5", {
+          executable: "/fake/claude",
+          query: fake.query,
+        }),
+        ExecuteHandlers,
+      ),
     ),
-    Effect.provide(ExecuteHandlers),
   )
 })
 

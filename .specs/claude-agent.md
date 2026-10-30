@@ -21,6 +21,7 @@ ClaudeAgent.model(model: string, options?: {
   executable?: string         // default: CLANKA_CLAUDE_PATH, then `claude` on the PATH
   cwd?: string                // default: process.cwd()
   supportsImages?: boolean
+  query?: typeof Sdk.query    // default: the SDK's, loaded on first use
 }): Model.Model<"claude", LanguageModel, never>
 
 ClaudeAgent.queryOptions(options: {
@@ -53,8 +54,10 @@ parked:
   in-process MCP server (the low-level `Server` from
   `@modelcontextprotocol/sdk`, with the tool's JSON schema and
   `readOnlyHint: false`, so Claude Code runs calls one at a time).
-- A `PreToolUse` hook records the `tool_use_id` of the call the next handler
-  serves. The handler does not run the script: it waits for clanka's result.
+- Each handler serves the call named by the request's
+  `_meta["claudecode/toolUseId"]`. Without that tag, it serves the call the
+  last `PreToolUse` hook named. The handler does not run the script: it waits
+  for clanka's result.
 - The step ends after the API message that called clanka's tool
   (`message_stop` once a `tool_use` for `mcp__clanka__*` was seen), with
   finish reason `tool-calls`. Effect runs the real `execute` handler, and the
@@ -74,7 +77,8 @@ session records the prompt of its last step and how the step ended. The next
 call continues the session when its prompt:
 
 1. starts with exactly the same message objects as that prompt,
-2. then has one assistant message (the step's response),
+2. then has one assistant message whose tool calls are exactly the ones the
+   step made (same ids, names and params, in order; none after a `stop`),
 3. then tool messages with a result for every call the step made, and no
    others,
 4. then only user messages (at least one if the step ended its turn).

@@ -60,8 +60,10 @@ tools, settings, hooks, memory or skills.
 Setup:
 
 1. Install [Claude Code](https://code.claude.com) 2.1.248 or later on the same
-   machine, and log in with `claude auth login`, or configure an API key,
-   Bedrock, Vertex or Foundry the way Claude Code documents.
+   machine and set up its authentication. For developers, that means an
+   Anthropic API key (`ANTHROPIC_API_KEY`) or Bedrock, Vertex or Foundry, the
+   way Claude Code documents. An individual can instead log Claude Code in
+   with their own Claude account using `claude auth login`; see below.
 2. Install the SDK next to clanka. It is an optional peer dependency, so it
    is not installed with clanka:
 
@@ -86,12 +88,16 @@ Setup:
 clanka looks for `claude` on the `PATH`. Set `CLANKA_CLAUDE_PATH` to use
 another executable.
 
-Authentication is Claude Code's. clanka never reads, stores or forwards its
-credentials, and never prompts for a login. API keys and cloud providers are
-the supported setups for developers. If you log Claude Code in with your own
-Claude subscription, that is your own individual use under Anthropic's
-consumer terms, and subscription usage limits apply. Don't use it to give
-other people access through your account. See Anthropic's
+Authentication is Claude Code's. clanka runs Claude Code with clanka's own
+environment, so an `ANTHROPIC_API_KEY` or cloud credentials set there reach
+Claude Code, as they would if you ran `claude` yourself. clanka never
+accesses, stores or intermediates Claude.ai login credentials or OAuth
+tokens, and never prompts for a login.
+
+If you log Claude Code in with your own Claude subscription, that is your own
+individual use under Anthropic's consumer terms, and subscription usage
+limits apply. Don't use it to give other people access through your account.
+See Anthropic's
 [usage policy](https://code.claude.com/docs/en/legal-and-compliance#usage-policy).
 
 Limitations:

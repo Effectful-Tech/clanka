@@ -25,6 +25,7 @@ import type * as Response from "effect/ai/Response"
 import * as Tool from "effect/ai/Tool"
 import * as Fs from "node:fs"
 import * as Path from "node:path"
+import { isDeepStrictEqual } from "node:util"
 import packageJson from "../package.json" with { type: "json" }
 import { AgentModelConfig } from "./Agent.ts"
 import * as Image from "./Image.ts"
@@ -80,6 +81,11 @@ export interface ModelOptions {
    */
   readonly cwd?: string | undefined
   readonly supportsImages?: boolean | undefined
+  /**
+   * The SDK's `query` function. Defaults to the one from
+   * `@anthropic-ai/claude-agent-sdk`, loaded on first use.
+   */
+  readonly query?: typeof Sdk.query | undefined
 }
 
 /**
@@ -551,8 +557,9 @@ interface CallToolResult {
   readonly isError?: boolean
 }
 
-// The parked tool calls. Claude Code runs clanka's tools one at a time, so
-// the PreToolUse hook names the call that the next handler serves. A handler
+// The parked tool calls. Claude Code tags each MCP call with its tool use
+// id; without the tag, the PreToolUse hook names the call that the next
+// handler serves (Claude Code runs clanka's tools one at a time). A handler
 // waits until the next step resolves its call with clanka's result.
 const makeToolBridge = () => {
   const calls = new Map<
@@ -579,9 +586,9 @@ const makeToolBridge = () => {
     before(id: string) {
       next = id
     },
-    async call(): Promise<CallToolResult> {
-      const id = next
-      next = undefined
+    async call(toolUseId: string | undefined): Promise<CallToolResult> {
+      const id = toolUseId ?? next
+      if (toolUseId === undefined) next = undefined
       if (id === undefined) {
         return {
           isError: true,
@@ -638,10 +645,12 @@ const makeToolServer = (
       server.setRequestHandler(ListToolsRequestSchema, async () => ({
         tools: definitions,
       }))
-      server.setRequestHandler(
-        CallToolRequestSchema,
-        async () => (await bridge.call()) as any,
-      )
+      server.setRequestHandler(CallToolRequestSchema, async (request) => {
+        const toolUseId = request.params._meta?.["claudecode/toolUseId"]
+        return (await bridge.call(
+          typeof toolUseId === "string" ? toolUseId : undefined,
+        )) as any
+      })
       return {
         type: "sdk" as const,
         name: serverName,
@@ -707,7 +716,10 @@ interface Session {
   // while a step runs.
   seen: ReadonlyArray<Prompt.Message>
   outcome:
-    | { readonly _tag: "Tools"; readonly ids: ReadonlyArray<string> }
+    | {
+        readonly _tag: "Tools"
+        readonly calls: ReadonlyArray<Response.ToolCallPartEncoded>
+      }
     | { readonly _tag: "Stop" }
     | undefined
 }
@@ -726,7 +738,7 @@ const startSession = Effect.fnUntraced(function* (
   provider: LanguageModel.ProviderOptions,
   withTools: boolean,
 ) {
-  const sdk = yield* loadSdk
+  const query = options?.query ?? (yield* loadSdk).query
   const executable = options?.executable ?? (yield* findExecutable)
   const bridge = makeToolBridge()
   const mcpServers = withTools
@@ -735,7 +747,7 @@ const startSession = Effect.fnUntraced(function* (
   const input = new InputQueue()
   input.push(userMessage(toUserContent(provider.prompt)))
   if (!withTools) input.close()
-  const query = sdk.query({
+  const session = query({
     prompt: input,
     options: {
       ...queryOptions({
@@ -770,7 +782,7 @@ const startSession = Effect.fnUntraced(function* (
     Sdk.SDKMessage,
     AiError.AiError | Cause.Done
   >()
-  yield* Stream.fromAsyncIterable(query, (cause) =>
+  yield* Stream.fromAsyncIterable(session, (cause) =>
     unknownError(`Claude Code failed: ${String(cause)}`),
   ).pipe(
     Stream.runForEach((message) => Queue.offer(messages, message)),
@@ -780,8 +792,8 @@ const startSession = Effect.fnUntraced(function* (
     }),
     Effect.forkIn(scope),
   )
-  const session: Session = {
-    query,
+  const live: Session = {
+    query: session,
     input,
     bridge,
     messages,
@@ -791,7 +803,7 @@ const startSession = Effect.fnUntraced(function* (
     outcome: undefined,
   }
   yield* Effect.tryPromise({
-    try: () => query.initializationResult(),
+    try: () => session.initializationResult(),
     catch: (cause) =>
       unknownError(`Claude Code failed to start: ${String(cause)}`),
   }).pipe(
@@ -805,9 +817,9 @@ const startSession = Effect.fnUntraced(function* (
           )
         : Effect.void,
     ),
-    Effect.onError(() => closeSession(session)),
+    Effect.onError(() => closeSession(live)),
   )
-  return session
+  return live
 })
 
 const toolResult = (part: Prompt.ToolResultPart): CallToolResult => ({
@@ -820,9 +832,10 @@ const isImageOnly = (message: Prompt.Message) =>
   message.content.length > 0 &&
   message.content.every((part) => part.type === "file")
 
-// How `prompt` continues the live session: the tool results for the calls
-// the last step made, then user messages. `undefined` when it does not, and
-// the session has to start over with the full history.
+// How `prompt` continues the live session: the response of the last step,
+// with the tool calls it made, then their results, then user messages.
+// `undefined` when it does not, and the session has to start over with the
+// full history.
 const continuation = (
   session: Session,
   provider: LanguageModel.ProviderOptions,
@@ -830,16 +843,31 @@ const continuation = (
   const outcome = session.outcome
   const messages = provider.prompt.content
   const seen = session.seen
+  const response = messages[seen.length]
   if (
     outcome === undefined ||
     session.toolNames !== provider.tools.map((tool) => tool.name).join(",") ||
-    messages.length <= seen.length ||
-    messages[seen.length]?.role !== "assistant"
+    response?.role !== "assistant"
   ) {
     return undefined
   }
   for (let i = 0; i < seen.length; i++) {
     if (messages[i] !== seen[i]) return undefined
+  }
+  const emitted = outcome._tag === "Tools" ? outcome.calls : []
+  const calls = response.content.flatMap((part) =>
+    part.type === "tool-call" && !part.providerExecuted ? [part] : [],
+  )
+  if (
+    calls.length !== emitted.length ||
+    !emitted.every(
+      (call, i) =>
+        calls[i]!.id === call.id &&
+        calls[i]!.name === call.name &&
+        isDeepStrictEqual(calls[i]!.params, call.params),
+    )
+  ) {
+    return undefined
   }
   let rest = messages.slice(seen.length + 1)
   const results = new Map<string, Prompt.ToolResultPart>()
@@ -849,7 +877,7 @@ const continuation = (
     }
     rest = rest.slice(1)
   }
-  const ids = outcome._tag === "Tools" ? outcome.ids : []
+  const ids = emitted.map((call) => call.id)
   if (
     results.size !== ids.length ||
     !ids.every((id) => results.has(id)) ||
@@ -902,7 +930,7 @@ const readStep = (
   session: Session,
   onAbandon: Effect.Effect<void>,
 ): Stream.Stream<Response.StreamPartEncoded, AiError.AiError> => {
-  const ids: Array<string> = []
+  const calls: Array<Response.ToolCallPartEncoded> = []
   return Stream.fromEffectRepeat(
     Queue.take(session.messages).pipe(
       Effect.catchIf(Cause.isDone, () =>
@@ -915,11 +943,11 @@ const readStep = (
     toStreamParts,
     Stream.tap((part) =>
       Effect.sync(() => {
-        if (part.type === "tool-call") ids.push(part.id)
+        if (part.type === "tool-call") calls.push(part)
         if (part.type === "finish") {
           session.outcome =
             part.reason === "tool-calls"
-              ? { _tag: "Tools", ids }
+              ? { _tag: "Tools", calls }
               : { _tag: "Stop" }
         }
       }),

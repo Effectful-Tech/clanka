@@ -61,10 +61,17 @@ parked:
   sends (checked back to 2.1.240). An untagged request fails with an error
   instead of being matched to a guessed call. The handler does not run the
   script: it waits for clanka's result.
-- The step ends after the API message that called clanka's tool
-  (`message_stop` once a `tool_use` for `mcp__clanka__*` was seen), with
-  finish reason `tool-calls`. Effect runs the real `execute` handler, and the
-  Agent appends the call and result to history as for any provider.
+- The step ends once the API message that called clanka's tool is done
+  (`message_stop` after a `tool_use` for `mcp__clanka__*`) and Claude Code has
+  parked a tagged MCP request for every one of those calls. Until then the
+  step holds back its `tool-call` parts and its `tool-calls` finish: Effect
+  runs a call's handler as soon as more parts follow it, so an early call
+  could run a script Claude Code never waits for. Then Effect runs the real
+  `execute` handlers, and the Agent appends the calls and results to history
+  as for any provider.
+- An untagged request, or a `tool_result` from Claude Code for a call that
+  never parked (Claude Code answered it itself), fails the step with a
+  non-retryable `AiError` before any script runs.
 - The next `streamText` resolves the parked handlers with those results and
   reads the next step from the same process.
 - A step also ends when Claude Code finishes its turn (`result`), with finish
@@ -185,5 +192,5 @@ called Claude Agent, not Claude Code.
   starting Claude Code.
 - `ClaudeAgent.test.ts`: `queryOptions`, `toUserContent`, and a tool step
   through `toStreamParts`; through a fake SDK `query`: tagged calls get
-  their own results, untagged calls fail, edited tool params or answer text
+  their own results, untagged calls fail and run no script, edited tool params or answer text
   start a new process, and a step cut short closes its process.

@@ -558,9 +558,10 @@ interface CallToolResult {
 }
 
 // The parked tool calls, keyed by the tool use id Claude Code tags each MCP
-// call with. A handler waits until the next step resolves its call with
+// call with. `onCall` reports each request as it arrives, `undefined` for an
+// untagged one. A handler waits until the next step resolves its call with
 // clanka's result.
-const makeToolBridge = () => {
+const makeToolBridge = (onCall: (id: string | undefined) => void) => {
   const calls = new Map<
     string,
     {
@@ -582,6 +583,7 @@ const makeToolBridge = () => {
   }
   return {
     async call(id: string | undefined): Promise<CallToolResult> {
+      onCall(id)
       // Never guess which call an untagged request is.
       if (id === undefined) {
         return {
@@ -698,11 +700,17 @@ const compareVersions = (a: string, b: string) => {
   return 0
 }
 
+// What a session reads: the SDK's messages, and the MCP requests for
+// clanka's tool as they park.
+type SessionEvent =
+  | Sdk.SDKMessage
+  | { readonly type: "clanka_parked"; readonly id: string | undefined }
+
 interface Session {
   readonly query: Sdk.Query
   readonly input: InputQueue
   readonly bridge: ToolBridge
-  readonly messages: Queue.Queue<Sdk.SDKMessage, AiError.AiError | Cause.Done>
+  readonly messages: Queue.Queue<SessionEvent, AiError.AiError | Cause.Done>
   readonly scope: Scope.Closeable
   readonly toolNames: string
   // The prompt of the last step, and how that step ended. `undefined`
@@ -733,7 +741,13 @@ const startSession = Effect.fnUntraced(function* (
 ) {
   const query = options?.query ?? (yield* loadSdk).query
   const executable = options?.executable ?? (yield* findExecutable)
-  const bridge = makeToolBridge()
+  const messages = yield* Queue.make<
+    SessionEvent,
+    AiError.AiError | Cause.Done
+  >()
+  const bridge = makeToolBridge((id) => {
+    Queue.offerUnsafe(messages, { type: "clanka_parked", id })
+  })
   const mcpServers = withTools
     ? { [serverName]: yield* makeToolServer(provider.tools, bridge) }
     : {}
@@ -754,10 +768,6 @@ const startSession = Effect.fnUntraced(function* (
     },
   })
   const scope = yield* Scope.make()
-  const messages = yield* Queue.make<
-    Sdk.SDKMessage,
-    AiError.AiError | Cause.Done
-  >()
   yield* Stream.fromAsyncIterable(session, (cause) =>
     unknownError(`Claude Code failed: ${String(cause)}`),
   ).pipe(
@@ -905,42 +915,103 @@ const continueSession = (
   plan.ids.forEach((id, i) => session.bridge.resolve(id, results[i]!))
 }
 
+// The ids of the tool results in an SDK user message.
+const toolResultIds = (message: Sdk.SDKUserMessage): Array<string> =>
+  typeof message.message.content === "string"
+    ? []
+    : message.message.content.flatMap((block) =>
+        block.type === "tool_result" ? [block.tool_use_id] : [],
+      )
+
 // Reads one step from the session, recording how it ended. A step that does
 // not finish leaves the session in an unknown state, so it is closed.
+//
+// A tool step holds back its tool calls and its finish until Claude Code has
+// parked an MCP request for every call. Effect runs a call's handler as soon
+// as more parts follow it, so emitting a call earlier could run a script
+// that Claude Code never waits for. An untagged request, or Claude Code
+// answering a call itself, fails the step before any script runs.
 const readStep = (
   session: Session,
   onAbandon: Effect.Effect<void>,
-): Stream.Stream<Response.StreamPartEncoded, AiError.AiError> => {
-  const calls: Array<Response.ToolCallPartEncoded> = []
-  let text = ""
-  return Stream.fromEffectRepeat(
-    Queue.take(session.messages).pipe(
-      Effect.catchIf(Cause.isDone, () =>
-        Effect.fail(
-          unknownError("Claude Code stopped before finishing its reply"),
-        ),
-      ),
-    ),
-  ).pipe(
-    toStreamParts,
-    Stream.tap((part) =>
-      Effect.sync(() => {
-        if (part.type === "tool-call") calls.push(part)
-        if (part.type === "text-delta") text += part.delta
-        if (part.type === "finish") {
-          session.outcome = {
-            _tag: part.reason === "tool-calls" ? "Tools" : "Stop",
-            calls,
-            text,
+): Stream.Stream<Response.StreamPartEncoded, AiError.AiError> =>
+  Stream.suspend(() => {
+    const convert = makeConverter()
+    const calls: Array<Response.ToolCallPartEncoded> = []
+    const parked = new Set<string>()
+    let finish: Response.FinishPartEncoded | undefined
+    let text = ""
+
+    const release = (): Array<Response.StreamPartEncoded> => {
+      if (finish === undefined || !calls.every((call) => parked.has(call.id))) {
+        return []
+      }
+      session.outcome = { _tag: "Tools", calls, text }
+      return [...calls, finish]
+    }
+
+    const handle = (
+      event: SessionEvent,
+    ): Effect.Effect<Array<Response.StreamPartEncoded>, AiError.AiError> => {
+      if (event.type === "clanka_parked") {
+        if (event.id === undefined) {
+          return Effect.fail(
+            unknownError(
+              "Claude Code sent a tool call without its tool use id. This Claude Code version is not supported.",
+            ),
+          )
+        }
+        parked.add(event.id)
+        return Effect.succeed(release())
+      }
+      if (event.type === "user" && event.parent_tool_use_id === null) {
+        const answered = toolResultIds(event).find(
+          (id) => !parked.has(id) && calls.some((call) => call.id === id),
+        )
+        if (answered !== undefined) {
+          return Effect.fail(
+            unknownError(
+              `Claude Code answered the tool call ${answered} itself instead of calling clanka.`,
+            ),
+          )
+        }
+      }
+      return Effect.map(convert(event), (parts) => {
+        const out: Array<Response.StreamPartEncoded> = []
+        for (const part of parts) {
+          if (part.type === "tool-call") {
+            calls.push(part)
+          } else if (part.type === "finish" && part.reason === "tool-calls") {
+            finish = part
+          } else {
+            if (part.type === "text-delta") text += part.delta
+            if (part.type === "finish") {
+              session.outcome = { _tag: "Stop", calls: [], text }
+            }
+            out.push(part)
           }
         }
-      }),
-    ),
-    Stream.onExit(() =>
-      session.outcome === undefined ? onAbandon : Effect.void,
-    ),
-  )
-}
+        return [...out, ...release()]
+      })
+    }
+
+    return Stream.fromEffectRepeat(
+      Queue.take(session.messages).pipe(
+        Effect.catchIf(Cause.isDone, () =>
+          Effect.fail(
+            unknownError("Claude Code stopped before finishing its reply"),
+          ),
+        ),
+      ),
+    ).pipe(
+      Stream.mapEffect(handle),
+      Stream.flattenIterable,
+      Stream.takeUntil((part) => part.type === "finish"),
+      Stream.onExit(() =>
+        session.outcome === undefined ? onAbandon : Effect.void,
+      ),
+    )
+  })
 
 // A call without tools, such as a compaction summary, runs on its own
 // short-lived Claude Code.

@@ -88,6 +88,7 @@ const initialize = { method: "initialize", params: { protocolVersion: 1 } }
 const newSessionThoughtLevel = (
   args: ReadonlyArray<string>,
   reasoning: string | undefined,
+  extraEnv: Record<string, string | undefined> = {},
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
@@ -95,7 +96,7 @@ const newSessionThoughtLevel = (
     const response = yield* acp(
       args,
       [initialize, { method: "session/new", params: { cwd, mcpServers: [] } }],
-      { CLANKA_REASONING: reasoning },
+      { ...extraEnv, CLANKA_REASONING: reasoning },
     )
     return response.result.configOptions.find(
       (option: any) => option.id === "thought_level",
@@ -153,6 +154,20 @@ describe("cli", () => {
           ),
           "low",
         )
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    60_000,
+  )
+
+  it.effect(
+    "acp starts a claude session without running Claude Code",
+    () =>
+      Effect.gen(function* () {
+        const level = yield* newSessionThoughtLevel(
+          ["acp", "--model", "claude/claude-opus-5-5/high"],
+          undefined,
+          { CLANKA_CLAUDE_PATH: "/nonexistent/claude" },
+        )
+        assert.strictEqual(level, "high")
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     60_000,
   )

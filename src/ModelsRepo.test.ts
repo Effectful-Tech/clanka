@@ -98,9 +98,24 @@ const apiJson = {
     id: "anthropic",
     name: "Anthropic",
     models: {
-      "claude-opus-5.5": {
-        id: "claude-opus-5.5",
+      "claude-opus-5-5": {
+        id: "claude-opus-5-5",
         name: "Claude Opus 5.5",
+        tool_call: true,
+        reasoning: true,
+        reasoning_options: [
+          { type: "effort", values: ["low", "medium", "high", "xhigh", "max"] },
+        ],
+      },
+    },
+  },
+  google: {
+    id: "google",
+    name: "Google",
+    models: {
+      "gemini-4-pro": {
+        id: "gemini-4-pro",
+        name: "Gemini 4 Pro",
         tool_call: true,
         reasoning: true,
       },
@@ -114,6 +129,12 @@ const catalog = [
     id: "claude-fable-5.1",
     name: "Claude Fable 5.1",
     efforts: ["low", "high"],
+  }),
+  new ModelsRepo.ModelInfo({
+    provider: "claude",
+    id: "claude-opus-5-5",
+    name: "Claude Opus 5.5",
+    efforts: ["low", "medium", "high", "xhigh", "max"],
   }),
   new ModelsRepo.ModelInfo({
     provider: "openai",
@@ -176,7 +197,7 @@ const modelsWith = (client: HttpClient.HttpClient) =>
 
 describe("ModelsRepo.layerModelsDev", () => {
   it.effect(
-    "lists the openai, copilot and xai text models that accept tool calls",
+    "lists the openai, copilot, xai and anthropic text models that accept tool calls",
     () =>
       Effect.gen(function* () {
         assert.deepStrictEqual(yield* modelsWith(online), catalog)
@@ -251,4 +272,13 @@ describe("ModelsRepo.layerModelsDev", () => {
         )
       }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   )
+
+  it("has a built-in model for every provider", () => {
+    for (const provider of ModelsRepo.Provider.literals) {
+      assert.isTrue(
+        ModelsRepo.fallback.some((model) => model.provider === provider),
+        provider,
+      )
+    }
+  })
 })

@@ -578,4 +578,21 @@ describe("ClaudeAgent.model", () => {
       }).pipe(Effect.provide(modelWith(fake)))
     }),
   )
+
+  it.live("fails a step when Claude Code parks a call it did not make", () =>
+    Effect.gen(function* () {
+      executed.length = 0
+      const fake = fakeClaude(async function* (session) {
+        await session.input.next()
+        yield* executeStep([["toolu_a", "a"]])
+        await callExecute(session, [["toolu_b", "a"]])
+        yield* finalStep
+      })
+      const error = yield* runSteps(fake, (first, response) =>
+        Prompt.concat(first, response),
+      ).pipe(Effect.timeout("2 seconds"), Effect.flip)
+      assert.strictEqual(error._tag, "AiError")
+      assert.deepStrictEqual(executed, [])
+    }),
+  )
 })

@@ -439,7 +439,8 @@ describe("Compaction.isContextLengthError", () => {
         openAiError(
           new AiError.NetworkError({
             reason: "TransportError",
-            request,
+            method: request.method,
+            url: request.url,
             description: "socket timeout",
           }),
         ),

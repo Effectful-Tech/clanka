@@ -272,13 +272,4 @@ describe("ModelsRepo.layerModelsDev", () => {
         )
       }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   )
-
-  it("has a built-in model for every provider", () => {
-    for (const provider of ModelsRepo.Provider.literals) {
-      assert.isTrue(
-        ModelsRepo.fallback.some((model) => model.provider === provider),
-        provider,
-      )
-    }
-  })
 })

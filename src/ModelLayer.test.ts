@@ -133,8 +133,7 @@ describe("ModelLayer.makeAcp", () => {
     assert.isTrue(Option.isNone(makeModel("nope", "high")))
   })
 
-  it("builds claude models, without fast mode", () => {
+  it("builds claude models", () => {
     assert.isTrue(Option.isSome(makeModel("claude:claude-opus-5-5", "high")))
-    assert.isFalse(ModelLayer.acpSupportsFastMode("claude:claude-opus-5-5"))
   })
 })

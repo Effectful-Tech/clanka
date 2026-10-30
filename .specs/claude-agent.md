@@ -188,11 +188,10 @@ called Claude Agent, not Claude Code.
 ## Tests
 
 - `ModelsRepo.test.ts`: models.dev `anthropic` models become `claude`
-  models; `fallback` has a model for every provider.
-- `ModelLayer.test.ts`: `makeAcp` builds `claude:` ids, without fast mode.
-- `cli.test.ts`: `acp --model claude/...` answers `session/new` without
-  starting Claude Code.
+  models.
+- `ModelLayer.test.ts`: `makeAcp` builds `claude:` ids.
 - `ClaudeAgent.test.ts`: `queryOptions`, `toUserContent`, and a tool step
   through `toStreamParts`; through a fake SDK `query`: tagged calls get
-  their own results, untagged calls fail and run no script, edited tool params or answer text
-  start a new process, and a step cut short closes its process.
+  their own results in one process, untagged calls fail and run no script,
+  an edited answer starts a new process, and a step cut short closes its
+  process.

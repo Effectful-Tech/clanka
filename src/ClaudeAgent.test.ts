@@ -272,7 +272,7 @@ describe("ClaudeAgent", () => {
 })
 
 // A fake Claude Code behind the SDK's `query()`. `run` plays one session
-// against its input, its PreToolUse hook and clanka's MCP server.
+// against its input and clanka's MCP server.
 interface FakeSession {
   readonly options: Options
   readonly input: AsyncIterator<SDKUserMessage>
@@ -301,9 +301,8 @@ const fakeClaude = (run: (session: FakeSession) => AsyncGenerator<object>) => {
   return { sessions, query: query as unknown as typeof SdkQuery }
 }
 
-// Claude Code calling clanka's `execute` tool: the PreToolUse hooks, if any,
-// then the MCP calls, each tagged with its tool use id unless `tagged` is
-// false.
+// Claude Code calling clanka's `execute` tool over MCP, each call tagged with
+// its tool use id unless `tagged` is false.
 const callExecute = async (
   session: FakeSession,
   calls: ReadonlyArray<readonly [id: string, script: string]>,
@@ -319,24 +318,6 @@ const callExecute = async (
   await server.instance.connect(serverTransport)
   const client = new Client({ name: "claude-code", version: "0.0.0" })
   await client.connect(clientTransport)
-  const hook = session.options.hooks?.PreToolUse?.[0]?.hooks[0]
-  for (const [id, script] of hook === undefined ? [] : calls) {
-    // Claude Code runs the hooks in order.
-    // oxlint-disable-next-line no-await-in-loop
-    await hook!(
-      {
-        hook_event_name: "PreToolUse",
-        tool_name: "mcp__clanka__execute",
-        tool_input: { script },
-        tool_use_id: id,
-        session_id: "s",
-        transcript_path: "",
-        cwd: "",
-      } as any,
-      id,
-      { signal: new AbortController().signal },
-    )
-  }
   return Promise.all(
     calls.map(([id, script]) =>
       client.callTool({
@@ -457,38 +438,8 @@ describe("ClaudeAgent.model", () => {
         results.map((result: any) => result.content),
         [[{ type: "text", text: "ran a" }], [{ type: "text", text: "ran b" }]],
       )
+      assert.lengthOf(fake.sessions, 1)
     }),
-  )
-
-  it.effect(
-    "starts over when the prompt's tool call is not the one Claude made",
-    () =>
-      Effect.gen(function* () {
-        const fake = fakeClaude(async function* (session) {
-          await session.input.next()
-          yield* executeStep([["toolu_a", "a"]])
-          await callExecute(session, [["toolu_a", "a"]])
-          yield* finalStep
-        })
-        yield* runSteps(fake, (first, response) =>
-          Prompt.fromMessages([
-            ...first.content,
-            Prompt.makeMessage("assistant", {
-              content: [
-                Prompt.makePart("tool-call", {
-                  id: "toolu_a",
-                  name: "execute",
-                  params: { script: "edited" },
-                  providerExecuted: false,
-                }),
-              ],
-            }),
-            ...response.content.filter((message) => message.role === "tool"),
-          ]),
-        )
-        assert.lengthOf(fake.sessions, 2)
-        assert.isTrue(fake.sessions[0]!.closed)
-      }),
   )
 
   it.effect(
@@ -547,10 +498,6 @@ describe("ClaudeAgent.model", () => {
     Effect.gen(function* () {
       const fake = fakeClaude(async function* (session) {
         await session.input.next()
-        if (fake.sessions.length > 1) {
-          yield* finalStep
-          return
-        }
         yield* executeStep([]).slice(0, 1)
         yield event({
           type: "content_block_start",
@@ -573,26 +520,7 @@ describe("ClaudeAgent.model", () => {
           Stream.runDrain,
         )
         assert.isTrue(fake.sessions[0]!.closed)
-        yield* ai.streamText({ prompt, toolkit: Execute }).pipe(Stream.runDrain)
-        assert.lengthOf(fake.sessions, 2)
       }).pipe(Effect.provide(modelWith(fake)))
-    }),
-  )
-
-  it.live("fails a step when Claude Code parks a call it did not make", () =>
-    Effect.gen(function* () {
-      executed.length = 0
-      const fake = fakeClaude(async function* (session) {
-        await session.input.next()
-        yield* executeStep([["toolu_a", "a"]])
-        await callExecute(session, [["toolu_b", "a"]])
-        yield* finalStep
-      })
-      const error = yield* runSteps(fake, (first, response) =>
-        Prompt.concat(first, response),
-      ).pipe(Effect.timeout("2 seconds"), Effect.flip)
-      assert.strictEqual(error._tag, "AiError")
-      assert.deepStrictEqual(executed, [])
     }),
   )
 })

@@ -10,14 +10,15 @@ const user = (value: string) =>
   Prompt.makeMessage("user", { content: [text(value)] })
 
 // Estimation treats image payloads as opaque; no image decoder is involved.
-const imageMessage = (size: number) =>
+const imageBytes = (size: number) => new Uint8Array(size).fill(137)
+const imageMessage = (data: string | Uint8Array) =>
   Prompt.makeMessage("user", {
     content: [
       text("Describe this screenshot"),
       Prompt.makePart("file", {
         mediaType: "image/png",
         fileName: "screenshot.png",
-        data: new Uint8Array(size).fill(137),
+        data,
       }),
     ],
   })
@@ -52,9 +53,15 @@ const toolResult = (result: string) =>
   })
 
 describe("Compaction image token estimates", () => {
-  for (const representation of ["binary", "reloaded base64"] as const) {
+  // Older releases persisted image bytes as plain base64 strings, so those
+  // histories still reload with string data.
+  for (const representation of ["binary", "base64", "reloaded"] as const) {
     const history = (size: number) => {
-      const prompt = Prompt.fromMessages([imageMessage(size)])
+      const bytes = imageBytes(size)
+      if (representation === "base64") {
+        return reload(Prompt.fromMessages([imageMessage(Base64.encode(bytes))]))
+      }
+      const prompt = Prompt.fromMessages([imageMessage(bytes)])
       return representation === "binary" ? prompt : reload(prompt)
     }
 
@@ -130,8 +137,8 @@ describe("Compaction image token estimates", () => {
     })
   }
 
-  it("preserves estimates across the binary-to-base64 persistence round trip", () => {
-    const prompt = Prompt.fromMessages([imageMessage(1024)])
+  it("preserves binary data and estimates across the persistence round trip", () => {
+    const prompt = Prompt.fromMessages([imageMessage(imageBytes(1024))])
     const restored = reload(prompt)
     const message = restored.content[0]!
     assert.strictEqual(message.role, "user")
@@ -139,10 +146,7 @@ describe("Compaction image token estimates", () => {
     const image = message.content[1]!
     assert.strictEqual(image.type, "file")
     if (image.type !== "file") return
-    assert.strictEqual(
-      image.data,
-      Base64.encode(new Uint8Array(1024).fill(137)),
-    )
+    assert.deepStrictEqual(image.data, imageBytes(1024))
     assert.strictEqual(
       Compaction.estimateTokens(restored),
       Compaction.estimateTokens(prompt),
@@ -154,7 +158,7 @@ describe("Compaction image token estimates", () => {
   })
 
   it("charges for each image rather than ignoring all file parts", () => {
-    const one = imageMessage(32)
+    const one = imageMessage(imageBytes(32))
     const two = Prompt.makeMessage("user", {
       content: [...one.content, one.content[1]!],
     })

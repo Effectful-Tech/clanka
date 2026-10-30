@@ -399,8 +399,15 @@ const Execute = Toolkit.make(
   }),
 )
 
+// The scripts clanka's `execute` handler ran.
+const executed: Array<string> = []
+
 const ExecuteHandlers = Execute.toLayer({
-  execute: ({ script }) => Effect.succeed(`ran ${script}`),
+  execute: ({ script }) =>
+    Effect.sync(() => {
+      executed.push(script)
+      return `ran ${script}`
+    }),
 })
 
 const modelWith = (fake: ReturnType<typeof fakeClaude>) =>
@@ -493,19 +500,22 @@ describe("ClaudeAgent.model", () => {
           ["toolu_b", "b"],
         ] as const
         let results: ReadonlyArray<unknown> = []
+        executed.length = 0
         const fake = fakeClaude(async function* (session) {
           await session.input.next()
           yield* executeStep(calls)
           results = await callExecute(session, calls, false)
           yield* finalStep
         })
-        yield* runSteps(fake, (first, response) =>
-          Prompt.concat(first, response),
+        // The step may fail; what matters is that no script runs.
+        yield* Effect.exit(
+          runSteps(fake, (first, response) => Prompt.concat(first, response)),
         )
         assert.deepStrictEqual(
           results.map((result: any) => result.isError),
           [true, true],
         )
+        assert.deepStrictEqual(executed, [])
       }),
   )
 

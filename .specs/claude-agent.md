@@ -69,9 +69,11 @@ parked:
   could run a script Claude Code never waits for. Then Effect runs the real
   `execute` handlers, and the Agent appends the calls and results to history
   as for any provider.
-- An untagged request, or a `tool_result` from Claude Code for a call that
-  never parked (Claude Code answered it itself), fails the step with a
-  non-retryable `AiError` before any script runs.
+- An untagged request, a `tool_result` from Claude Code for a call that
+  never parked (Claude Code answered it itself), or, once the tool message's
+  `message_stop` is read, a request tagged with an id that message never
+  called, fails the step with a non-retryable `AiError` before any script
+  runs.
 - The next `streamText` resolves the parked handlers with those results and
   reads the next step from the same process.
 - A step also ends when Claude Code finishes its turn (`result`), with finish

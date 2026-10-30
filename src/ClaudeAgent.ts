@@ -942,12 +942,26 @@ const readStep = (
     let finish: Response.FinishPartEncoded | undefined
     let text = ""
 
-    const release = (): Array<Response.StreamPartEncoded> => {
-      if (finish === undefined || !calls.every((call) => parked.has(call.id))) {
-        return []
+    // Once the tool message's `message_stop` is read, every call it made is
+    // known, so a park for any other id can never be released.
+    const release = (): Effect.Effect<
+      Array<Response.StreamPartEncoded>,
+      AiError.AiError
+    > => {
+      if (finish === undefined) return Effect.succeed([])
+      const unknown = [...parked].find(
+        (id) => !calls.some((call) => call.id === id),
+      )
+      if (unknown !== undefined) {
+        return Effect.fail(
+          unknownError(
+            `Claude Code called clanka for tool call ${unknown}, which it never made.`,
+          ),
+        )
       }
+      if (!calls.every((call) => parked.has(call.id))) return Effect.succeed([])
       session.outcome = { _tag: "Tools", calls, text }
-      return [...calls, finish]
+      return Effect.succeed([...calls, finish])
     }
 
     const handle = (
@@ -962,7 +976,7 @@ const readStep = (
           )
         }
         parked.add(event.id)
-        return Effect.succeed(release())
+        return release()
       }
       if (event.type === "user" && event.parent_tool_use_id === null) {
         const answered = toolResultIds(event).find(
@@ -976,7 +990,7 @@ const readStep = (
           )
         }
       }
-      return Effect.map(convert(event), (parts) => {
+      return Effect.flatMap(convert(event), (parts) => {
         const out: Array<Response.StreamPartEncoded> = []
         for (const part of parts) {
           if (part.type === "tool-call") {
@@ -991,7 +1005,7 @@ const readStep = (
             out.push(part)
           }
         }
-        return [...out, ...release()]
+        return Effect.map(release(), (released) => [...out, ...released])
       })
     }
 

@@ -8,7 +8,9 @@
  * @since 1.0.0
  */
 import type * as Sdk from "@anthropic-ai/claude-agent-sdk"
-import * as Cause from "effect/Cause"
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
+import * as Array from "effect/Array"
+import type * as Cause from "effect/Cause"
 import * as Effect from "effect/Effect"
 import * as Base64 from "effect/encoding/Base64"
 import * as Exit from "effect/Exit"
@@ -505,36 +507,6 @@ export const toStreamParts = <E, R>(
 // Sessions
 // =============================================================================
 
-// A JS async iterable of user messages: the streaming input of a `query()`.
-class InputQueue implements AsyncIterable<Sdk.SDKUserMessage> {
-  private readonly items: Array<Sdk.SDKUserMessage> = []
-  private wake: (() => void) | undefined
-  private closed = false
-  push(message: Sdk.SDKUserMessage) {
-    this.items.push(message)
-    this.wake?.()
-  }
-  close() {
-    this.closed = true
-    this.wake?.()
-  }
-  async *[Symbol.asyncIterator]() {
-    while (true) {
-      const item = this.items.shift()
-      if (item !== undefined) {
-        yield item
-        continue
-      }
-      if (this.closed) return
-      // oxlint-disable-next-line no-await-in-loop
-      await new Promise<void>((resolve) => {
-        this.wake = resolve
-      })
-      this.wake = undefined
-    }
-  }
-}
-
 const userMessage = (
   content: ReadonlyArray<ContentBlock>,
   priority?: "next",
@@ -545,38 +517,21 @@ const userMessage = (
   ...(priority === undefined ? {} : { priority }),
 })
 
-interface CallToolResult {
-  readonly content: Array<
-    | { readonly type: "text"; readonly text: string }
-    | {
-        readonly type: "image"
-        readonly data: string
-        readonly mimeType: string
-      }
-  >
-  readonly isError?: boolean
-}
+const errorResult = (text: string): CallToolResult => ({
+  isError: true,
+  content: [{ type: "text", text }],
+})
 
 // The parked tool calls, keyed by the tool use id Claude Code tags each MCP
 // call with. `onCall` reports each request as it arrives, `undefined` for an
 // untagged one. A handler waits until the next step resolves its call with
 // clanka's result.
 const makeToolBridge = (onCall: (id: string | undefined) => void) => {
-  const calls = new Map<
-    string,
-    {
-      readonly promise: Promise<CallToolResult>
-      readonly resolve: (result: CallToolResult) => void
-    }
-  >()
+  const calls = new Map<string, PromiseWithResolvers<CallToolResult>>()
   const entry = (id: string) => {
     let call = calls.get(id)
     if (call === undefined) {
-      let resolve!: (result: CallToolResult) => void
-      const promise = new Promise<CallToolResult>((done) => {
-        resolve = done
-      })
-      call = { promise, resolve }
+      call = Promise.withResolvers<CallToolResult>()
       calls.set(id, call)
     }
     return call
@@ -585,12 +540,7 @@ const makeToolBridge = (onCall: (id: string | undefined) => void) => {
     async call(id: string | undefined): Promise<CallToolResult> {
       onCall(id)
       // Never guess which call an untagged request is.
-      if (id === undefined) {
-        return {
-          isError: true,
-          content: [{ type: "text", text: "Missing tool use id" }],
-        }
-      }
+      if (id === undefined) return errorResult("Missing tool use id")
       const result = await entry(id).promise
       calls.delete(id)
       return result
@@ -599,12 +549,7 @@ const makeToolBridge = (onCall: (id: string | undefined) => void) => {
       entry(id).resolve(result)
     },
     cancel() {
-      for (const call of calls.values()) {
-        call.resolve({
-          isError: true,
-          content: [{ type: "text", text: "Cancelled" }],
-        })
-      }
+      for (const call of calls.values()) call.resolve(errorResult("Cancelled"))
       calls.clear()
     },
   }
@@ -640,11 +585,11 @@ const makeToolServer = (
       server.setRequestHandler(ListToolsRequestSchema, async () => ({
         tools: definitions,
       }))
-      server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      server.setRequestHandler(CallToolRequestSchema, (request) => {
         const toolUseId = request.params._meta?.["claudecode/toolUseId"]
-        return (await bridge.call(
+        return bridge.call(
           typeof toolUseId === "string" ? toolUseId : undefined,
-        )) as any
+        )
       })
       return {
         type: "sdk" as const,
@@ -669,25 +614,29 @@ const loadSdk = Effect.tryPromise({
 const executableNames =
   process.platform === "win32" ? ["claude.exe", "claude.cmd"] : ["claude"]
 
+const isExecutable = (path: string) => {
+  try {
+    Fs.accessSync(path, Fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
 const findExecutable = Effect.suspend(() => {
-  const configured = process.env.CLANKA_CLAUDE_PATH
-  if (configured !== undefined && configured !== "") {
-    return Effect.succeed(configured)
-  }
-  for (const dir of (process.env.PATH ?? "").split(Path.delimiter)) {
-    for (const name of executableNames) {
-      const candidate = Path.join(dir, name)
-      try {
-        Fs.accessSync(candidate, Fs.constants.X_OK)
-        return Effect.succeed(candidate)
-      } catch {}
-    }
-  }
-  return Effect.fail(
-    unknownError(
-      "Claude Code was not found. Install Claude Code and run `claude auth login`, or set CLANKA_CLAUDE_PATH.",
-    ),
-  )
+  const found =
+    process.env.CLANKA_CLAUDE_PATH ||
+    (process.env.PATH ?? "")
+      .split(Path.delimiter)
+      .flatMap((dir) => executableNames.map((name) => Path.join(dir, name)))
+      .find(isExecutable)
+  return found === undefined
+    ? Effect.fail(
+        unknownError(
+          "Claude Code was not found. Install Claude Code and run `claude auth login`, or set CLANKA_CLAUDE_PATH.",
+        ),
+      )
+    : Effect.succeed(found)
 })
 
 const compareVersions = (a: string, b: string) => {
@@ -706,9 +655,18 @@ type SessionEvent =
   | Sdk.SDKMessage
   | { readonly type: "clanka_parked"; readonly id: string | undefined }
 
+// How a step ended: with the text it emitted and the tool calls it holds
+// parked, or by ending Claude's turn.
+interface Outcome {
+  readonly _tag: "Tools" | "Stop"
+  readonly calls: ReadonlyArray<Response.ToolCallPartEncoded>
+  readonly text: string
+}
+
 interface Session {
   readonly query: Sdk.Query
-  readonly input: InputQueue
+  // The streaming input of the `query()`.
+  readonly input: Queue.Queue<Sdk.SDKUserMessage, Cause.Done>
   readonly bridge: ToolBridge
   readonly messages: Queue.Queue<SessionEvent, AiError.AiError | Cause.Done>
   readonly scope: Scope.Closeable
@@ -716,21 +674,16 @@ interface Session {
   // The prompt of the last step, and how that step ended. `undefined`
   // while a step runs.
   seen: ReadonlyArray<Prompt.Message>
-  outcome:
-    | {
-        readonly _tag: "Tools" | "Stop"
-        readonly calls: ReadonlyArray<Response.ToolCallPartEncoded>
-        readonly text: string
-      }
-    | undefined
+  outcome: Outcome | undefined
 }
 
 const closeSession = (session: Session) =>
   Effect.suspend(() => {
     session.bridge.cancel()
-    session.input.close()
     session.query.close()
-    return Scope.close(session.scope, Exit.void)
+    return Queue.end(session.input).pipe(
+      Effect.andThen(Scope.close(session.scope, Exit.void)),
+    )
   })
 
 const startSession = Effect.fnUntraced(function* (
@@ -751,11 +704,11 @@ const startSession = Effect.fnUntraced(function* (
   const mcpServers = withTools
     ? { [serverName]: yield* makeToolServer(provider.tools, bridge) }
     : {}
-  const input = new InputQueue()
-  input.push(userMessage(toUserContent(provider.prompt)))
-  if (!withTools) input.close()
+  const input = yield* Queue.make<Sdk.SDKUserMessage, Cause.Done>()
+  Queue.offerUnsafe(input, userMessage(toUserContent(provider.prompt)))
+  if (!withTools) yield* Queue.end(input)
   const session = query({
-    prompt: input,
+    prompt: Stream.toAsyncIterable(Stream.fromQueue(input)),
     options: {
       ...queryOptions({
         model,
@@ -818,11 +771,27 @@ const isImageOnly = (message: Prompt.Message) =>
   message.content.length > 0 &&
   message.content.every((part) => part.type === "file")
 
-// How `prompt` continues the live session: the response of the last step,
-// with the text and tool calls it emitted, then their results, then user
-// messages.
-// `undefined` when it does not, and the session has to start over with the
-// full history.
+// What a step emitted, as its assistant message in the history must hold.
+const emitted = (outcome: Outcome) => ({
+  text: outcome.text,
+  calls: outcome.calls.map(({ id, name, params }) => ({ id, name, params })),
+})
+
+const appended = (message: Prompt.AssistantMessage) => ({
+  text: message.content
+    .flatMap((part) => (part.type === "text" ? [part.text] : []))
+    .join(""),
+  calls: message.content.flatMap((part) =>
+    part.type === "tool-call" && !part.providerExecuted
+      ? [{ id: part.id, name: part.name, params: part.params }]
+      : [],
+  ),
+})
+
+// How `prompt` continues the live session: the messages of the last step,
+// then its response as emitted, then a result for each of its tool calls,
+// then user messages (at least one after a `Stop`). `undefined` when it does
+// not, and the session has to start over with the full history.
 const continuation = (
   session: Session,
   provider: LanguageModel.ProviderOptions,
@@ -834,81 +803,64 @@ const continuation = (
   if (
     outcome === undefined ||
     session.toolNames !== provider.tools.map((tool) => tool.name).join(",") ||
-    response?.role !== "assistant"
+    response?.role !== "assistant" ||
+    !seen.every((message, i) => messages[i] === message) ||
+    !isDeepStrictEqual(appended(response), emitted(outcome))
   ) {
     return undefined
   }
-  for (let i = 0; i < seen.length; i++) {
-    if (messages[i] !== seen[i]) return undefined
-  }
-  const emitted = outcome.calls
-  const calls = response.content.flatMap((part) =>
-    part.type === "tool-call" && !part.providerExecuted ? [part] : [],
+  const [toolMessages, users] = Array.span(
+    messages.slice(seen.length + 1),
+    (message): message is Prompt.ToolMessage => message.role === "tool",
   )
-  const text = response.content
-    .flatMap((part) => (part.type === "text" ? [part.text] : []))
-    .join("")
-  if (
-    text !== outcome.text ||
-    calls.length !== emitted.length ||
-    !emitted.every(
-      (call, i) =>
-        calls[i]!.id === call.id &&
-        calls[i]!.name === call.name &&
-        isDeepStrictEqual(calls[i]!.params, call.params),
-    )
-  ) {
-    return undefined
-  }
-  let rest = messages.slice(seen.length + 1)
-  const results = new Map<string, Prompt.ToolResultPart>()
-  while (rest[0]?.role === "tool") {
-    for (const part of rest[0].content) {
-      if (part.type === "tool-result") results.set(part.id, part)
-    }
-    rest = rest.slice(1)
-  }
-  const ids = emitted.map((call) => call.id)
+  const results = new Map(
+    toolMessages.flatMap((message) =>
+      message.content.flatMap((part) =>
+        part.type === "tool-result" ? [[part.id, part] as const] : [],
+      ),
+    ),
+  )
+  const ids = outcome.calls.map((call) => call.id)
   if (
     results.size !== ids.length ||
     !ids.every((id) => results.has(id)) ||
-    !rest.every((message) => message.role === "user") ||
-    (outcome._tag === "Stop" && rest.length === 0)
+    !users.every((message) => message.role === "user") ||
+    (outcome._tag === "Stop" && users.length === 0)
   ) {
     return undefined
   }
-  return { ids, results, users: rest }
+  return { ids, results, users }
 }
 
 const continueSession = (
   session: Session,
   plan: NonNullable<ReturnType<typeof continuation>>,
 ) => {
-  let users = plan.users
   const results = plan.ids.map((id) => toolResult(plan.results.get(id)!))
-  // Images from the tool calls follow their results; they go back with the
-  // last result.
+  // Images attached by the tool calls follow their results; they go back
+  // with the last result.
   const last = results.at(-1)
-  const images =
-    last === undefined ? 0 : users.findIndex((message) => !isImageOnly(message))
-  const attached = images === -1 ? users.length : images
-  for (const block of toUserContent(
-    Prompt.fromMessages(users.slice(0, attached)),
-  )) {
-    if (block.type === "image") {
-      last?.content.push({
-        type: "image",
-        data: block.source.data,
-        mimeType: block.source.media_type,
-      })
+  let users = plan.users
+  if (last !== undefined) {
+    while (users[0] !== undefined && isImageOnly(users[0])) {
+      for (const block of toUserContent(Prompt.fromMessages([users[0]]))) {
+        if (block.type === "image") {
+          last.content.push({
+            type: "image",
+            data: block.source.data,
+            mimeType: block.source.media_type,
+          })
+        }
+      }
+      users = users.slice(1)
     }
   }
-  users = users.slice(attached)
   if (users.length > 0) {
-    session.input.push(
+    Queue.offerUnsafe(
+      session.input,
       userMessage(
         toUserContent(Prompt.fromMessages(users)),
-        results.length > 0 ? "next" : undefined,
+        last === undefined ? undefined : "next",
       ),
     )
   }
@@ -993,33 +945,40 @@ const readStep = (
       return Effect.flatMap(convert(event), (parts) => {
         const out: Array<Response.StreamPartEncoded> = []
         for (const part of parts) {
-          if (part.type === "tool-call") {
-            calls.push(part)
-          } else if (part.type === "finish" && part.reason === "tool-calls") {
-            finish = part
-          } else {
-            if (part.type === "text-delta") text += part.delta
-            if (part.type === "finish") {
+          switch (part.type) {
+            case "tool-call":
+              calls.push(part)
+              break
+            case "text-delta":
+              text += part.delta
+              out.push(part)
+              break
+            case "finish":
+              if (part.reason === "tool-calls") {
+                finish = part
+                break
+              }
               session.outcome = { _tag: "Stop", calls: [], text }
-            }
-            out.push(part)
+              out.push(part)
+              break
+            default:
+              out.push(part)
           }
         }
         return Effect.map(release(), (released) => [...out, ...released])
       })
     }
 
-    return Stream.fromEffectRepeat(
-      Queue.take(session.messages).pipe(
-        Effect.catchIf(Cause.isDone, () =>
-          Effect.fail(
-            unknownError("Claude Code stopped before finishing its reply"),
-          ),
-        ),
-      ),
-    ).pipe(
+    return Stream.fromQueue(session.messages).pipe(
       Stream.mapEffect(handle),
       Stream.flattenIterable,
+      // The queue ends when Claude Code exits, so reaching this means it
+      // stopped mid-step.
+      Stream.concat(
+        Stream.fail(
+          unknownError("Claude Code stopped before finishing its reply"),
+        ),
+      ),
       Stream.takeUntil((part) => part.type === "finish"),
       Stream.onExit(() =>
         session.outcome === undefined ? onAbandon : Effect.void,

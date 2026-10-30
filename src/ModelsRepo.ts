@@ -193,9 +193,9 @@ export class ModelsRepo extends Context.Service<
   /**
    * The catalog built from `https://models.dev/api.json`: the `openai`,
    * `github-copilot`, `xai` and `anthropic` (as `claude`) text models that
-   * are not deprecated and accept tool calls. Keeps the 10 newest models by release date, then name
-   * alphabetically, with undated models last. Cached in the `KeyValueStore`
-   * for `ttl` (default 24 hours).
+   * are not deprecated and accept tool calls. Keeps the 10 newest models by
+   * release date, then name alphabetically, with undated models last. Cached
+   * in the `KeyValueStore` for `ttl` (default 24 hours).
    * Serves the cached catalog when the fetch fails, then `fallback`.
    *
    * @since 1.0.0

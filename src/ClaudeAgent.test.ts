@@ -301,11 +301,13 @@ const fakeClaude = (run: (session: FakeSession) => AsyncGenerator<object>) => {
   return { sessions, query: query as unknown as typeof SdkQuery }
 }
 
-// Claude Code calling clanka's `execute` tool: the PreToolUse hooks, then the
-// MCP calls, each tagged with its tool use id.
+// Claude Code calling clanka's `execute` tool: the PreToolUse hooks, if any,
+// then the MCP calls, each tagged with its tool use id unless `tagged` is
+// false.
 const callExecute = async (
   session: FakeSession,
   calls: ReadonlyArray<readonly [id: string, script: string]>,
+  tagged = true,
 ) => {
   const server = session.options.mcpServers?.clanka as {
     readonly instance: {
@@ -317,11 +319,11 @@ const callExecute = async (
   await server.instance.connect(serverTransport)
   const client = new Client({ name: "claude-code", version: "0.0.0" })
   await client.connect(clientTransport)
-  const hook = session.options.hooks!.PreToolUse![0]!.hooks[0]!
-  for (const [id, script] of calls) {
+  const hook = session.options.hooks?.PreToolUse?.[0]?.hooks[0]
+  for (const [id, script] of hook === undefined ? [] : calls) {
     // Claude Code runs the hooks in order.
     // oxlint-disable-next-line no-await-in-loop
-    await hook(
+    await hook!(
       {
         hook_event_name: "PreToolUse",
         tool_name: "mcp__clanka__execute",
@@ -340,7 +342,7 @@ const callExecute = async (
       client.callTool({
         name: "execute",
         arguments: { script },
-        _meta: { "claudecode/toolUseId": id },
+        ...(tagged ? { _meta: { "claudecode/toolUseId": id } } : {}),
       }),
     ),
   )
@@ -401,6 +403,15 @@ const ExecuteHandlers = Execute.toLayer({
   execute: ({ script }) => Effect.succeed(`ran ${script}`),
 })
 
+const modelWith = (fake: ReturnType<typeof fakeClaude>) =>
+  Layer.merge(
+    ClaudeAgent.model("claude-opus-5-5", {
+      executable: "/fake/claude",
+      query: fake.query,
+    }),
+    ExecuteHandlers,
+  )
+
 const runSteps = Effect.fnUntraced(function* (
   fake: ReturnType<typeof fakeClaude>,
   next: (first: Prompt.Prompt, response: Prompt.Prompt) => Prompt.Prompt,
@@ -417,17 +428,7 @@ const runSteps = Effect.fnUntraced(function* (
         toolkit: Execute,
       })
       .pipe(Stream.runCollect)
-  }).pipe(
-    Effect.provide(
-      Layer.merge(
-        ClaudeAgent.model("claude-opus-5-5", {
-          executable: "/fake/claude",
-          query: fake.query,
-        }),
-        ExecuteHandlers,
-      ),
-    ),
-  )
+  }).pipe(Effect.provide(modelWith(fake)))
 })
 
 describe("ClaudeAgent.model", () => {
@@ -481,5 +482,90 @@ describe("ClaudeAgent.model", () => {
         assert.lengthOf(fake.sessions, 2)
         assert.isTrue(fake.sessions[0]!.closed)
       }),
+  )
+
+  it.effect(
+    "fails untagged calls instead of guessing which call they are",
+    () =>
+      Effect.gen(function* () {
+        const calls = [
+          ["toolu_a", "a"],
+          ["toolu_b", "b"],
+        ] as const
+        let results: ReadonlyArray<unknown> = []
+        const fake = fakeClaude(async function* (session) {
+          await session.input.next()
+          yield* executeStep(calls)
+          results = await callExecute(session, calls, false)
+          yield* finalStep
+        })
+        yield* runSteps(fake, (first, response) =>
+          Prompt.concat(first, response),
+        )
+        assert.deepStrictEqual(
+          results.map((result: any) => result.isError),
+          [true, true],
+        )
+      }),
+  )
+
+  it.effect(
+    "starts over when the prompt's answer is not the one Claude gave",
+    () =>
+      Effect.gen(function* () {
+        const fake = fakeClaude(async function* (session) {
+          await session.input.next()
+          yield* finalStep
+          await session.input.next()
+          yield* finalStep
+        })
+        yield* runSteps(fake, (first) =>
+          Prompt.fromMessages([
+            ...first.content,
+            Prompt.makeMessage("assistant", {
+              content: [Prompt.makePart("text", { text: "Edited." })],
+            }),
+            user("Repeat your answer"),
+          ]),
+        )
+        assert.lengthOf(fake.sessions, 2)
+        assert.isTrue(fake.sessions[0]!.closed)
+      }),
+  )
+
+  it.effect("closes Claude Code when a step is cut short", () =>
+    Effect.gen(function* () {
+      const fake = fakeClaude(async function* (session) {
+        await session.input.next()
+        if (fake.sessions.length > 1) {
+          yield* finalStep
+          return
+        }
+        yield* executeStep([]).slice(0, 1)
+        yield event({
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        })
+        yield event({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Working" },
+        })
+        await new Promise(() => {})
+      })
+      const prompt = Prompt.fromMessages([system, user("go")])
+      yield* Effect.gen(function* () {
+        const ai = yield* LanguageModel.LanguageModel
+        // Steering cuts the stream after a text part, as Agent does.
+        yield* ai.streamText({ prompt, toolkit: Execute }).pipe(
+          Stream.takeUntil((part) => part.type === "text-delta"),
+          Stream.runDrain,
+        )
+        assert.isTrue(fake.sessions[0]!.closed)
+        yield* ai.streamText({ prompt, toolkit: Execute }).pipe(Stream.runDrain)
+        assert.lengthOf(fake.sessions, 2)
+      }).pipe(Effect.provide(modelWith(fake)))
+    }),
   )
 })

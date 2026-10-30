@@ -151,6 +151,10 @@ const provider = Flag.Literals("provider", providers).pipe(
           title: "xai",
           value: "xai",
         },
+        {
+          title: "claude",
+          value: "claude",
+        },
       ],
     }),
   ),

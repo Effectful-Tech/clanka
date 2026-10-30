@@ -13,6 +13,7 @@ import * as Option from "effect/Option"
 import * as Schema from "effect/Schema"
 import { ThoughtLevel } from "./Acp.ts"
 import * as Agent from "./Agent.ts"
+import * as ClaudeAgent from "./ClaudeAgent.ts"
 import * as Codex from "./Codex.ts"
 import * as Copilot from "./Copilot.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
@@ -71,9 +72,11 @@ export const make = (
       ? withSubagentModel(Xai.modelWebSocket(model, options)).pipe(
           Layer.provide(Xai.layerClient),
         )
-      : withSubagentModel(Copilot.model(model, options)).pipe(
-          Layer.provide(Copilot.layerClient),
-        )
+      : provider === "claude"
+        ? withSubagentModel(ClaudeAgent.model(model, { effort }))
+        : withSubagentModel(Copilot.model(model, options)).pipe(
+            Layer.provide(Copilot.layerClient),
+          )
 }
 
 const isProvider = Schema.is(ModelsRepo.Provider)

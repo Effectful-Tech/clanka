@@ -49,6 +49,60 @@ which tier actually handles a request. Without fast mode clanka sends no
 service tier, so the account or project default applies, which may itself be
 fast; the ACP option labels this choice "Default".
 
+## Claude Agent
+
+The `claude` provider runs Claude models through the
+[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview) and
+your own installed Claude Code. clanka keeps its own loop, tools, instructions
+and history. Claude Code only makes the model calls, with none of its own
+tools, settings, hooks, memory or skills.
+
+Setup:
+
+1. Install [Claude Code](https://code.claude.com) 2.1.248 or later on the same
+   machine, and log in with `claude auth login`, or configure an API key,
+   Bedrock, Vertex or Foundry the way Claude Code documents.
+2. Install the SDK next to clanka. It is an optional peer dependency, so it
+   is not installed with clanka:
+
+   ```sh
+   npm install -g clanka @anthropic-ai/claude-agent-sdk --omit=optional
+   ```
+
+   `--omit=optional` skips the SDK's bundled Claude Code binary (about
+   270 MB), which clanka never runs.
+
+3. Pick a model:
+
+   ```sh
+   clanka --provider claude --model claude-opus-5-5/high
+   clanka acp --model claude/claude-opus-5-5/high
+   ```
+
+   Model ids are Anthropic's (`claude-opus-5-5`, `claude-sonnet-5-5`, …).
+   Efforts are `low` to `max`; `minimal` runs as `low` and `none` turns
+   thinking off.
+
+clanka looks for `claude` on the `PATH`. Set `CLANKA_CLAUDE_PATH` to use
+another executable.
+
+Authentication is Claude Code's. clanka never reads, stores or forwards its
+credentials, and never prompts for a login. API keys and cloud providers are
+the supported setups for developers. If you log Claude Code in with your own
+Claude subscription, that is your own individual use under Anthropic's
+consumer terms, and subscription usage limits apply. Don't use it to give
+other people access through your account. See Anthropic's
+[usage policy](https://code.claude.com/docs/en/legal-and-compliance#usage-policy).
+
+Limitations:
+
+- No fast mode and no cost display.
+- `execute` calls run one at a time.
+- Each conversation runs its own `claude` process, stopped with the agent. In
+  `clanka acp` a process starts for each prompt, with the history sent again.
+- Claude Code features such as plan mode, memory, skills, sub-agents, auto
+  mode and `/usage` are off.
+
 ## MCP servers
 
 clanka can use the tools of MCP servers, over stdio or streamable HTTP. The CLI

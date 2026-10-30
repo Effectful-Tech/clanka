@@ -23,7 +23,7 @@ import { ThoughtLevel } from "./Acp.ts"
  * @since 1.0.0
  * @category Models
  */
-export const Provider = Schema.Literals(["openai", "copilot", "xai"])
+export const Provider = Schema.Literals(["openai", "copilot", "xai", "claude"])
 
 /**
  * @since 1.0.0
@@ -76,6 +76,12 @@ export const fallback: ReadonlyArray<ModelInfo> = [
     name: "Grok 4.6",
     efforts: ["low", "medium", "high", "xhigh"],
   }),
+  new ModelInfo({
+    provider: "claude",
+    id: "claude-opus-5-5",
+    name: "Claude Opus 5.5",
+    efforts: ["low", "medium", "high", "xhigh", "max"],
+  }),
 ]
 
 // The fields of a models.dev model entry the catalog reads. Entries are
@@ -106,6 +112,7 @@ const providerIds: ReadonlyArray<readonly [string, Provider]> = [
   ["openai", "openai"],
   ["github-copilot", "copilot"],
   ["xai", "xai"],
+  ["anthropic", "claude"],
 ]
 
 const ModelsDevApi = Schema.Struct(
@@ -185,8 +192,8 @@ export class ModelsRepo extends Context.Service<
 
   /**
    * The catalog built from `https://models.dev/api.json`: the `openai`,
-   * `github-copilot` and `xai` text models that are not deprecated and accept
-   * tool calls. Keeps the 10 newest models by release date, then name
+   * `github-copilot`, `xai` and `anthropic` (as `claude`) text models that
+   * are not deprecated and accept tool calls. Keeps the 10 newest models by release date, then name
    * alphabetically, with undated models last. Cached in the `KeyValueStore`
    * for `ttl` (default 24 hours).
    * Serves the cached catalog when the fetch fails, then `fallback`.

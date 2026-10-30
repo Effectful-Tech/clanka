@@ -31,6 +31,8 @@ export default defineConfig({
       "sqlite-vec",
       "@silvia-odwyer/photon-node",
       "@vscode/ripgrep",
+      // Optional: the claude provider loads it on first use.
+      "@anthropic-ai/claude-agent-sdk",
     ],
   },
 })

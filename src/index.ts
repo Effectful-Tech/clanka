@@ -27,6 +27,11 @@ export * as AgentTools from "./AgentTools.ts"
 /**
  * @since 1.0.0
  */
+export * as ClaudeAgent from "./ClaudeAgent.ts"
+
+/**
+ * @since 1.0.0
+ */
 export * as Codex from "./Codex.ts"
 
 /**

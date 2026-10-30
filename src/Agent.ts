@@ -832,7 +832,13 @@ ${prompt}`,
       return capped.output
     }, Effect.ensuring(toolLatchRelease))
 
-    if (!modelConfig.systemPromptTransform) {
+    // Keep an unchanged system message as is, so providers that track the
+    // messages they have seen can continue from them.
+    const current = prompt.current.content[0]
+    if (
+      !modelConfig.systemPromptTransform &&
+      !(current?.role === "system" && current.content === system)
+    ) {
       MutableRef.update(prompt, Prompt.setSystem(system))
     }
 

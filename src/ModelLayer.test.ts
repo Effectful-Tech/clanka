@@ -132,4 +132,8 @@ describe("ModelLayer.makeAcp", () => {
   it("rejects ids that are not <provider>:<model>", () => {
     assert.isTrue(Option.isNone(makeModel("nope", "high")))
   })
+
+  it("builds claude models", () => {
+    assert.isTrue(Option.isSome(makeModel("claude:claude-opus-5-5", "high")))
+  })
 })

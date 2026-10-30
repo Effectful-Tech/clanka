@@ -23,6 +23,10 @@
   reads servers from config files and `clanka acp` from ACP `mcpServers`.
 - [Models catalog from models.dev](./models-repo.md) - A `ModelsRepo` service
   that lists the chat models clanka can run. Its models.dev implementation
-  fetches `api.json`, keeps the `openai`, `github-copilot` and `xai` text
-  models, caches the result in the `KeyValueStore`, and feeds the CLI model
-  prompt and the ACP `availableModels` list.
+  fetches `api.json`, keeps the `openai`, `github-copilot`, `xai` and
+  `anthropic` text models, caches the result in the `KeyValueStore`, and feeds
+  the CLI model prompt and the ACP `availableModels` list.
+- [Claude Agent provider](./claude-agent.md) - A `claude` provider that runs
+  Claude models through the Claude Agent SDK and the user's installed Claude
+  Code. clanka keeps its loop, `execute` tool and history; a parked MCP tool
+  bridges each `execute` call back to clanka.

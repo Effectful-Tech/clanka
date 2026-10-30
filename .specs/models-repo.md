@@ -12,14 +12,15 @@ and its `models.dev` implementation builds that catalog from
 Out of scope: validating a typed model against the catalog (a model id stays
 opaque to ACP and is resolved by `makeModel`, so models that models.dev does
 not list yet keep working); pricing, context limits and modalities beyond what
-is needed to pick a model; providers other than `openai`, `copilot` and `xai`;
+is needed to pick a model; providers other than `openai`, `copilot`, `xai`
+and `claude`;
 refreshing the catalog while the process runs.
 
 ## Library: `ModelsRepo`
 
 ```ts
 class ModelInfo {
-  provider: "openai" | "copilot" | "xai"  // clanka provider, as --provider takes it
+  provider: "openai" | "copilot" | "xai" | "claude"  // clanka provider, as --provider takes it
   id: string                               // model id as the provider API expects it
   name: string                             // display name
   efforts: ReadonlyArray<Acp.ThoughtLevel> // reasoning efforts the model accepts, [] if none
@@ -39,25 +40,28 @@ ModelsRepo.fallback: ReadonlyArray<ModelInfo>
   last catalog it cached, then `fallback`, logging a warning when it falls back.
   A CLI without network still starts.
 - `layer` wraps a fixed list; tests and embedders use it.
-- `fallback` is the built-in list of the three defaults the CLI shipped with
-  (`openai/gpt-6-astra`, `copilot/gpt-6-astra`, `xai/grok-4.6`).
+- `fallback` is the built-in list of one default per provider
+  (`openai/gpt-6-astra`, `copilot/gpt-6-astra`, `xai/grok-4.6`,
+  `claude/claude-opus-5-5`).
 
 ### models.dev mapping
 
 `api.json` is keyed by models.dev provider id, each holding a `models` record.
-Only three providers are read:
+Only four providers are read:
 
 | models.dev       | clanka    |
 | ---------------- | --------- |
 | `openai`         | `openai`  |
 | `github-copilot` | `copilot` |
 | `xai`            | `xai`     |
+| `anthropic`      | `claude`  |
 
 A model is kept when it is a text model (no `type` field; `image`, `embedding`,
 `realtime` and `video` entries are dropped), is not `status: "deprecated"` and
 has `tool_call: true` — clanka drives every turn through a tool call. The combined
 catalog is sorted by `release_date` newest first, then by display name
-alphabetically, and capped at 10 models. Models without a release date sort last.
+alphabetically, and each provider is capped at its 10 newest models, so one
+provider cannot crowd out another. Models without a release date sort last.
 
 `efforts` is the `values` of the `reasoning_options` entry with
 `type: "effort"`, filtered to `Acp.ThoughtLevel` literals. Models without an

@@ -13,6 +13,7 @@ import * as Option from "effect/Option"
 import * as Schema from "effect/Schema"
 import { ThoughtLevel } from "./Acp.ts"
 import * as Agent from "./Agent.ts"
+import * as ClaudeAgent from "./ClaudeAgent.ts"
 import * as Codex from "./Codex.ts"
 import * as Copilot from "./Copilot.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
@@ -59,21 +60,26 @@ export const make = (
   const openaiOptions = fastMode
     ? { ...options, service_tier: "priority" }
     : options
-  return provider === "openai"
-    ? openai.apiKey !== undefined
-      ? withSubagentModel(Codex.model(model, openaiOptions)).pipe(
-          Layer.provide(OpenAiClient.layer(openai)),
-        )
-      : withSubagentModel(Codex.modelWebSocket(model, openaiOptions)).pipe(
-          Layer.provide(Codex.layerClient),
-        )
-    : provider === "xai"
-      ? withSubagentModel(Xai.modelWebSocket(model, options)).pipe(
-          Layer.provide(Xai.layerClient),
-        )
-      : withSubagentModel(Copilot.model(model, options)).pipe(
-          Layer.provide(Copilot.layerClient),
-        )
+  switch (provider) {
+    case "openai":
+      return openai.apiKey !== undefined
+        ? withSubagentModel(Codex.model(model, openaiOptions)).pipe(
+            Layer.provide(OpenAiClient.layer(openai)),
+          )
+        : withSubagentModel(Codex.modelWebSocket(model, openaiOptions)).pipe(
+            Layer.provide(Codex.layerClient),
+          )
+    case "xai":
+      return withSubagentModel(Xai.modelWebSocket(model, options)).pipe(
+        Layer.provide(Xai.layerClient),
+      )
+    case "claude":
+      return withSubagentModel(ClaudeAgent.model(model, { effort }))
+    case "copilot":
+      return withSubagentModel(Copilot.model(model, options)).pipe(
+        Layer.provide(Copilot.layerClient),
+      )
+  }
 }
 
 const isProvider = Schema.is(ModelsRepo.Provider)

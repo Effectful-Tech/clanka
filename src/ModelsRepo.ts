@@ -23,7 +23,7 @@ import { ThoughtLevel } from "./Acp.ts"
  * @since 1.0.0
  * @category Models
  */
-export const Provider = Schema.Literals(["openai", "copilot", "xai"])
+export const Provider = Schema.Literals(["openai", "copilot", "xai", "claude"])
 
 /**
  * @since 1.0.0
@@ -76,6 +76,12 @@ export const fallback: ReadonlyArray<ModelInfo> = [
     name: "Grok 4.6",
     efforts: ["low", "medium", "high", "xhigh"],
   }),
+  new ModelInfo({
+    provider: "claude",
+    id: "claude-opus-5-5",
+    name: "Claude Opus 5.5",
+    efforts: ["low", "medium", "high", "xhigh", "max"],
+  }),
 ]
 
 // The fields of a models.dev model entry the catalog reads. Entries are
@@ -106,6 +112,7 @@ const providerIds: ReadonlyArray<readonly [string, Provider]> = [
   ["openai", "openai"],
   ["github-copilot", "copilot"],
   ["xai", "xai"],
+  ["anthropic", "claude"],
 ]
 
 const ModelsDevApi = Schema.Struct(
@@ -117,8 +124,9 @@ const ModelsDevApi = Schema.Struct(
 const decodeModel = Schema.decodeUnknownOption(ModelsDevModel)
 const isThoughtLevel = Schema.is(ThoughtLevel)
 
-const toCatalog = (api: typeof ModelsDevApi.Type): ReadonlyArray<ModelInfo> =>
-  providerIds
+const toCatalog = (api: typeof ModelsDevApi.Type): ReadonlyArray<ModelInfo> => {
+  const counts = new Map<Provider, number>()
+  return providerIds
     .flatMap(([id, provider]) =>
       Object.values(api[id]?.models ?? {}).flatMap((entry) => {
         const model = Option.getOrUndefined(decodeModel(entry))
@@ -138,7 +146,13 @@ const toCatalog = (api: typeof ModelsDevApi.Type): ReadonlyArray<ModelInfo> =>
         (b.release_date ?? "").localeCompare(a.release_date ?? "") ||
         a.name.localeCompare(b.name),
     )
-    .slice(0, 10)
+    .filter((model) => {
+      // Keep the 10 newest per provider, so providers that list many models
+      // (or the same models as another provider) cannot crowd out the rest.
+      const count = (counts.get(model.provider) ?? 0) + 1
+      counts.set(model.provider, count)
+      return count <= 10
+    })
     .map((model) => {
       const effort = model.reasoning_options?.find(
         (option) => option.type === "effort",
@@ -150,6 +164,7 @@ const toCatalog = (api: typeof ModelsDevApi.Type): ReadonlyArray<ModelInfo> =>
         efforts: (effort?.values ?? []).filter(isThoughtLevel),
       })
     })
+}
 
 class CachedCatalog extends Schema.Class<CachedCatalog>(
   "clanka/ModelsRepo/CachedCatalog",
@@ -185,10 +200,11 @@ export class ModelsRepo extends Context.Service<
 
   /**
    * The catalog built from `https://models.dev/api.json`: the `openai`,
-   * `github-copilot` and `xai` text models that are not deprecated and accept
-   * tool calls. Keeps the 10 newest models by release date, then name
-   * alphabetically, with undated models last. Cached in the `KeyValueStore`
-   * for `ttl` (default 24 hours).
+   * `github-copilot`, `xai` and `anthropic` (as `claude`) text models that
+   * are not deprecated and accept tool calls. Keeps the 10 newest models of
+   * each provider by release date, then name alphabetically, with undated
+   * models last. The combined catalog is in that same order. Cached
+   * in the `KeyValueStore` for `ttl` (default 24 hours).
    * Serves the cached catalog when the fetch fails, then `fallback`.
    *
    * @since 1.0.0

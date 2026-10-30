@@ -88,11 +88,12 @@ Setup:
 clanka looks for `claude` on the `PATH`. Set `CLANKA_CLAUDE_PATH` to use
 another executable.
 
-Authentication is Claude Code's. clanka runs Claude Code with clanka's own
-environment, so an `ANTHROPIC_API_KEY` or cloud credentials set there reach
-Claude Code, as they would if you ran `claude` yourself. clanka never
-accesses, stores or intermediates Claude.ai login credentials or OAuth
-tokens, and never prompts for a login.
+Authentication is Claude Code's. clanka never reads, stores or sends
+Claude.ai credentials anywhere, and never prompts for a login. It does run
+Claude Code with clanka's own environment, unchanged, so whatever is set
+there reaches Claude Code as it would if you ran `claude` yourself: an
+`ANTHROPIC_API_KEY`, cloud credentials, or a `CLAUDE_CODE_OAUTH_TOKEN` from
+`claude setup-token`.
 
 If you log Claude Code in with your own Claude subscription, that is your own
 individual use under Anthropic's consumer terms, and subscription usage

@@ -4,8 +4,10 @@
 
 A `claude` provider runs Claude models through
 `@anthropic-ai/claude-agent-sdk` and the user's own installed, unmodified
-Claude Code. clanka never reads Claude Code's credentials, prompts for a
-login or sees a token: Claude Code uses whatever login it already has. clanka
+Claude Code. clanka never reads, stores or sends Claude.ai credentials, and
+never prompts for a login: Claude Code uses whatever login it already has.
+Claude Code inherits clanka's environment unchanged, so an `ANTHROPIC_API_KEY`
+or `CLAUDE_CODE_OAUTH_TOKEN` set there reaches it. clanka
 keeps its agent loop, its single `execute` tool, its system prompt, its
 history and its compaction. Claude Code only makes the model calls.
 
@@ -53,11 +55,12 @@ parked:
 - `execute` is served to Claude Code as `mcp__clanka__execute` by an
   in-process MCP server (the low-level `Server` from
   `@modelcontextprotocol/sdk`, with the tool's JSON schema and
-  `readOnlyHint: false`, so Claude Code runs calls one at a time).
+  `readOnlyHint: false`).
 - Each handler serves the call named by the request's
-  `_meta["claudecode/toolUseId"]`. Without that tag, it serves the call the
-  last `PreToolUse` hook named. The handler does not run the script: it waits
-  for clanka's result.
+  `_meta["claudecode/toolUseId"]`, which every supported Claude Code release
+  sends (checked back to 2.1.240). An untagged request fails with an error
+  instead of being matched to a guessed call. The handler does not run the
+  script: it waits for clanka's result.
 - The step ends after the API message that called clanka's tool
   (`message_stop` once a `tool_use` for `mcp__clanka__*` was seen), with
   finish reason `tool-calls`. Effect runs the real `execute` handler, and the
@@ -77,8 +80,9 @@ session records the prompt of its last step and how the step ended. The next
 call continues the session when its prompt:
 
 1. starts with exactly the same message objects as that prompt,
-2. then has one assistant message whose tool calls are exactly the ones the
-   step made (same ids, names and params, in order; none after a `stop`),
+2. then has one assistant message with exactly the text the step emitted
+   and exactly its tool calls (same ids, names and params, in order; none
+   after a `stop`),
 3. then tool messages with a result for every call the step made, and no
    others,
 4. then only user messages (at least one if the step ended its turn).
@@ -125,7 +129,8 @@ it their own process.
   `strictMcpConfig: true`, `skills: []`, `verbatimPrompts: true`,
   `includePartialMessages: true`, `persistSession: false` (clanka owns
   history, so nothing is written under `~/.claude/projects`).
-- `env`: `process.env`, then `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`,
+- `env`: `process.env` unchanged (including any `ANTHROPIC_API_KEY` or
+  `CLAUDE_CODE_OAUTH_TOKEN`), then `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`,
   `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, `DISABLE_AUTO_COMPACT=1`,
   `CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0`, `ENABLE_TOOL_SEARCH=false`,
   `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1`, `MAX_MCP_OUTPUT_TOKENS=200000`,
@@ -179,4 +184,6 @@ called Claude Agent, not Claude Code.
 - `cli.test.ts`: `acp --model claude/...` answers `session/new` without
   starting Claude Code.
 - `ClaudeAgent.test.ts`: `queryOptions`, `toUserContent`, and a tool step
-  through `toStreamParts`.
+  through `toStreamParts`; through a fake SDK `query`: tagged calls get
+  their own results, untagged calls fail, edited tool params or answer text
+  start a new process, and a step cut short closes its process.

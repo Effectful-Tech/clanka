@@ -557,10 +557,9 @@ interface CallToolResult {
   readonly isError?: boolean
 }
 
-// The parked tool calls. Claude Code tags each MCP call with its tool use
-// id; without the tag, the PreToolUse hook names the call that the next
-// handler serves (Claude Code runs clanka's tools one at a time). A handler
-// waits until the next step resolves its call with clanka's result.
+// The parked tool calls, keyed by the tool use id Claude Code tags each MCP
+// call with. A handler waits until the next step resolves its call with
+// clanka's result.
 const makeToolBridge = () => {
   const calls = new Map<
     string,
@@ -569,7 +568,6 @@ const makeToolBridge = () => {
       readonly resolve: (result: CallToolResult) => void
     }
   >()
-  let next: string | undefined
   const entry = (id: string) => {
     let call = calls.get(id)
     if (call === undefined) {
@@ -583,12 +581,8 @@ const makeToolBridge = () => {
     return call
   }
   return {
-    before(id: string) {
-      next = id
-    },
-    async call(toolUseId: string | undefined): Promise<CallToolResult> {
-      const id = toolUseId ?? next
-      if (toolUseId === undefined) next = undefined
+    async call(id: string | undefined): Promise<CallToolResult> {
+      // Never guess which call an untagged request is.
       if (id === undefined) {
         return {
           isError: true,
@@ -638,7 +632,6 @@ const makeToolServer = (
         inputSchema: Tool.getJsonSchema(tool) as {
           readonly type: "object"
         },
-        // Non-read-only tools run one at a time, which the bridge relies on.
         annotations: { readOnlyHint: false },
         _meta: { "anthropic/alwaysLoad": true },
       }))
@@ -717,10 +710,10 @@ interface Session {
   seen: ReadonlyArray<Prompt.Message>
   outcome:
     | {
-        readonly _tag: "Tools"
+        readonly _tag: "Tools" | "Stop"
         readonly calls: ReadonlyArray<Response.ToolCallPartEncoded>
+        readonly text: string
       }
-    | { readonly _tag: "Stop" }
     | undefined
 }
 
@@ -758,23 +751,6 @@ const startSession = Effect.fnUntraced(function* (
         effort: options?.effort,
       }),
       mcpServers,
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (hook) => {
-                if (
-                  hook.hook_event_name === "PreToolUse" &&
-                  hook.tool_name.startsWith(toolPrefix)
-                ) {
-                  bridge.before(hook.tool_use_id)
-                }
-                return {}
-              },
-            ],
-          },
-        ],
-      },
     },
   })
   const scope = yield* Scope.make()
@@ -833,7 +809,8 @@ const isImageOnly = (message: Prompt.Message) =>
   message.content.every((part) => part.type === "file")
 
 // How `prompt` continues the live session: the response of the last step,
-// with the tool calls it made, then their results, then user messages.
+// with the text and tool calls it emitted, then their results, then user
+// messages.
 // `undefined` when it does not, and the session has to start over with the
 // full history.
 const continuation = (
@@ -854,11 +831,15 @@ const continuation = (
   for (let i = 0; i < seen.length; i++) {
     if (messages[i] !== seen[i]) return undefined
   }
-  const emitted = outcome._tag === "Tools" ? outcome.calls : []
+  const emitted = outcome.calls
   const calls = response.content.flatMap((part) =>
     part.type === "tool-call" && !part.providerExecuted ? [part] : [],
   )
+  const text = response.content
+    .flatMap((part) => (part.type === "text" ? [part.text] : []))
+    .join("")
   if (
+    text !== outcome.text ||
     calls.length !== emitted.length ||
     !emitted.every(
       (call, i) =>
@@ -931,6 +912,7 @@ const readStep = (
   onAbandon: Effect.Effect<void>,
 ): Stream.Stream<Response.StreamPartEncoded, AiError.AiError> => {
   const calls: Array<Response.ToolCallPartEncoded> = []
+  let text = ""
   return Stream.fromEffectRepeat(
     Queue.take(session.messages).pipe(
       Effect.catchIf(Cause.isDone, () =>
@@ -944,11 +926,13 @@ const readStep = (
     Stream.tap((part) =>
       Effect.sync(() => {
         if (part.type === "tool-call") calls.push(part)
+        if (part.type === "text-delta") text += part.delta
         if (part.type === "finish") {
-          session.outcome =
-            part.reason === "tool-calls"
-              ? { _tag: "Tools", calls }
-              : { _tag: "Stop" }
+          session.outcome = {
+            _tag: part.reason === "tool-calls" ? "Tools" : "Stop",
+            calls,
+            text,
+          }
         }
       }),
     ),

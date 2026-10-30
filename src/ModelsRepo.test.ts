@@ -156,6 +156,23 @@ const catalog = [
   }),
 ]
 
+const provider = (prefix: string, count: number, year: number) => ({
+  models: Object.fromEntries(
+    Array.from({ length: count }, (_, i) => {
+      const id = `${prefix}-${i}`
+      return [
+        id,
+        {
+          id,
+          name: id,
+          release_date: `${year}-01-${String(i + 1).padStart(2, "0")}`,
+          tool_call: true,
+        },
+      ]
+    }),
+  ),
+})
+
 const online = HttpClient.make((request) =>
   Effect.succeed(
     HttpClientResponse.fromWeb(
@@ -248,6 +265,34 @@ describe("ModelsRepo.layerModelsDev", () => {
           "oldest",
           "undated-a",
         ],
+      )
+    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  )
+
+  it.effect("caps each provider at its 10 newest models", () =>
+    Effect.gen(function* () {
+      const client = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(
+              JSON.stringify({
+                openai: provider("gpt", 12, 2026),
+                anthropic: provider("claude", 12, 2025),
+              }),
+              { headers: { "content-type": "application/json" } },
+            ),
+          ),
+        ),
+      )
+      const models = yield* modelsWith(client)
+      assert.strictEqual(
+        models.filter((m) => m.provider === "openai").length,
+        10,
+      )
+      assert.deepStrictEqual(
+        models.filter((m) => m.provider === "claude").map((m) => m.id),
+        Array.from({ length: 10 }, (_, i) => `claude-${11 - i}`),
       )
     }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   )

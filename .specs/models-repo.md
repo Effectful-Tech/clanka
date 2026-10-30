@@ -60,7 +60,8 @@ A model is kept when it is a text model (no `type` field; `image`, `embedding`,
 `realtime` and `video` entries are dropped), is not `status: "deprecated"` and
 has `tool_call: true` — clanka drives every turn through a tool call. The combined
 catalog is sorted by `release_date` newest first, then by display name
-alphabetically, and capped at 10 models. Models without a release date sort last.
+alphabetically, and each provider is capped at its 10 newest models, so one
+provider cannot crowd out another. Models without a release date sort last.
 
 `efforts` is the `values` of the `reasoning_options` entry with
 `type: "effort"`, filtered to `Acp.ThoughtLevel` literals. Models without an

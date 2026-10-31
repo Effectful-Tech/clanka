@@ -309,16 +309,35 @@ const fakeClaude = (run: (session: FakeSession) => AsyncGenerator<object>) => {
 // Claude Code calling clanka's `execute` tool over MCP, each call tagged with
 // its tool use id unless `tagged` is false. Like Claude Code, it runs the calls
 // together only when `tools/list` marks the tool read-only, and otherwise
-// requests each call after the previous one returns.
+// requests each call after the previous one returns. `onRequest` runs once
+// clanka's handler has taken each request.
 const callExecute = async (
   session: FakeSession,
   calls: ReadonlyArray<readonly [id: string, script: string]>,
   tagged = true,
+  onRequest?: () => void,
 ) => {
-  const server = session.options.mcpServers?.clanka as {
+  const server = session.options.mcpServers?.clanka as unknown as {
     readonly instance: {
       connect: (transport: InMemoryTransport) => Promise<void>
+      // The MCP SDK's handlers by method. Not public, but the SDK has no
+      // other way to see a request reach a handler that never returns.
+      readonly _requestHandlers: Map<
+        string,
+        (request: unknown, extra: unknown) => Promise<unknown>
+      >
     }
+  }
+  if (onRequest !== undefined) {
+    const handlers = server.instance._requestHandlers
+    const handler = handlers.get("tools/call")
+    assert.isDefined(handler)
+    // The SDK's wrapper calls clanka's handler before its first await.
+    handlers.set("tools/call", (request, extra) => {
+      const result = handler(request, extra)
+      onRequest()
+      return result
+    })
   }
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair()
@@ -346,11 +365,14 @@ const callExecute = async (
 }
 
 // One API message calling `execute` once per call.
-const executeStep = (calls: ReadonlyArray<readonly [string, string]>) => [
+const executeStep = (
+  calls: ReadonlyArray<readonly [string, string]>,
+  id = "msg_tools",
+) => [
   event({
     type: "message_start",
     message: {
-      id: "msg_tools",
+      id,
       type: "message",
       role: "assistant",
       model: "claude-opus-5-5",
@@ -375,6 +397,22 @@ const executeStep = (calls: ReadonlyArray<readonly [string, string]>) => [
   }),
   event({ type: "message_stop" }),
 ]
+
+// Claude Code answering a call itself instead of calling clanka, as it does
+// for input it cannot validate or a call it aborts.
+const answeredByClaude = (id: string, content: string) => ({
+  ...frame,
+  type: "user",
+  message: {
+    role: "user",
+    content: [
+      { type: "tool_result", tool_use_id: id, content, is_error: true },
+    ],
+  },
+})
+
+const invalidInput =
+  "<tool_use_error>InputValidationError: JSON parse failed</tool_use_error>"
 
 const finalStep = [
   assistant({ type: "text", text: "Done." }),
@@ -503,6 +541,122 @@ describe("ClaudeAgent.model", () => {
         )
         assert.deepStrictEqual(executed, [])
       }),
+  )
+
+  it.effect(
+    "drops a call Claude Code answered itself and runs the parked one",
+    () =>
+      Effect.gen(function* () {
+        let results: ReadonlyArray<unknown> = []
+        const fake = fakeClaude(async function* (session) {
+          await session.input.next()
+          yield* executeStep([
+            ["toolu_a", "a"],
+            ["toolu_b", "b"],
+          ])
+          yield answeredByClaude("toolu_a", invalidInput)
+          results = await callExecute(session, [["toolu_b", "b"]])
+          yield* finalStep
+        })
+        yield* runSteps(fake, (first, response) =>
+          Prompt.concat(first, response),
+        )
+        assert.deepStrictEqual(
+          results.map((result: any) => result.content),
+          [[{ type: "text", text: "ran b" }]],
+        )
+        assert.deepStrictEqual(executed, ["b"])
+        assert.lengthOf(fake.sessions, 1)
+      }),
+  )
+
+  it.effect(
+    "keeps reading when Claude Code answers the only call and Claude retries",
+    () =>
+      Effect.gen(function* () {
+        let results: ReadonlyArray<unknown> = []
+        const fake = fakeClaude(async function* (session) {
+          await session.input.next()
+          yield* executeStep([["toolu_a", "a"]])
+          yield answeredByClaude("toolu_a", invalidInput)
+          yield* executeStep([["toolu_b", "b"]], "msg_retry")
+          results = await callExecute(session, [["toolu_b", "b"]])
+          yield* finalStep
+        })
+        yield* runSteps(fake, (first, response) =>
+          Prompt.concat(first, response),
+        )
+        assert.deepStrictEqual(
+          results.map((result: any) => result.content),
+          [[{ type: "text", text: "ran b" }]],
+        )
+        assert.deepStrictEqual(executed, ["b"])
+        assert.lengthOf(fake.sessions, 1)
+      }),
+  )
+
+  it.effect(
+    "holds a retry's calls until its message stops, even when they park first",
+    () =>
+      Effect.gen(function* () {
+        const retry = [
+          ["toolu_b", "b"],
+          ["toolu_c", "c"],
+        ] as const
+        let results: ReadonlyArray<unknown> = []
+        const fake = fakeClaude(async function* (session) {
+          await session.input.next()
+          yield* executeStep([["toolu_a", "a"]])
+          yield answeredByClaude("toolu_a", invalidInput)
+          const retryStep = executeStep(retry, "msg_retry")
+          yield* retryStep.slice(0, 1)
+          // Claude Code runs a call as soon as its block streams, so the
+          // retry's requests park before its assistant events and its
+          // message_stop.
+          const parked = Promise.withResolvers<void>()
+          let requests = 0
+          const parking = callExecute(session, retry, true, () => {
+            if (++requests === retry.length) parked.resolve()
+          })
+          await parked.promise
+          yield* retryStep.slice(1)
+          results = await parking
+          yield* finalStep
+        })
+        yield* runSteps(fake, (first, response) =>
+          Prompt.concat(first, response),
+        )
+        assert.deepStrictEqual(
+          results.map((result: any) => result.content),
+          [
+            [{ type: "text", text: "ran b" }],
+            [{ type: "text", text: "ran c" }],
+          ],
+        )
+        assert.deepStrictEqual(executed.toSorted(), ["b", "c"])
+        assert.lengthOf(fake.sessions, 1)
+      }),
+  )
+
+  it.effect("fails an aborted call with the result Claude Code gave it", () =>
+    Effect.gen(function* () {
+      const fake = fakeClaude(async function* (session) {
+        await session.input.next()
+        yield* executeStep([["toolu_a", "a"]])
+        yield answeredByClaude(
+          "toolu_a",
+          "[Request interrupted by user for tool use]",
+        )
+      })
+      const error = yield* Effect.flip(
+        runSteps(fake, (first, response) => Prompt.concat(first, response)),
+      )
+      assert.include(
+        error.message,
+        "[Request interrupted by user for tool use]",
+      )
+      assert.deepStrictEqual(executed, [])
+    }),
   )
 
   it.effect(

@@ -74,11 +74,27 @@ parked:
   could run a script Claude Code never waits for. Then Effect runs the real
   `execute` handlers, and the Agent appends the calls and results to history
   as for any provider.
-- An untagged request, a `tool_result` from Claude Code for a call that
-  never parked (Claude Code answered it itself), or, once the tool message's
+- Claude Code sometimes answers a call itself with a top-level `tool_result`
+  and never sends its MCP request: for input it cannot validate, for calls a
+  streaming fallback discarded, for an `mcp__clanka__*` name clanka does not
+  serve, and for aborts. When it answers a held call that never parked with
+  an error for the model (an `is_error` result wrapped in
+  `<tool_use_error>`), the call is dropped from the step and the step keeps
+  reading. Effect never sees the call, so the emitted response matches what
+  the next prompt sends back. Claude Code passes the error to the model,
+  which retries in the same step. Once every remaining call has parked the
+  step ends as usual; if every call was dropped it waits for the retry or
+  the end of the turn.
+- The retry is a new API message. Each top-level `message_start` clears the
+  held finish and whether the message called clanka's tool, so the retry's
+  calls are held until its own `message_stop`, even when Claude Code parks
+  them before their `tool_use` blocks arrive as `assistant` messages.
+- An untagged request, any other `tool_result` from Claude Code for a call
+  that never parked (an abort, such as
+  `[Request interrupted by user for tool use]`), or, once the tool message's
   `message_stop` is read, a request tagged with an id that message never
   called, fails the step with a non-retryable `AiError` before any script
-  runs.
+  runs. The error for a `tool_result` includes its text.
 - The next `streamText` resolves the parked handlers with those results and
   reads the next step from the same process.
 - A step also ends when Claude Code finishes its turn (`result`), with finish
@@ -212,7 +228,12 @@ called Claude Agent, not Claude Code.
 - `ClaudeAgent.test.ts`: `queryOptions`, `toUserContent`, and a tool step
   through `toStreamParts`; through a fake SDK `query`: tagged calls get
   their own results in one process, untagged calls fail and run no script,
+  a call Claude Code answers with an error is dropped (next to a parked call,
+  and alone before a retry), a retry's calls that park before its
+  `assistant` events and `message_stop` are held until it stops and then
+  run, an aborted call fails with Claude Code's result and runs no script,
   an edited answer starts a new process, a step cut short closes its
-  process, a second step while one is read fails and keeps the first
-  session, and a reader of a closed session fails instead of hanging.
+  process, a second step while one is read fails and keeps
+  the first session, and a reader of a closed session fails instead of
+  hanging.
 - `Agent.test.ts`: a sub-agent runs on its own model instance.

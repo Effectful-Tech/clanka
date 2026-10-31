@@ -579,7 +579,7 @@ const makeToolServer = (
         inputSchema: Tool.getJsonSchema(tool) as {
           readonly type: "object"
         },
-        annotations: { readOnlyHint: false },
+        annotations: { readOnlyHint: true },
         _meta: { "anthropic/alwaysLoad": true },
       }))
       server.setRequestHandler(ListToolsRequestSchema, async () => ({

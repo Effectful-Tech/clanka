@@ -55,7 +55,12 @@ parked:
 - `execute` is served to Claude Code as `mcp__clanka__execute` by an
   in-process MCP server (the low-level `Server` from
   `@modelcontextprotocol/sdk`, with the tool's JSON schema and
-  `readOnlyHint: false`).
+  `readOnlyHint: true`). Claude Code runs an MCP tool's calls together only
+  when it is marked read-only, and otherwise requests each call after the
+  previous one returns. Parked calls never return within the step, so with
+  `readOnlyHint: false` a message with several `execute` calls would stall
+  after parking the first. Under `permissionMode: "dontAsk"` and
+  `allowedTools` the hint does not change permissions.
 - Each handler serves the call named by the request's
   `_meta["claudecode/toolUseId"]`, which every supported Claude Code release
   sends (checked back to 2.1.240). An untagged request fails with an error

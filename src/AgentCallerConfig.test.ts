@@ -25,6 +25,7 @@ import * as RpcSerialization from "effect/rpc/RpcSerialization"
 import * as RpcServer from "effect/rpc/RpcServer"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
+import * as AgentSkills from "./AgentSkills.ts"
 import { type ExcludableTool, subagentsUnavailable } from "./AgentTools.ts"
 
 // =============================================================================
@@ -427,11 +428,11 @@ describe("agent", () => {
         agent: {
           instructions: Option.some("CALLER-INSTRUCTIONS"),
           skills: [
-            {
+            new AgentSkills.ProvidedSkill({
               name: "caller-skill",
               description: "Caller skill",
               content: "CALLER-SKILL-CONTENT",
-            },
+            }),
           ],
         },
         script: 'await taskComplete(await readSkill("caller-skill"))',

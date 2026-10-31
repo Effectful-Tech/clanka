@@ -888,13 +888,35 @@ const continueSession = (
   plan.ids.forEach((id, i) => session.bridge.resolve(id, results[i]!))
 }
 
-// The ids of the tool results in an SDK user message.
-const toolResultIds = (message: Sdk.SDKUserMessage): Array<string> =>
+// The tool results in an SDK user message, with their text.
+const toolResults = (
+  message: Sdk.SDKUserMessage,
+): Array<{ readonly id: string; readonly text: string }> =>
   typeof message.message.content === "string"
     ? []
     : message.message.content.flatMap((block) =>
-        block.type === "tool_result" ? [block.tool_use_id] : [],
+        block.type === "tool_result"
+          ? [
+              {
+                id: block.tool_use_id,
+                text:
+                  typeof block.content === "string"
+                    ? block.content
+                    : (block.content ?? [])
+                        .flatMap((part) =>
+                          part.type === "text" ? [part.text] : [],
+                        )
+                        .join("\n"),
+              },
+            ]
+          : [],
       )
+
+// Claude Code wraps the errors it hands back to the model, such as invalid
+// input, a streaming fallback or an unknown tool, in this tag. Aborts are not
+// wrapped.
+const isToolUseError = (text: string) =>
+  text.trimStart().startsWith("<tool_use_error>")
 
 // Reads one step from the session, recording how it ended. A step that does
 // not finish leaves the session in an unknown state, so it is closed.
@@ -902,8 +924,10 @@ const toolResultIds = (message: Sdk.SDKUserMessage): Array<string> =>
 // A tool step holds back its tool calls and its finish until Claude Code has
 // parked an MCP request for every call. Effect runs a call's handler as soon
 // as more parts follow it, so emitting a call earlier could run a script
-// that Claude Code never waits for. An untagged request, or Claude Code
-// answering a call itself, fails the step before any script runs.
+// that Claude Code never waits for. When Claude Code answers a held call
+// itself with an error for the model, the call is dropped and the step keeps
+// reading while the model retries. An untagged request, or any other answer
+// from Claude Code, fails the step before any script runs.
 const readStep = (
   session: Session,
   onAbandon: Effect.Effect<void>,
@@ -932,7 +956,11 @@ const readStep = (
           ),
         )
       }
-      if (!calls.every((call) => parked.has(call.id))) return Effect.succeed([])
+      // With every call dropped, the step waits for the model's retry or
+      // the end of its turn.
+      if (calls.length === 0 || !calls.every((call) => parked.has(call.id))) {
+        return Effect.succeed([])
+      }
       session.outcome = { _tag: "Tools", calls, text }
       return Effect.succeed([...calls, finish])
     }
@@ -952,16 +980,21 @@ const readStep = (
         return release()
       }
       if (event.type === "user" && event.parent_tool_use_id === null) {
-        const answered = toolResultIds(event).find(
-          (id) => !parked.has(id) && calls.some((call) => call.id === id),
-        )
-        if (answered !== undefined) {
-          return Effect.fail(
-            unknownError(
-              `Claude Code answered the tool call ${answered} itself instead of calling clanka.`,
-            ),
-          )
+        let dropped = false
+        for (const result of toolResults(event)) {
+          const index = calls.findIndex((call) => call.id === result.id)
+          if (index === -1 || parked.has(result.id)) continue
+          if (!isToolUseError(result.text)) {
+            return Effect.fail(
+              unknownError(
+                `Claude Code answered the tool call ${result.id} itself instead of calling clanka: ${result.text}`,
+              ),
+            )
+          }
+          calls.splice(index, 1)
+          dropped = true
         }
+        if (dropped) return release()
       }
       return Effect.flatMap(convert(event), (parts) => {
         const out: Array<Response.StreamPartEncoded> = []

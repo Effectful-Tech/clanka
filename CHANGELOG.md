@@ -1,5 +1,15 @@
 # clanka
 
+## 0.17.2
+
+### Patch Changes
+
+- [#260](https://github.com/Effectful-Tech/clanka/pull/260) [`db205e4`](https://github.com/Effectful-Tech/clanka/commit/db205e46c1d67ec8d85e8f864a4fb80f382b70c3) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix the `claude` provider stalling into a turn timeout when the model makes several `execute` calls in one message
+
+- [#263](https://github.com/Effectful-Tech/clanka/pull/263) [`71c9b82`](https://github.com/Effectful-Tech/clanka/commit/71c9b82fea91044fb2fc33c46719ee9994989759) Thanks [@tim-smart](https://github.com/tim-smart)! - Log Claude Code's API retries at debug level in the `claude` provider
+
+- [#261](https://github.com/Effectful-Tech/clanka/pull/261) [`0c948ed`](https://github.com/Effectful-Tech/clanka/commit/0c948edea01be0bb449b9dbd242cad9016def0ab) Thanks [@tim-smart](https://github.com/tim-smart)! - Give each sub-agent its own Claude Agent session, so sub-agents no longer close the main agent's Claude Code process and stall it into a turn timeout
+
 ## 0.17.1
 
 ### Patch Changes

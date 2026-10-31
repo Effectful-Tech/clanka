@@ -372,6 +372,7 @@ const makeConverter = () => {
       switch (event.type) {
         case "message_start":
           messageId = event.message.id
+          calledTools = false
           streamed.add(messageId)
           usage.update(messageId, event.message.usage)
           break
@@ -891,7 +892,11 @@ const continueSession = (
 // The tool results in an SDK user message, with their text.
 const toolResults = (
   message: Sdk.SDKUserMessage,
-): Array<{ readonly id: string; readonly text: string }> =>
+): Array<{
+  readonly id: string
+  readonly isError: boolean
+  readonly text: string
+}> =>
   typeof message.message.content === "string"
     ? []
     : message.message.content.flatMap((block) =>
@@ -899,6 +904,7 @@ const toolResults = (
           ? [
               {
                 id: block.tool_use_id,
+                isError: block.is_error === true,
                 text:
                   typeof block.content === "string"
                     ? block.content
@@ -913,8 +919,8 @@ const toolResults = (
       )
 
 // Claude Code wraps the errors it hands back to the model, such as invalid
-// input, a streaming fallback or an unknown tool, in this tag. Aborts are not
-// wrapped.
+// input, a streaming fallback or an unknown tool, in this tag, and marks
+// their results `is_error`. Aborts are not wrapped.
 const isToolUseError = (text: string) =>
   text.trimStart().startsWith("<tool_use_error>")
 
@@ -984,7 +990,7 @@ const readStep = (
         for (const result of toolResults(event)) {
           const index = calls.findIndex((call) => call.id === result.id)
           if (index === -1 || parked.has(result.id)) continue
-          if (!isToolUseError(result.text)) {
+          if (!result.isError || !isToolUseError(result.text)) {
             return Effect.fail(
               unknownError(
                 `Claude Code answered the tool call ${result.id} itself instead of calling clanka: ${result.text}`,
@@ -995,6 +1001,15 @@ const readStep = (
           dropped = true
         }
         if (dropped) return release()
+      }
+      // A retry after dropped calls is a new API message; the last one's
+      // finish must not release its calls before its own `message_stop`.
+      if (
+        event.type === "stream_event" &&
+        event.parent_tool_use_id === null &&
+        event.event.type === "message_start"
+      ) {
+        finish = undefined
       }
       return Effect.flatMap(convert(event), (parts) => {
         const out: Array<Response.StreamPartEncoded> = []

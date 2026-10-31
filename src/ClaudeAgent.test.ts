@@ -3,7 +3,7 @@ import type {
   query as SdkQuery,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk"
-import { assert, describe, it } from "@effect/vitest"
+import { assert, beforeEach, describe, it } from "@effect/vitest"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import * as Effect from "effect/Effect"
@@ -321,22 +321,23 @@ const callExecute = async (
   const client = new Client({ name: "claude-code", version: "0.0.0" })
   await client.connect(clientTransport)
   const { tools } = await client.listTools()
-  const execute = tools.find((tool) => tool.name === "execute")
-  const call = ([id, script]: readonly [string, string]) =>
-    client.callTool({
-      name: "execute",
-      arguments: { script },
-      ...(tagged ? { _meta: { "claudecode/toolUseId": id } } : {}),
-    })
-  if (execute?.annotations?.readOnlyHint ?? false) {
-    return Promise.all(calls.map(call))
-  }
-  const results: Array<Awaited<ReturnType<typeof call>>> = []
-  for (const entry of calls) {
-    // oxlint-disable-next-line eslint/no-await-in-loop
-    results.push(await call(entry))
-  }
-  return results
+  const readOnly =
+    tools.find((tool) => tool.name === "execute")?.annotations?.readOnlyHint ===
+    true
+  return Effect.runPromise(
+    Effect.forEach(
+      calls,
+      ([id, script]) =>
+        Effect.promise(() =>
+          client.callTool({
+            name: "execute",
+            arguments: { script },
+            ...(tagged ? { _meta: { "claudecode/toolUseId": id } } : {}),
+          }),
+        ),
+      { concurrency: readOnly ? "unbounded" : 1 },
+    ),
+  )
 }
 
 // One API message calling `execute` once per call.
@@ -393,6 +394,10 @@ const Execute = Toolkit.make(
 // The scripts clanka's `execute` handler ran.
 const executed: Array<string> = []
 
+beforeEach(() => {
+  executed.length = 0
+})
+
 const ExecuteHandlers = Execute.toLayer({
   execute: ({ script }) =>
     Effect.sync(() => {
@@ -437,7 +442,6 @@ describe("ClaudeAgent.model", () => {
         ["toolu_b", "b"],
       ] as const
       let results: ReadonlyArray<unknown> = []
-      executed.length = 0
       const fake = fakeClaude(async function* (session) {
         await session.input.next()
         yield* executeStep(calls)
@@ -463,7 +467,6 @@ describe("ClaudeAgent.model", () => {
           ["toolu_b", "b"],
         ] as const
         let results: ReadonlyArray<unknown> = []
-        executed.length = 0
         const fake = fakeClaude(async function* (session) {
           await session.input.next()
           yield* executeStep(calls)

@@ -6,10 +6,15 @@ import type {
 import { assert, beforeEach, describe, it } from "@effect/vitest"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import * as Context from "effect/Context"
+import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
+import * as Exit from "effect/Exit"
+import * as Fiber from "effect/Fiber"
 import * as Layer from "effect/Layer"
 import * as Base64 from "effect/encoding/Base64"
 import * as Schema from "effect/Schema"
+import * as Scope from "effect/Scope"
 import * as Stream from "effect/Stream"
 import * as LanguageModel from "effect/ai/LanguageModel"
 import * as Prompt from "effect/ai/Prompt"
@@ -384,6 +389,21 @@ const finalStep = [
   },
 ]
 
+// The start of a step that is still writing its reply.
+const replying = [
+  ...executeStep([]).slice(0, 1),
+  event({
+    type: "content_block_start",
+    index: 0,
+    content_block: { type: "text", text: "" },
+  }),
+  event({
+    type: "content_block_delta",
+    index: 0,
+    delta: { type: "text_delta", text: "Working" },
+  }),
+]
+
 const Execute = Toolkit.make(
   Tool.make("execute", {
     parameters: Schema.Struct({ script: Schema.String }),
@@ -513,17 +533,7 @@ describe("ClaudeAgent.model", () => {
     Effect.gen(function* () {
       const fake = fakeClaude(async function* (session) {
         await session.input.next()
-        yield* executeStep([]).slice(0, 1)
-        yield event({
-          type: "content_block_start",
-          index: 0,
-          content_block: { type: "text", text: "" },
-        })
-        yield event({
-          type: "content_block_delta",
-          index: 0,
-          delta: { type: "text_delta", text: "Working" },
-        })
+        yield* replying
         await new Promise(() => {})
       })
       const prompt = Prompt.fromMessages([system, user("go")])
@@ -536,6 +546,80 @@ describe("ClaudeAgent.model", () => {
         )
         assert.isTrue(fake.sessions[0]!.closed)
       }).pipe(Effect.provide(modelWith(fake)))
+    }),
+  )
+
+  it.effect(
+    "refuses a second step while one is read, keeping the first session",
+    () =>
+      Effect.gen(function* () {
+        const released = Promise.withResolvers<void>()
+        const fake = fakeClaude(async function* (session) {
+          await session.input.next()
+          if (session === fake.sessions[0]) {
+            yield* replying
+            await released.promise
+          }
+          yield* finalStep
+        })
+        yield* Effect.gen(function* () {
+          const ai = yield* LanguageModel.LanguageModel
+          const reading = yield* Deferred.make<void>()
+          const first = yield* ai
+            .streamText({
+              prompt: Prompt.fromMessages([system, user("go")]),
+              toolkit: Execute,
+            })
+            .pipe(
+              Stream.tap(() => Deferred.succeed(reading, undefined)),
+              Stream.runDrain,
+              Effect.forkChild,
+            )
+          yield* Deferred.await(reading)
+          const second = yield* ai
+            .streamText({
+              prompt: Prompt.fromMessages([system, user("something else")]),
+              toolkit: Execute,
+            })
+            .pipe(Stream.runDrain, Effect.exit)
+          assert.isTrue(Exit.isFailure(second))
+          assert.lengthOf(fake.sessions, 1)
+          assert.isFalse(fake.sessions[0]!.closed)
+          released.resolve()
+          yield* Fiber.join(first)
+        }).pipe(Effect.provide(modelWith(fake)))
+      }),
+  )
+
+  it.live("fails a reader whose session was closed instead of hanging", () =>
+    Effect.gen(function* () {
+      const fake = fakeClaude(async function* (session) {
+        await session.input.next()
+        yield* replying
+        await new Promise(() => {})
+      })
+      const scope = yield* Scope.make()
+      const context = yield* Layer.buildWithScope(modelWith(fake), scope)
+      const reading = yield* Deferred.make<void>()
+      const reader = yield* Context.get(context, LanguageModel.LanguageModel)
+        .streamText({
+          prompt: Prompt.fromMessages([system, user("go")]),
+          toolkit: Execute,
+        })
+        .pipe(
+          Stream.tap(() => Deferred.succeed(reading, undefined)),
+          Stream.runDrain,
+          Effect.provideContext(context),
+          Effect.forkChild,
+        )
+      yield* Deferred.await(reading)
+      // Closing the model closes Claude Code under the step being read.
+      yield* Scope.close(scope, Exit.void)
+      const error = yield* Fiber.join(reader).pipe(
+        Effect.flip,
+        Effect.timeout("1 second"),
+      )
+      assert.strictEqual(error._tag, "AiError")
     }),
   )
 })

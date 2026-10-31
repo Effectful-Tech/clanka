@@ -144,6 +144,75 @@ describe("Agent", () => {
         }),
       ),
   )
+
+  it.effect("gives a sub-agent its own model instance", () =>
+    Effect.gen(function* () {
+      // Which model instance served each call, by the agent that made it.
+      const calls: Array<{
+        readonly child: boolean
+        readonly instance: number
+      }> = []
+      let instances = 0
+      const modelLayer = Layer.mergeAll(
+        Layer.effect(
+          LanguageModel.LanguageModel,
+          Effect.suspend(() => {
+            const instance = ++instances
+            return LanguageModel.make({
+              generateText: () => Effect.succeed([]),
+              streamText: ({ prompt }) => {
+                const child = JSON.stringify(prompt).includes("TASK-CHILD")
+                const index = calls.push({ child, instance }) - 1
+                return Stream.make(
+                  toolCall(`call-${index}`, child || index > 0 ? "done" : ""),
+                )
+              },
+            })
+          }),
+        ),
+        Layer.succeed(Model.ProviderName, "test-provider"),
+        Layer.succeed(Model.ModelName, "test-model"),
+      )
+      // The root delegates once in the foreground, then every agent finishes.
+      const executor = makeExecutor(
+        ({ script, environment, subagents, onTaskComplete }) =>
+          Stream.fromEffect(
+            (script === "done"
+              ? onTaskComplete("done")
+              : subagents.delegate({
+                  prompt: "TASK-CHILD",
+                  background: false,
+                  environment: new AgentExecutor.EnvironmentUpdate({
+                    environment,
+                    update: Option.none(),
+                  }),
+                })
+            ).pipe(Effect.as(""), Effect.orDie),
+          ),
+      )
+      const agent = yield* Agent.make.pipe(
+        Effect.provideService(AgentExecutor.AgentExecutor, executor),
+      )
+      const exit = yield* agent.send({ prompt: "hello" }).pipe(
+        Effect.flatMap(Stream.runDrain),
+        Effect.catchTag("AgentFinished", () => Effect.void),
+        Effect.provide(
+          Layer.mergeAll(
+            modelLayer,
+            Agent.ConversationMode.layer(false),
+            Agent.layerSubagentModel(modelLayer),
+          ),
+        ),
+        Effect.exit,
+      )
+      assert.deepStrictEqual(exit, Exit.void)
+      const root = calls.filter((call) => !call.child)
+      const child = calls.filter((call) => call.child)
+      assert.lengthOf(root, 2)
+      assert.lengthOf(child, 1)
+      assert.notStrictEqual(child[0]!.instance, root[0]!.instance)
+    }).pipe(Effect.scoped),
+  )
 })
 
 // =============================================================================

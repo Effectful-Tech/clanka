@@ -302,7 +302,9 @@ const fakeClaude = (run: (session: FakeSession) => AsyncGenerator<object>) => {
 }
 
 // Claude Code calling clanka's `execute` tool over MCP, each call tagged with
-// its tool use id unless `tagged` is false.
+// its tool use id unless `tagged` is false. Like Claude Code, it runs the calls
+// together only when `tools/list` marks the tool read-only, and otherwise
+// requests each call after the previous one returns.
 const callExecute = async (
   session: FakeSession,
   calls: ReadonlyArray<readonly [id: string, script: string]>,
@@ -318,15 +320,23 @@ const callExecute = async (
   await server.instance.connect(serverTransport)
   const client = new Client({ name: "claude-code", version: "0.0.0" })
   await client.connect(clientTransport)
-  return Promise.all(
-    calls.map(([id, script]) =>
-      client.callTool({
-        name: "execute",
-        arguments: { script },
-        ...(tagged ? { _meta: { "claudecode/toolUseId": id } } : {}),
-      }),
-    ),
-  )
+  const { tools } = await client.listTools()
+  const execute = tools.find((tool) => tool.name === "execute")
+  const call = ([id, script]: readonly [string, string]) =>
+    client.callTool({
+      name: "execute",
+      arguments: { script },
+      ...(tagged ? { _meta: { "claudecode/toolUseId": id } } : {}),
+    })
+  if (execute?.annotations?.readOnlyHint ?? false) {
+    return Promise.all(calls.map(call))
+  }
+  const results: Array<Awaited<ReturnType<typeof call>>> = []
+  for (const entry of calls) {
+    // oxlint-disable-next-line eslint/no-await-in-loop
+    results.push(await call(entry))
+  }
+  return results
 }
 
 // One API message calling `execute` once per call.
@@ -427,6 +437,7 @@ describe("ClaudeAgent.model", () => {
         ["toolu_b", "b"],
       ] as const
       let results: ReadonlyArray<unknown> = []
+      executed.length = 0
       const fake = fakeClaude(async function* (session) {
         await session.input.next()
         yield* executeStep(calls)
@@ -438,6 +449,7 @@ describe("ClaudeAgent.model", () => {
         results.map((result: any) => result.content),
         [[{ type: "text", text: "ran a" }], [{ type: "text", text: "ran b" }]],
       )
+      assert.deepStrictEqual(executed.toSorted(), ["a", "b"])
       assert.lengthOf(fake.sessions, 1)
     }),
   )

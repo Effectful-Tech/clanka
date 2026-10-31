@@ -309,16 +309,35 @@ const fakeClaude = (run: (session: FakeSession) => AsyncGenerator<object>) => {
 // Claude Code calling clanka's `execute` tool over MCP, each call tagged with
 // its tool use id unless `tagged` is false. Like Claude Code, it runs the calls
 // together only when `tools/list` marks the tool read-only, and otherwise
-// requests each call after the previous one returns.
+// requests each call after the previous one returns. `onRequest` runs once
+// clanka's handler has taken each request.
 const callExecute = async (
   session: FakeSession,
   calls: ReadonlyArray<readonly [id: string, script: string]>,
   tagged = true,
+  onRequest?: () => void,
 ) => {
-  const server = session.options.mcpServers?.clanka as {
+  const server = session.options.mcpServers?.clanka as unknown as {
     readonly instance: {
       connect: (transport: InMemoryTransport) => Promise<void>
+      // The MCP SDK's handlers by method. Not public, but the SDK has no
+      // other way to see a request reach a handler that never returns.
+      readonly _requestHandlers: Map<
+        string,
+        (request: unknown, extra: unknown) => Promise<unknown>
+      >
     }
+  }
+  if (onRequest !== undefined) {
+    const handlers = server.instance._requestHandlers
+    const handler = handlers.get("tools/call")
+    assert.isDefined(handler)
+    // The SDK's wrapper calls clanka's handler before its first await.
+    handlers.set("tools/call", (request, extra) => {
+      const result = handler(request, extra)
+      onRequest()
+      return result
+    })
   }
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair()
@@ -594,8 +613,12 @@ describe("ClaudeAgent.model", () => {
           // Claude Code runs a call as soon as its block streams, so the
           // retry's requests park before its assistant events and its
           // message_stop.
-          const parking = callExecute(session, retry)
-          await new Promise((resolve) => setTimeout(resolve, 10))
+          const parked = Promise.withResolvers<void>()
+          let requests = 0
+          const parking = callExecute(session, retry, true, () => {
+            if (++requests === retry.length) parked.resolve()
+          })
+          await parked.promise
           yield* retryStep.slice(1)
           results = await parking
           yield* finalStep

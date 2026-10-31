@@ -1,5 +1,11 @@
 # clanka
 
+## 0.17.3
+
+### Patch Changes
+
+- [#264](https://github.com/Effectful-Tech/clanka/pull/264) [`88f8a3f`](https://github.com/Effectful-Tech/clanka/commit/88f8a3f873eb893e00a3f82d00aca8bbe46c9ac5) Thanks [@tim-smart](https://github.com/tim-smart)! - ClaudeAgent: don't fail the step when Claude Code answers a clanka tool call itself
+
 ## 0.17.2
 
 ### Patch Changes

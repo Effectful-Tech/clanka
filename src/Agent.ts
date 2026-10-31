@@ -1680,6 +1680,10 @@ export class SubagentModel extends Context.Service<
 >()("clanka/Agent/SubagentModel") {}
 
 /**
+ * The model every sub-agent runs on. Each sub-agent builds its own instance,
+ * even when `layer` is also this agent's model layer, so a stateful model
+ * such as Claude Agent never shares its session with another agent.
+ *
  * @since 1.0.0
  * @category Subagent model
  */
@@ -1694,7 +1698,7 @@ export const layerSubagentModel = <E, R>(
     SubagentModel,
     Effect.gen(function* () {
       const services = yield* Effect.context<R>()
-      return Layer.orDie(layer).pipe(
+      return Layer.fresh(Layer.orDie(layer)).pipe(
         Layer.provide(Layer.succeedContext(services)),
       )
     }),

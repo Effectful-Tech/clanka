@@ -112,14 +112,25 @@ blocks. Without earlier turns, no tags are added.
 A step that does not reach its finish (interrupted by steering or a turn
 timeout, or failed) leaves the session in an unknown state, so the process is
 closed and the next call starts over. The model layer's scope closes the live
-process.
+process. Closing a session ends its messages, so a step still reading it
+fails with "Claude Code stopped before finishing its reply" instead of
+waiting for the turn timeout.
+
+A model instance reads one step at a time. A call made while another step is
+still being read fails with a non-retryable `UnknownError` and leaves that
+step's session alone, because continuing or replacing the session would cut
+off the other reader.
 
 `Agent.send` keeps an unchanged system message as is instead of calling
 `Prompt.setSystem` each turn, so condition 1 holds across user turns. ACP
 builds the model layer per prompt, so there each prompt starts one process.
 The interactive CLI keeps one process for the whole conversation.
-Sub-agents get their own model layer through `layerSubagentModel`, and with
-it their own process.
+Sub-agents get their own model instance, and with it their own process:
+`layerSubagentModel` wraps the layer in `Layer.fresh`, so a sub-agent builds
+a new instance even when the same layer is the main agent's model (as in
+`ModelLayer`). Without it, the memo map hands the sub-agent the main agent's
+instance. The sub-agent's scope closes its process when it ends. The
+WebSocket models (Codex, xAI) also get one socket per running sub-agent.
 
 ## What Claude Code sees
 
@@ -193,5 +204,7 @@ called Claude Agent, not Claude Code.
 - `ClaudeAgent.test.ts`: `queryOptions`, `toUserContent`, and a tool step
   through `toStreamParts`; through a fake SDK `query`: tagged calls get
   their own results in one process, untagged calls fail and run no script,
-  an edited answer starts a new process, and a step cut short closes its
-  process.
+  an edited answer starts a new process, a step cut short closes its
+  process, a second step while one is read fails and keeps the first
+  session, and a reader of a closed session fails instead of hanging.
+- `Agent.test.ts`: a sub-agent runs on its own model instance.

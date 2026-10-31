@@ -677,11 +677,14 @@ interface Session {
   outcome: Outcome | undefined
 }
 
+// Ends `messages` before closing the scope, which interrupts the fiber that
+// would end it, so a step still reading the session fails instead of waiting.
 const closeSession = (session: Session) =>
   Effect.suspend(() => {
     session.bridge.cancel()
     session.query.close()
     return Queue.end(session.input).pipe(
+      Effect.andThen(Queue.end(session.messages)),
       Effect.andThen(Scope.close(session.scope, Exit.void)),
     )
   })
@@ -972,8 +975,8 @@ const readStep = (
     return Stream.fromQueue(session.messages).pipe(
       Stream.mapEffect(handle),
       Stream.flattenIterable,
-      // The queue ends when Claude Code exits, so reaching this means it
-      // stopped mid-step.
+      // The queue ends when Claude Code exits or the session is closed, so
+      // reaching this means it stopped mid-step.
       Stream.concat(
         Stream.fail(
           unknownError("Claude Code stopped before finishing its reply"),
@@ -1018,25 +1021,44 @@ const layerLanguageModel = (
         return session === undefined ? Effect.void : closeSession(session)
       })
       yield* Effect.addFinalizer(() => closeCurrent)
+      // Set while a step is read. Another step would close the session under
+      // it, so it fails instead.
+      let reading = false
 
       const step = (provider: LanguageModel.ProviderOptions) =>
-        Stream.unwrap(
-          Effect.gen(function* () {
-            const plan =
-              current === undefined
-                ? undefined
-                : continuation(current, provider)
-            if (current !== undefined && plan !== undefined) {
-              continueSession(current, plan)
-              current.seen = provider.prompt.content
-              current.outcome = undefined
+        Stream.suspend(() => {
+          if (reading) {
+            return Stream.fail(
+              unknownError(
+                "This Claude Agent model is already reading a step. Every agent needs its own model instance.",
+              ),
+            )
+          }
+          reading = true
+          return Stream.unwrap(
+            Effect.gen(function* () {
+              const plan =
+                current === undefined
+                  ? undefined
+                  : continuation(current, provider)
+              if (current !== undefined && plan !== undefined) {
+                continueSession(current, plan)
+                current.seen = provider.prompt.content
+                current.outcome = undefined
+                return readStep(current, closeCurrent)
+              }
+              yield* closeCurrent
+              current = yield* startSession(model, options, provider, true)
               return readStep(current, closeCurrent)
-            }
-            yield* closeCurrent
-            current = yield* startSession(model, options, provider, true)
-            return readStep(current, closeCurrent)
-          }),
-        )
+            }),
+          ).pipe(
+            Stream.onExit(() =>
+              Effect.sync(() => {
+                reading = false
+              }),
+            ),
+          )
+        })
 
       const streamText = (provider: LanguageModel.ProviderOptions) =>
         provider.tools.length === 0

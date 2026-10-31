@@ -173,6 +173,9 @@ process with no MCP server, and closes it when the step ends.
   "prompt is too long" text (so `Compaction.isContextLengthError` matches),
   else `UnknownError`. None is retryable: Claude Code has already retried.
   "Please run /login" becomes "Run `claude auth login`".
+- An `api_retry` system message is logged at debug level with its attempt,
+  max retries, retry delay, error status, error and any `no_response` wait
+  times. Other `system` messages are dropped.
 - Claude Code reports an API message several times. Usage keeps each count's
   maximum per message id, sums output tokens over the step, and takes the
   context size from the last call's input plus cache reads and writes.

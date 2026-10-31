@@ -478,6 +478,24 @@ const makeConverter = () => {
         reason: message.stop_reason === "max_tokens" ? "length" : "stop",
         usage: usage.snapshot(),
       })
+    } else if (message.type === "system" && message.subtype === "api_retry") {
+      // Logged so a long retry by Claude Code is not mistaken for a stall.
+      return Effect.logDebug("Claude Code is retrying an API request").pipe(
+        Effect.annotateLogs({
+          attempt: message.attempt,
+          maxRetries: message.max_retries,
+          retryDelayMs: message.retry_delay_ms,
+          errorStatus: message.error_status,
+          error: message.error,
+          ...(message.no_response === undefined
+            ? {}
+            : {
+                noResponseWaitedMs: message.no_response.waited_ms,
+                noResponseRetryWaitMs: message.no_response.retry_wait_ms,
+              }),
+        }),
+        Effect.as(parts),
+      )
     }
     return Effect.succeed(parts)
   }

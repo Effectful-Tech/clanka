@@ -576,6 +576,45 @@ describe("ClaudeAgent.model", () => {
       }),
   )
 
+  it.effect(
+    "holds a retry's calls until its message stops, even when they park first",
+    () =>
+      Effect.gen(function* () {
+        const retry = [
+          ["toolu_b", "b"],
+          ["toolu_c", "c"],
+        ] as const
+        let results: ReadonlyArray<unknown> = []
+        const fake = fakeClaude(async function* (session) {
+          await session.input.next()
+          yield* executeStep([["toolu_a", "a"]])
+          yield answeredByClaude("toolu_a", invalidInput)
+          const retryStep = executeStep(retry, "msg_retry")
+          yield* retryStep.slice(0, 1)
+          // Claude Code runs a call as soon as its block streams, so the
+          // retry's requests park before its assistant events and its
+          // message_stop.
+          const parking = callExecute(session, retry)
+          await new Promise((resolve) => setTimeout(resolve, 10))
+          yield* retryStep.slice(1)
+          results = await parking
+          yield* finalStep
+        })
+        yield* runSteps(fake, (first, response) =>
+          Prompt.concat(first, response),
+        )
+        assert.deepStrictEqual(
+          results.map((result: any) => result.content),
+          [
+            [{ type: "text", text: "ran b" }],
+            [{ type: "text", text: "ran c" }],
+          ],
+        )
+        assert.deepStrictEqual(executed.toSorted(), ["b", "c"])
+        assert.lengthOf(fake.sessions, 1)
+      }),
+  )
+
   it.effect("fails an aborted call with the result Claude Code gave it", () =>
     Effect.gen(function* () {
       const fake = fakeClaude(async function* (session) {

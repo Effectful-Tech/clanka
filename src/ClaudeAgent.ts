@@ -1052,7 +1052,7 @@ const layerLanguageModel = (
               return readStep(current, closeCurrent)
             }),
           ).pipe(
-            Stream.onExit(() =>
+            Stream.ensuring(
               Effect.sync(() => {
                 reading = false
               }),

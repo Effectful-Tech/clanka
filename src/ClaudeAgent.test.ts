@@ -538,15 +538,12 @@ describe("ClaudeAgent.model", () => {
     "refuses a second step while one is read, keeping the first session",
     () =>
       Effect.gen(function* () {
-        let release!: () => void
-        const released = new Promise<void>((resolve) => {
-          release = resolve
-        })
+        const released = Promise.withResolvers<void>()
         const fake = fakeClaude(async function* (session) {
           await session.input.next()
           if (session === fake.sessions[0]) {
             yield* replying
-            await released
+            await released.promise
           }
           yield* finalStep
         })
@@ -573,7 +570,7 @@ describe("ClaudeAgent.model", () => {
           assert.isTrue(Exit.isFailure(second))
           assert.lengthOf(fake.sessions, 1)
           assert.isFalse(fake.sessions[0]!.closed)
-          release()
+          released.resolve()
           yield* Fiber.join(first)
         }).pipe(Effect.provide(modelWith(fake)))
       }),

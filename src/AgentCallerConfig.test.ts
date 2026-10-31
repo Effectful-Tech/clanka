@@ -516,7 +516,8 @@ describe("executor capabilities", () => {
         }),
       )
       const { tools: _, ...older } = encoded as Record<string, Schema.Json>
-      const exit = yield* Effect.exit(Schema.decodeUnknownEffect(codec)(older))
+      // @effect-diagnostics-next-line preferTypedSchemaDecoder:off
+      const exit = Schema.decodeUnknownExit(codec)(older)
       assert.isTrue(Exit.isFailure(exit))
     }),
   )

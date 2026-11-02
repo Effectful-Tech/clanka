@@ -905,6 +905,20 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
               `Retrying after error: ${part.error.message}\n`,
             ),
           })
+        case "HistoryPruned":
+          return update(session.id, {
+            sessionUpdate: "agent_thought_chunk",
+            content: textContent(
+              `History pruned: ${part.toolResults} old results, ~${part.tokensBefore} tokens to ~${part.tokensAfter}\n`,
+            ),
+          })
+        case "SessionRestarted":
+          return update(session.id, {
+            sessionUpdate: "agent_thought_chunk",
+            content: textContent(
+              `Session restarted (${part.reason}): ${part.contextTokens} context tokens resent, ${part.cacheWrite} cache write\n`,
+            ),
+          })
         // A background agent's tool call stays in progress until the agent
         // finishes, while the parent keeps taking turns.
         case "SubagentStart": {

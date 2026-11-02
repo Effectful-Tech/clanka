@@ -2,6 +2,7 @@
  * @since 1.0.0
  */
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
+import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Struct from "effect/Struct"
 import { CodexAuth } from "./CodexAuth.ts"
@@ -73,25 +74,34 @@ const layerModel = (
   model: (string & {}) | OpenAiLanguageModel.Model,
   options?: ModelOptions | undefined,
 ) =>
-  OpenAiLanguageModel.layer({
-    model,
-    config: {
-      ...Struct.omit(options ?? {}, [
-        "reasoning",
-        "systemPromptTransform",
-        "supportsImages",
-      ]),
-      store: false,
-      reasoning:
-        options?.reasoning === null
-          ? undefined
-          : {
-              effort: "medium",
-              summary: "auto",
-              ...(options?.reasoning as any),
-            },
-    },
-  }).pipe(
+  // One prompt cache key per model layer, so the requests of a session, and
+  // of the sub-agents sharing its system prompt, are routed to the same
+  // cache. A key in `options` wins.
+  Layer.unwrap(
+    Effect.sync(() =>
+      OpenAiLanguageModel.layer({
+        model,
+        config: {
+          ...Struct.omit(options ?? {}, [
+            "reasoning",
+            "systemPromptTransform",
+            "supportsImages",
+            "cutStreamOnSteering",
+          ]),
+          prompt_cache_key: options?.prompt_cache_key ?? crypto.randomUUID(),
+          store: false,
+          reasoning:
+            options?.reasoning === null
+              ? undefined
+              : {
+                  effort: "medium",
+                  summary: "auto",
+                  ...(options?.reasoning as any),
+                },
+        },
+      }),
+    ),
+  ).pipe(
     Layer.merge(
       AgentModelConfig.layer({
         systemPromptTransform: (system, effect) =>
@@ -99,6 +109,7 @@ const layerModel = (
             instructions: system,
           }),
         supportsImages: options?.supportsImages,
+        cutStreamOnSteering: options?.cutStreamOnSteering,
       }),
       // No Compaction.SummarizerTransform: Codex rejects max_output_tokens,
       // so compaction summaries have no configured output-token cap.

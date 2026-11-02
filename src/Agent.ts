@@ -31,6 +31,7 @@ import * as LanguageModel from "effect/ai/LanguageModel"
 import * as AiError from "effect/ai/AiError"
 import * as Context from "effect/Context"
 import * as Option from "effect/Option"
+import * as Predicate from "effect/Predicate"
 import { identity, pipe } from "effect/Function"
 import * as MutableRef from "effect/MutableRef"
 import * as Queue from "effect/Queue"
@@ -69,6 +70,8 @@ import {
   ExecuteOutputCapped,
   CompactionStarted,
   CompactionEnded,
+  HistoryPruned,
+  SessionRestarted,
   EnvironmentUpdated,
   HistoryAppended,
   HistoryReplaced,
@@ -280,6 +283,7 @@ export const makeWith = Effect.fnUntraced(function* <
     const conversationMode = yield* ConversationMode
     const turnTimeout = yield* TurnTimeout
     const maxRetries = yield* MaxRetries
+    const compactionConfig = yield* Compaction.CompactionConfig
     let finalSummary = Option.none<string>()
     // `inputTokens.total` from the most recent finish part; undefined until
     // the first response and after every compaction.
@@ -913,7 +917,10 @@ ${Compaction.capOutput(turn.output ?? "").output}
           }
         }
 
-        // Threshold compaction before the next model call
+        // The one place the history is rewritten before a model call, so a
+        // provider cache is invalidated at most once per call: threshold
+        // compaction, or else a prune once it saves enough to be worth it.
+        const beforeCompaction = prompt.current
         yield* compactWithEvents(
           "threshold",
           Compaction.compactIfNeeded({
@@ -929,6 +936,22 @@ ${Compaction.capOutput(turn.output ?? "").output}
             ),
           ),
         )
+        if (prompt.current === beforeCompaction) {
+          const pruned = Compaction.prune(prompt.current, compactionConfig)
+          if (Option.isSome(pruned)) {
+            replaceHistory(pruned.value.prompt)
+            lastContextTokens = undefined
+            maybeSend({
+              agentId,
+              part: new HistoryPruned({
+                toolResults: pruned.value.toolResults,
+                reasoningParts: pruned.value.reasoningParts,
+                tokensBefore: pruned.value.tokensBefore,
+                tokensAfter: pruned.value.tokensAfter,
+              }),
+            })
+          }
+        }
 
         // Per attempt: the parts received, and what they reported.
         // oxlint-disable-next-line typescript/no-explicit-any
@@ -1001,6 +1024,7 @@ ${Compaction.capOutput(turn.output ?? "").output}
           ),
           Stream.takeUntil((part) => {
             if (
+              modelConfig.cutStreamOnSteering !== false &&
               (part.type === "text-end" || part.type === "reasoning-end") &&
               mailbox.messages.size > 0
             ) {
@@ -1060,6 +1084,17 @@ ${Compaction.capOutput(turn.output ?? "").output}
                   }
                   if (usage.inputTokens.cacheWrite !== undefined) {
                     cacheWrite += usage.inputTokens.cacheWrite
+                  }
+                  const resent = historyResentReason(part.metadata)
+                  if (resent !== undefined) {
+                    maybeSend({
+                      agentId,
+                      part: new SessionRestarted({
+                        reason: resent,
+                        contextTokens: usage.inputTokens.total ?? 0,
+                        cacheWrite: usage.inputTokens.cacheWrite ?? 0,
+                      }),
+                    })
                   }
                   if (usage.inputTokens.total !== undefined) {
                     lastContextTokens = usage.inputTokens.total
@@ -1771,11 +1806,32 @@ export class AgentModelConfig extends Context.Reference<{
    * them.
    */
   readonly supportsImages?: boolean | undefined
+  /**
+   * `false` for models whose live session does not survive a response being
+   * cut short (Claude Code). A steering message then waits for the current
+   * step to end instead of cutting the model stream. Defaults to `true`.
+   */
+  readonly cutStreamOnSteering?: boolean | undefined
 }>("clanka/Agent/SystemPromptTransform", {
   defaultValue: () => ({}),
 }) {
   static readonly layer = (options: typeof AgentModelConfig.Service) =>
     Layer.succeed(AgentModelConfig, options)
+}
+
+/**
+ * The reason a provider reports in `metadata.clanka.historyResent` on a
+ * `finish` part, when it had to send the whole history again.
+ */
+const historyResentReason = (metadata: unknown): string | undefined => {
+  if (!Predicate.isObject(metadata)) return undefined
+  const clanka = metadata.clanka
+  if (!Predicate.isObject(clanka)) return undefined
+  const resent = clanka.historyResent
+  if (!Predicate.isObject(resent) || !Predicate.isString(resent.reason)) {
+    return undefined
+  }
+  return resent.reason
 }
 
 const responseToSummary = (

@@ -854,6 +854,35 @@ const continuation = (
   return { ids, results, users }
 }
 
+// Why a step could not continue the live session. A step that did not
+// finish closes its session, so no session also means an abandoned step.
+const restartReason = (
+  session: Session | undefined,
+  provider: LanguageModel.ProviderOptions,
+): RestartReason =>
+  session === undefined || session.outcome === undefined
+    ? "step-abandoned"
+    : session.toolNames !== provider.tools.map((tool) => tool.name).join(",")
+      ? "tools-changed"
+      : "history-changed"
+
+type RestartReason = "step-abandoned" | "tools-changed" | "history-changed"
+
+// Marks the finish part of the first step of a restarted session, so the
+// Agent can report what the restart cost.
+const reportRestart =
+  (reason: RestartReason) =>
+  (part: Response.StreamPartEncoded): Response.StreamPartEncoded =>
+    part.type === "finish"
+      ? {
+          ...part,
+          metadata: {
+            ...part.metadata,
+            clanka: { historyResent: { reason } },
+          },
+        }
+      : part
+
 const continueSession = (
   session: Session,
   plan: NonNullable<ReturnType<typeof continuation>>,
@@ -1090,6 +1119,8 @@ const layerLanguageModel = (
       // Set while a step is read. Another step would close the session under
       // it, so it fails instead.
       let reading = false
+      // Whether a session has run, so a new one is a restart.
+      let started = false
 
       const step = (provider: LanguageModel.ProviderOptions) =>
         Stream.suspend(() => {
@@ -1113,9 +1144,16 @@ const layerLanguageModel = (
                 current.outcome = undefined
                 return readStep(current, closeCurrent)
               }
+              const reason = !started
+                ? undefined
+                : restartReason(current, provider)
               yield* closeCurrent
               current = yield* startSession(model, options, provider, true)
-              return readStep(current, closeCurrent)
+              started = true
+              const read = readStep(current, closeCurrent)
+              return reason === undefined
+                ? read
+                : read.pipe(Stream.map(reportRestart(reason)))
             }),
           ).pipe(
             Stream.ensuring(
@@ -1196,6 +1234,11 @@ export const model = (
       // The system prompt stays in the Prompt, where `queryOptions` reads
       // it. No Compaction.SummarizerTransform: Claude Code takes no
       // per-request output cap.
-      AgentModelConfig.layer({ supportsImages: options?.supportsImages }),
+      // A step cut short closes the session, so steering waits for the step
+      // to end and the session continues.
+      AgentModelConfig.layer({
+        supportsImages: options?.supportsImages,
+        cutStreamOnSteering: false,
+      }),
     ),
   )

@@ -1580,59 +1580,6 @@ describe("Agent history events", () => {
   )
 })
 
-describe("Agent history pruning", () => {
-  it.effect("prunes old execute results in batches, not on every turn", () =>
-    Effect.gen(function* () {
-      // Each result is ~5k tokens; only the newest fits the protected window,
-      // and a batch needs at least two prunable results.
-      let runs = 0
-      const { exit, calls, outputs } = yield* runAgentCollect({
-        compaction: { pruneProtectTokens: 6_000, pruneMinimumTokens: 8_000 },
-        executor: makeExecutor(() =>
-          Stream.succeed(`RESULT-${++runs} ` + filler("out", 20_000)),
-        ),
-        respond: (_call, index) =>
-          index < 8
-            ? Stream.fromIterable([
-                toolCall(
-                  `call-${index}`,
-                  `await readFile({ path: '${index}' })`,
-                ),
-                finish(1_000),
-              ])
-            : Stream.fromIterable([...text("done"), finish(1_000, "stop")]),
-      })
-      assert.deepStrictEqual(exit, Exit.succeed("done"))
-
-      // Model calls whose prompt changed a message the previous call was sent.
-      const rewrites = calls.flatMap((call, i) =>
-        i > 0 &&
-        calls[i - 1]!.prompt.content.some(
-          (message, j) => call.prompt.content[j] !== message,
-        )
-          ? [i]
-          : [],
-      )
-      assert.isNotEmpty(rewrites, "old results were pruned")
-      assert.strictEqual(
-        outputsOfTag(outputs, "HistoryPruned").length,
-        rewrites.length,
-      )
-      for (const i of rewrites) {
-        assert.notInclude(
-          rewrites,
-          i + 1,
-          `turns ${i} and ${i + 1} both rewrote`,
-        )
-      }
-
-      const last = toolResults(calls.at(-1)!.prompt)
-      assert.isBelow((last[0]!.result as string).length, 20_000)
-      assert.isAtLeast((last.at(-1)!.result as string).length, 20_000)
-    }),
-  )
-})
-
 describe("Agent session restarts", () => {
   it.effect("reports a provider session restart with its cost", () =>
     Effect.gen(function* () {

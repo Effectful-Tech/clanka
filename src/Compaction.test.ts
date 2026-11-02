@@ -50,36 +50,6 @@ const toolResult = (id: string, result: string) =>
 
 const system = Prompt.makeMessage("system", { content: "You are a test." })
 
-// A response that calls `execute` once per id, and the message with its
-// results, each ~40k characters.
-const assistantCalls = (ids: ReadonlyArray<string>, reasoning: string) =>
-  Prompt.makeMessage("assistant", {
-    content: [
-      Prompt.makePart("reasoning", { text: reasoning }),
-      ...ids.map((id) =>
-        Prompt.makePart("tool-call", {
-          id,
-          name: "execute",
-          params: { script: `await readFile({ path: '${id}.log' })` },
-          providerExecuted: false,
-        }),
-      ),
-    ],
-  })
-
-const toolResults = (ids: ReadonlyArray<string>) =>
-  Prompt.makeMessage("tool", {
-    content: ids.map((id) =>
-      Prompt.makePart("tool-result", {
-        id,
-        name: "execute",
-        isFailure: false,
-        result: `${id.toUpperCase()} ` + filler(id, 40_000),
-        providerExecuted: false,
-      }),
-    ),
-  })
-
 /** A string of `n` characters built from a recognisable repeating word. */
 const filler = (word: string, n: number) =>
   (word + " ").repeat(Math.ceil(n / (word.length + 1))).slice(0, n)
@@ -118,11 +88,6 @@ const toolResultText = (message: Prompt.Message): string => {
   }
   return part.result as string
 }
-
-const toolResultTexts = (message: Prompt.Message): ReadonlyArray<string> =>
-  parts(message).flatMap((part) =>
-    part.type === "tool-result" ? [part.result as string] : [],
-  )
 
 const promptText = (prompt: Prompt.Prompt): string =>
   JSON.stringify(prompt.content)
@@ -227,8 +192,6 @@ describe("Compaction.CompactionConfig", () => {
         contextWindow: 236_000,
         reserveTokens: 16_000,
         keepRecentTokens: 20_000,
-        pruneProtectTokens: 40_000,
-        pruneMinimumTokens: 20_000,
       })
       assert.deepStrictEqual(config, Compaction.defaultConfig)
     }),
@@ -702,206 +665,6 @@ describe("Compaction.trimKept", () => {
     assert.deepStrictEqual(
       trimmed.map((m) => m.role),
       ["user", "assistant", "tool", "assistant"],
-    )
-  })
-})
-
-const hasReasoning = (message: Prompt.Message) =>
-  parts(message).some((part) => part.type === "reasoning")
-
-describe("Compaction.prune", () => {
-  // Two old ~10k-token results, then a recent ~4k-token one.
-  const history = Prompt.fromMessages([
-    system,
-    user("Investigate the failing build"),
-    assistantCall("c1", "await readFile({ path: 'a.log' })", "old thought"),
-    toolResult("c1", "OLD-ONE " + filler("one", 40_000)),
-    assistantCall("c2", "await readFile({ path: 'b.log' })", "old thought"),
-    toolResult("c2", "OLD-TWO " + filler("two", 40_000)),
-    assistantCall("c3", "await readFile({ path: 'c.log' })", "recent thought"),
-    toolResult("c3", "RECENT " + filler("three", 16_000)),
-  ])
-  const config = {
-    ...Compaction.defaultConfig,
-    pruneProtectTokens: 5_000,
-    pruneMinimumTokens: 10_000,
-  }
-
-  it("stubs old execute results and their reasoning in one batch", () => {
-    const result = Compaction.prune(history, config)
-    assert.isTrue(Option.isSome(result))
-    const { prompt, toolResults, reasoningParts, tokensBefore, tokensAfter } =
-      Option.getOrThrow(result)
-    const messages = prompt.content
-
-    // Nothing is added, removed or reordered, and the scripts are unchanged.
-    assert.deepStrictEqual(
-      messages.map((m) => m.role),
-      history.content.map((m) => m.role),
-    )
-    for (const i of [2, 4, 6]) {
-      assert.deepStrictEqual(
-        parts(messages[i]!).filter((p) => p.type === "tool-call"),
-        parts(history.content[i]!).filter((p) => p.type === "tool-call"),
-      )
-    }
-    assert.strictEqual(messages[1], history.content[1])
-
-    // The old results are stubbed and say so.
-    for (const i of [3, 5]) {
-      const stubbed = toolResultText(messages[i]!)
-      assert.isAtMost(
-        stubbed.length,
-        Compaction.prunedToolResultStubChars + 1_000,
-      )
-      assert.include(stubbed, "pruned")
-    }
-    assert.isFalse(hasReasoning(messages[2]!))
-    assert.isFalse(hasReasoning(messages[4]!))
-
-    // The protected tail is untouched.
-    assert.strictEqual(messages[6], history.content[6])
-    assert.strictEqual(messages[7], history.content[7])
-    assert.isTrue(hasReasoning(messages[6]!))
-
-    assert.strictEqual(toolResults, 2)
-    assert.strictEqual(reasoningParts, 2)
-    assert.isBelow(tokensAfter, tokensBefore)
-
-    // A pruned prompt has nothing left to prune.
-    assert.isTrue(Option.isNone(Compaction.prune(prompt, config)))
-  })
-
-  it("protects the newest results within a message with several", () => {
-    // One response called execute twice; the newest result fits the
-    // protected window and the one before it does not.
-    const parallel = Prompt.fromMessages([
-      system,
-      user("Investigate the failing build"),
-      assistantCall("c1", "await readFile({ path: 'a.log' })", "old thought"),
-      toolResult("c1", "OLD-ONE " + filler("one", 40_000)),
-      Prompt.makeMessage("assistant", {
-        content: [
-          Prompt.makePart("reasoning", { text: "recent thought" }),
-          ...["c2", "c3"].map((id) =>
-            Prompt.makePart("tool-call", {
-              id,
-              name: "execute",
-              params: { script: `await readFile({ path: '${id}.log' })` },
-              providerExecuted: false,
-            }),
-          ),
-        ],
-      }),
-      Prompt.makeMessage("tool", {
-        content: ["c2", "c3"].map((id) =>
-          Prompt.makePart("tool-result", {
-            id,
-            name: "execute",
-            isFailure: false,
-            result: `${id.toUpperCase()} ` + filler(id, 40_000),
-            providerExecuted: false,
-          }),
-        ),
-      }),
-    ])
-    const result = Compaction.prune(parallel, {
-      ...config,
-      pruneProtectTokens: 15_000,
-      pruneMinimumTokens: 10_000,
-    })
-    assert.isTrue(Option.isSome(result))
-    const messages = Option.getOrThrow(result).prompt.content
-    const results = parts(messages[5]!).flatMap((part) =>
-      part.type === "tool-result" ? [part.result as string] : [],
-    )
-    assert.isAtMost(
-      results[0]!.length,
-      Compaction.prunedToolResultStubChars + 1_000,
-    )
-    assert.strictEqual(
-      results[1],
-      "C3 " + filler("c3", 40_000),
-      "the newest result is kept verbatim",
-    )
-    assert.isAtMost(
-      toolResultText(messages[3]!).length,
-      Compaction.prunedToolResultStubChars + 1_000,
-    )
-    assert.isFalse(hasReasoning(messages[2]!))
-    assert.isTrue(
-      hasReasoning(messages[4]!),
-      "reasoning of a response with a protected result is kept",
-    )
-  })
-
-  it("protects results by position when a call id repeats", () => {
-    // Two turns reuse the id `c1`: an old ~10k-token result and a recent
-    // ~4k-token one. Only the recent one fits the protected window.
-    const repeated = Prompt.fromMessages([
-      system,
-      user("Investigate the failing build"),
-      assistantCall("c1", "await readFile({ path: 'a.log' })", "old thought"),
-      toolResult("c1", "OLD " + filler("one", 40_000)),
-      assistantCall(
-        "c1",
-        "await readFile({ path: 'b.log' })",
-        "recent thought",
-      ),
-      toolResult("c1", "RECENT " + filler("two", 16_000)),
-    ])
-    const result = Compaction.prune(repeated, {
-      ...config,
-      pruneProtectTokens: 5_000,
-      pruneMinimumTokens: 5_000,
-    })
-    assert.isTrue(Option.isSome(result), "the old result is pruned")
-    const messages = Option.getOrThrow(result).prompt.content
-    assert.isAtMost(
-      toolResultText(messages[3]!).length,
-      Compaction.prunedToolResultStubChars + 1_000,
-    )
-    assert.strictEqual(messages[4], repeated.content[4])
-    assert.strictEqual(messages[5], repeated.content[5])
-  })
-
-  it("stubs every result of an older message with several", () => {
-    // Two responses each call execute twice. The window holds the newest
-    // result only, so the cut lands on the first result of the newest
-    // message: the older message is stubbed whole, its second result too.
-    const history = Prompt.fromMessages([
-      system,
-      user("Investigate the failing build"),
-      assistantCalls(["c1", "c2"], "old thought"),
-      toolResults(["c1", "c2"]),
-      assistantCalls(["c3", "c4"], "recent thought"),
-      toolResults(["c3", "c4"]),
-    ])
-    const result = Compaction.prune(history, {
-      ...config,
-      pruneProtectTokens: 15_000,
-      pruneMinimumTokens: 10_000,
-    })
-    assert.isTrue(Option.isSome(result))
-    const messages = Option.getOrThrow(result).prompt.content
-    const older = toolResultTexts(messages[3]!)
-    const newer = toolResultTexts(messages[5]!)
-    for (const text of [...older, newer[0]!]) {
-      assert.isAtMost(text.length, Compaction.prunedToolResultStubChars + 1_000)
-    }
-    assert.strictEqual(newer[1], "C4 " + filler("c4", 40_000))
-    assert.isFalse(hasReasoning(messages[2]!))
-    assert.isTrue(hasReasoning(messages[4]!))
-  })
-
-  it("does nothing until the savings reach the minimum, or when disabled", () => {
-    assert.isTrue(
-      Option.isNone(
-        Compaction.prune(history, { ...config, pruneMinimumTokens: 50_000 }),
-      ),
-    )
-    assert.isTrue(
-      Option.isNone(Compaction.prune(history, { ...config, enabled: false })),
     )
   })
 })

@@ -117,9 +117,6 @@ ${chalk.dim(output.summary)}\n\n`
           case "CompactionEnded": {
             return `${prefix}${chalkInfoHeading(`${infoIcon} Context compacted (${output.reason}):`)} ~${numberFormat.format(output.tokensBefore)} tokens to ~${numberFormat.format(output.tokensAfter)}\n\n`
           }
-          case "HistoryPruned": {
-            return `${prefix}${chalkInfoHeading(`${infoIcon} History pruned:`)} ${numberFormat.format(output.toolResults)} old results, ~${numberFormat.format(output.tokensBefore)} tokens to ~${numberFormat.format(output.tokensAfter)}\n\n`
-          }
           case "SessionRestarted": {
             return `${prefix}${chalkInfoHeading(`${infoIcon} Session restarted (${output.reason}):`)} ${numberFormat.format(output.contextTokens)} context tokens resent, ${numberFormat.format(output.cacheWrite)} cache write\n\n`
           }

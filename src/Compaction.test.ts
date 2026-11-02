@@ -50,6 +50,36 @@ const toolResult = (id: string, result: string) =>
 
 const system = Prompt.makeMessage("system", { content: "You are a test." })
 
+// A response that calls `execute` once per id, and the message with its
+// results, each ~40k characters.
+const assistantCalls = (ids: ReadonlyArray<string>, reasoning: string) =>
+  Prompt.makeMessage("assistant", {
+    content: [
+      Prompt.makePart("reasoning", { text: reasoning }),
+      ...ids.map((id) =>
+        Prompt.makePart("tool-call", {
+          id,
+          name: "execute",
+          params: { script: `await readFile({ path: '${id}.log' })` },
+          providerExecuted: false,
+        }),
+      ),
+    ],
+  })
+
+const toolResults = (ids: ReadonlyArray<string>) =>
+  Prompt.makeMessage("tool", {
+    content: ids.map((id) =>
+      Prompt.makePart("tool-result", {
+        id,
+        name: "execute",
+        isFailure: false,
+        result: `${id.toUpperCase()} ` + filler(id, 40_000),
+        providerExecuted: false,
+      }),
+    ),
+  })
+
 /** A string of `n` characters built from a recognisable repeating word. */
 const filler = (word: string, n: number) =>
   (word + " ").repeat(Math.ceil(n / (word.length + 1))).slice(0, n)
@@ -88,6 +118,11 @@ const toolResultText = (message: Prompt.Message): string => {
   }
   return part.result as string
 }
+
+const toolResultTexts = (message: Prompt.Message): ReadonlyArray<string> =>
+  parts(message).flatMap((part) =>
+    part.type === "tool-result" ? [part.result as string] : [],
+  )
 
 const promptText = (prompt: Prompt.Prompt): string =>
   JSON.stringify(prompt.content)
@@ -828,6 +863,35 @@ describe("Compaction.prune", () => {
     )
     assert.strictEqual(messages[4], repeated.content[4])
     assert.strictEqual(messages[5], repeated.content[5])
+  })
+
+  it("stubs every result of an older message with several", () => {
+    // Two responses each call execute twice. The window holds the newest
+    // result only, so the cut lands on the first result of the newest
+    // message: the older message is stubbed whole, its second result too.
+    const history = Prompt.fromMessages([
+      system,
+      user("Investigate the failing build"),
+      assistantCalls(["c1", "c2"], "old thought"),
+      toolResults(["c1", "c2"]),
+      assistantCalls(["c3", "c4"], "recent thought"),
+      toolResults(["c3", "c4"]),
+    ])
+    const result = Compaction.prune(history, {
+      ...config,
+      pruneProtectTokens: 15_000,
+      pruneMinimumTokens: 10_000,
+    })
+    assert.isTrue(Option.isSome(result))
+    const messages = Option.getOrThrow(result).prompt.content
+    const older = toolResultTexts(messages[3]!)
+    const newer = toolResultTexts(messages[5]!)
+    for (const text of [...older, newer[0]!]) {
+      assert.isAtMost(text.length, Compaction.prunedToolResultStubChars + 1_000)
+    }
+    assert.strictEqual(newer[1], "C4 " + filler("c4", 40_000))
+    assert.isFalse(hasReasoning(messages[2]!))
+    assert.isTrue(hasReasoning(messages[4]!))
   })
 
   it("does nothing until the savings reach the minimum, or when disabled", () => {

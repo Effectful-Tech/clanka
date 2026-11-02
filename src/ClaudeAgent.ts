@@ -696,6 +696,11 @@ interface Session {
   outcome: Outcome | undefined
 }
 
+// The tools a session was started with; a step with other tools cannot
+// continue it.
+const toolNames = (provider: LanguageModel.ProviderOptions) =>
+  provider.tools.map((tool) => tool.name).join(",")
+
 // Ends `messages` before closing the scope, which interrupts the fiber that
 // would end it, so a step still reading the session fails instead of waiting.
 const closeSession = (session: Session) =>
@@ -759,7 +764,7 @@ const startSession = Effect.fnUntraced(function* (
     bridge,
     messages,
     scope,
-    toolNames: provider.tools.map((tool) => tool.name).join(","),
+    toolNames: toolNames(provider),
     seen: provider.prompt.content,
     outcome: undefined,
   }
@@ -824,7 +829,7 @@ const continuation = (
   const response = messages[seen.length]
   if (
     outcome === undefined ||
-    session.toolNames !== provider.tools.map((tool) => tool.name).join(",") ||
+    session.toolNames !== toolNames(provider) ||
     response?.role !== "assistant" ||
     !seen.every((message, i) => messages[i] === message) ||
     !isDeepStrictEqual(appended(response), emitted(outcome))
@@ -859,20 +864,20 @@ const continuation = (
 const restartReason = (
   session: Session | undefined,
   provider: LanguageModel.ProviderOptions,
-): RestartReason =>
+) =>
   session === undefined || session.outcome === undefined
     ? "step-abandoned"
-    : session.toolNames !== provider.tools.map((tool) => tool.name).join(",")
+    : session.toolNames !== toolNames(provider)
       ? "tools-changed"
       : "history-changed"
 
-type RestartReason = "step-abandoned" | "tools-changed" | "history-changed"
-
 // Marks the finish part of the first step of a restarted session, so the
 // Agent can report what the restart cost.
-const reportRestart =
-  (reason: RestartReason) =>
-  (part: Response.StreamPartEncoded): Response.StreamPartEncoded =>
+const reportRestart = (
+  step: Stream.Stream<Response.StreamPartEncoded, AiError.AiError>,
+  reason: string,
+) =>
+  Stream.map(step, (part) =>
     part.type === "finish"
       ? {
           ...part,
@@ -881,7 +886,8 @@ const reportRestart =
             clanka: { historyResent: { reason } },
           },
         }
-      : part
+      : part,
+  )
 
 const continueSession = (
   session: Session,
@@ -1144,16 +1150,14 @@ const layerLanguageModel = (
                 current.outcome = undefined
                 return readStep(current, closeCurrent)
               }
-              const reason = !started
-                ? undefined
-                : restartReason(current, provider)
+              const reason = started
+                ? restartReason(current, provider)
+                : undefined
               yield* closeCurrent
               current = yield* startSession(model, options, provider, true)
               started = true
               const read = readStep(current, closeCurrent)
-              return reason === undefined
-                ? read
-                : read.pipe(Stream.map(reportRestart(reason)))
+              return reason === undefined ? read : reportRestart(read, reason)
             }),
           ).pipe(
             Stream.ensuring(

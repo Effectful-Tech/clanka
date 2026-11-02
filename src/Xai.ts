@@ -52,9 +52,7 @@ export const model = (
         config: {
           ...Struct.omit(options ?? {}, [
             "reasoning",
-            "systemPromptTransform",
-            "supportsImages",
-            "cutStreamOnSteering",
+            ...AgentModelConfig.optionKeys,
           ]),
           store: options?.store ?? false,
           reasoning:
@@ -63,11 +61,9 @@ export const model = (
               : { effort: "high", ...options?.reasoning },
         },
       }),
-      AgentModelConfig.layer({
-        systemPromptTransform: options?.systemPromptTransform,
-        supportsImages: options?.supportsImages,
-        cutStreamOnSteering: options?.cutStreamOnSteering,
-      }),
+      AgentModelConfig.layer(
+        Struct.pick(options ?? {}, AgentModelConfig.optionKeys),
+      ),
       // Cap compaction summaries; xAI honours max_output_tokens.
       Layer.succeed(Compaction.SummarizerTransform, (effect) =>
         OpenAiLanguageModel.withConfigOverride(effect, {
@@ -100,9 +96,7 @@ export const modelWebSocket = (
         config: {
           ...Struct.omit(options ?? {}, [
             "reasoning",
-            "systemPromptTransform",
-            "supportsImages",
-            "cutStreamOnSteering",
+            ...AgentModelConfig.optionKeys,
           ]),
           // xAI needs stored responses to resolve previous_response_id.
           store: true,
@@ -113,11 +107,9 @@ export const modelWebSocket = (
               : { effort: "high", ...options?.reasoning },
         },
       }),
-      AgentModelConfig.layer({
-        systemPromptTransform: options?.systemPromptTransform,
-        supportsImages: options?.supportsImages,
-        cutStreamOnSteering: options?.cutStreamOnSteering,
-      }),
+      AgentModelConfig.layer(
+        Struct.pick(options ?? {}, AgentModelConfig.optionKeys),
+      ),
       // Cap compaction summaries; xAI honours max_output_tokens.
       Layer.succeed(Compaction.SummarizerTransform, (effect) =>
         OpenAiLanguageModel.withConfigOverride(effect, {

@@ -370,14 +370,13 @@ export const prune = (
   if (!config.enabled) return Option.none()
   const messages = prompt.content
 
-  // The newest result outside the protected window: it and every older
-  // result can be pruned. The calls of the protected results keep their
-  // reasoning.
-  let cutMessage = -1
+  // Walk the results newest to oldest until the protected window is full.
+  // The cut is the newest result outside it, as the index of its message
+  // and its index in that message; the results after it are protected.
+  let cut = -1
   let cutPart = -1
   let protectedTokens = 0
-  const protectedCalls = new Set<string>()
-  for (let i = messages.length - 1; i >= 0 && cutMessage === -1; i--) {
+  scan: for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]!
     if (message.role !== "tool") continue
     for (let j = message.content.length - 1; j >= 0; j--) {
@@ -389,87 +388,83 @@ export const prune = (
           : (JSON.stringify(part.result) ?? "")
       protectedTokens += charsToTokens(text.length)
       if (protectedTokens > config.pruneProtectTokens) {
-        cutMessage = i
+        cut = i
         cutPart = j
-        break
+        break scan
       }
-      protectedCalls.add(part.id)
     }
   }
-  if (cutMessage === -1) return Option.none()
+  if (cut === -1) return Option.none()
 
+  const isProtected = (i: number, j: number) =>
+    i > cut || (i === cut && j > cutPart)
   const prunable = (
     i: number,
     j: number,
     part: Prompt.ToolMessagePart,
-  ): part is PrunableResult =>
-    (i < cutMessage || j <= cutPart) && isPrunable(part)
-  const dropsReasoning = (
-    i: number,
-    message: Prompt.Message,
-  ): message is Prompt.AssistantMessage =>
-    i < cutMessage &&
-    message.role === "assistant" &&
-    message.content.some((part) => part.type === "reasoning") &&
-    !message.content.some(
-      (part) => part.type === "tool-call" && protectedCalls.has(part.id),
-    )
+  ): part is PrunableResult => !isProtected(i, j) && isPrunable(part)
 
-  let savedChars = 0
-  for (let i = 0; i <= cutMessage; i++) {
-    const message = messages[i]!
-    if (message.role === "tool") {
-      message.content.forEach((part, j) => {
-        if (prunable(i, j, part)) {
-          savedChars += part.result.length - pruneStub(part.result).length
-        }
-      })
-    } else if (dropsReasoning(i, message)) {
-      for (const part of message.content) {
-        if (part.type === "reasoning") {
-          savedChars += JSON.stringify(part).length
-        }
-      }
-    }
-  }
-  if (charsToTokens(savedChars) < config.pruneMinimumTokens) {
-    return Option.none()
-  }
+  // The assistant message whose calls made the oldest protected results is
+  // the last one before the message holding them. It keeps its reasoning;
+  // every other assistant message before the cut loses it.
+  const firstProtected = messages.findIndex(
+    (message, i) =>
+      i >= cut &&
+      message.role === "tool" &&
+      message.content.some(
+        (part, j) => part.type === "tool-result" && isProtected(i, j),
+      ),
+  )
+  const keepsReasoning = messages.findLastIndex(
+    (message, i) => i < firstProtected && message.role === "assistant",
+  )
 
   let toolResults = 0
   let reasoningParts = 0
+  let savedChars = 0
   const content = messages.map((message, i): Prompt.Message => {
-    if (i > cutMessage) return message
-    if (message.role === "tool") {
-      if (!message.content.some((part, j) => prunable(i, j, part))) {
-        return message
-      }
+    if (i > cut) return message
+    if (
+      message.role === "tool" &&
+      message.content.some((part, j) => prunable(i, j, part))
+    ) {
       return Prompt.makeMessage("tool", {
         content: message.content.map((part, j) => {
           if (!prunable(i, j, part)) return part
+          const result = pruneStub(part.result)
           toolResults++
+          savedChars += part.result.length - result.length
           return Prompt.makePart("tool-result", {
             id: part.id,
             name: part.name,
             isFailure: part.isFailure,
             providerExecuted: part.providerExecuted,
-            result: pruneStub(part.result),
+            result,
             options: part.options,
           })
         }),
         options: message.options,
       })
     }
-    if (message.role !== "assistant" || !dropsReasoning(i, message)) {
-      return message
+    if (message.role === "assistant" && i < cut && i !== keepsReasoning) {
+      const kept = message.content.filter((part) => {
+        if (part.type !== "reasoning") return true
+        reasoningParts++
+        savedChars += JSON.stringify(part).length
+        return false
+      })
+      if (kept.length < message.content.length) {
+        return Prompt.makeMessage("assistant", {
+          content: kept,
+          options: message.options,
+        })
+      }
     }
-    const kept = message.content.filter((part) => part.type !== "reasoning")
-    reasoningParts += message.content.length - kept.length
-    return Prompt.makeMessage("assistant", {
-      content: kept,
-      options: message.options,
-    })
+    return message
   })
+  if (charsToTokens(savedChars) < config.pruneMinimumTokens) {
+    return Option.none()
+  }
 
   const pruned = Prompt.fromMessages(content)
   return Option.some({

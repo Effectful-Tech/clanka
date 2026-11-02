@@ -42,24 +42,13 @@ export const model = (
         config: Struct.omit(
           options ?? {},
           options?.reasoning === null
-            ? [
-                "reasoning",
-                "systemPromptTransform",
-                "supportsImages",
-                "cutStreamOnSteering",
-              ]
-            : [
-                "systemPromptTransform",
-                "supportsImages",
-                "cutStreamOnSteering",
-              ],
+            ? ["reasoning", ...AgentModelConfig.optionKeys]
+            : AgentModelConfig.optionKeys,
         ),
       }),
-      AgentModelConfig.layer({
-        systemPromptTransform: options?.systemPromptTransform,
-        supportsImages: options?.supportsImages,
-        cutStreamOnSteering: options?.cutStreamOnSteering,
-      }),
+      AgentModelConfig.layer(
+        Struct.pick(options ?? {}, AgentModelConfig.optionKeys),
+      ),
       // Cap compaction summaries; Copilot honours max_output_tokens.
       Layer.succeed(Compaction.SummarizerTransform, (effect) =>
         OpenAiLanguageModel.withConfigOverride(effect, {

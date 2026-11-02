@@ -31,7 +31,6 @@ import * as LanguageModel from "effect/ai/LanguageModel"
 import * as AiError from "effect/ai/AiError"
 import * as Context from "effect/Context"
 import * as Option from "effect/Option"
-import * as Predicate from "effect/Predicate"
 import { identity, pipe } from "effect/Function"
 import * as MutableRef from "effect/MutableRef"
 import * as Queue from "effect/Queue"
@@ -286,7 +285,7 @@ export const makeWith = Effect.fnUntraced(function* <
     const compactionConfig = yield* Compaction.CompactionConfig
     let finalSummary = Option.none<string>()
     // `inputTokens.total` from the most recent finish part; undefined until
-    // the first response and after every compaction.
+    // the first response and after every rewrite of the history.
     let lastContextTokens: number | undefined = undefined
     // Images stay in the Prompt; this only decides whether they are sent.
     // Starts false for models known not to take images, and flips to false
@@ -333,6 +332,7 @@ export const makeWith = Effect.fnUntraced(function* <
     }
     const replaceHistory = (next: Prompt.Prompt) => {
       MutableRef.set(prompt, next)
+      lastContextTokens = undefined
       if (!opts.historyEvents) return
       Queue.offerUnsafe(
         output,
@@ -780,7 +780,6 @@ ${prompt}`,
                   ),
                 ),
               )
-              lastContextTokens = undefined
               tokensBefore = result.value.tokensBefore
               tokensAfter = result.value.tokensAfter
             } else {
@@ -939,17 +938,9 @@ ${Compaction.capOutput(turn.output ?? "").output}
         if (prompt.current === beforeCompaction) {
           const pruned = Compaction.prune(prompt.current, compactionConfig)
           if (Option.isSome(pruned)) {
-            replaceHistory(pruned.value.prompt)
-            lastContextTokens = undefined
-            maybeSend({
-              agentId,
-              part: new HistoryPruned({
-                toolResults: pruned.value.toolResults,
-                reasoningParts: pruned.value.reasoningParts,
-                tokensBefore: pruned.value.tokensBefore,
-                tokensAfter: pruned.value.tokensAfter,
-              }),
-            })
+            const { prompt: next, ...counts } = pruned.value
+            replaceHistory(next)
+            maybeSend({ agentId, part: new HistoryPruned(counts) })
           }
         }
 
@@ -1022,16 +1013,12 @@ ${Compaction.capOutput(turn.output ?? "").output}
               toolkit: singleTool,
             }),
           ),
-          Stream.takeUntil((part) => {
-            if (
+          Stream.takeUntil(
+            (part) =>
               modelConfig.cutStreamOnSteering !== false &&
               (part.type === "text-end" || part.type === "reasoning-end") &&
-              mailbox.messages.size > 0
-            ) {
-              return true
-            }
-            return false
-          }),
+              mailbox.messages.size > 0,
+          ),
           Stream.runForEachArray((parts) => {
             response.push(...parts)
             turnTimeoutReset()
@@ -1085,12 +1072,11 @@ ${Compaction.capOutput(turn.output ?? "").output}
                   if (usage.inputTokens.cacheWrite !== undefined) {
                     cacheWrite += usage.inputTokens.cacheWrite
                   }
-                  const resent = historyResentReason(part.metadata)
-                  if (resent !== undefined) {
+                  if (isHistoryResent(part.metadata)) {
                     maybeSend({
                       agentId,
                       part: new SessionRestarted({
-                        reason: resent,
+                        reason: part.metadata.clanka.historyResent.reason,
                         contextTokens: usage.inputTokens.total ?? 0,
                         cacheWrite: usage.inputTokens.cacheWrite ?? 0,
                       }),
@@ -1817,22 +1803,26 @@ export class AgentModelConfig extends Context.Reference<{
 }) {
   static readonly layer = (options: typeof AgentModelConfig.Service) =>
     Layer.succeed(AgentModelConfig, options)
+  /**
+   * The keys of the service, for a provider that accepts them among its
+   * model options to split them from its own config.
+   */
+  static readonly optionKeys = [
+    "systemPromptTransform",
+    "supportsImages",
+    "cutStreamOnSteering",
+  ] as const
 }
 
-/**
- * The reason a provider reports in `metadata.clanka.historyResent` on a
- * `finish` part, when it had to send the whole history again.
- */
-const historyResentReason = (metadata: unknown): string | undefined => {
-  if (!Predicate.isObject(metadata)) return undefined
-  const clanka = metadata.clanka
-  if (!Predicate.isObject(clanka)) return undefined
-  const resent = clanka.historyResent
-  if (!Predicate.isObject(resent) || !Predicate.isString(resent.reason)) {
-    return undefined
-  }
-  return resent.reason
-}
+// A provider that had to send the whole history again says so, and why, in
+// `metadata.clanka.historyResent` on its `finish` part.
+const isHistoryResent = Schema.is(
+  Schema.Struct({
+    clanka: Schema.Struct({
+      historyResent: Schema.Struct({ reason: Schema.String }),
+    }),
+  }),
+)
 
 const responseToSummary = (
   response: ReadonlyArray<Response.AnyPart>,

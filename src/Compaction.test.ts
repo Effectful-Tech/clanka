@@ -192,6 +192,8 @@ describe("Compaction.CompactionConfig", () => {
         contextWindow: 236_000,
         reserveTokens: 16_000,
         keepRecentTokens: 20_000,
+        pruneProtectTokens: 40_000,
+        pruneMinimumTokens: 20_000,
       })
       assert.deepStrictEqual(config, Compaction.defaultConfig)
     }),
@@ -665,6 +667,84 @@ describe("Compaction.trimKept", () => {
     assert.deepStrictEqual(
       trimmed.map((m) => m.role),
       ["user", "assistant", "tool", "assistant"],
+    )
+  })
+})
+
+const hasReasoning = (message: Prompt.Message) =>
+  parts(message).some((part) => part.type === "reasoning")
+
+describe("Compaction.prune", () => {
+  // Two old ~10k-token results, then a recent ~4k-token one.
+  const history = Prompt.fromMessages([
+    system,
+    user("Investigate the failing build"),
+    assistantCall("c1", "await readFile({ path: 'a.log' })", "old thought"),
+    toolResult("c1", "OLD-ONE " + filler("one", 40_000)),
+    assistantCall("c2", "await readFile({ path: 'b.log' })", "old thought"),
+    toolResult("c2", "OLD-TWO " + filler("two", 40_000)),
+    assistantCall("c3", "await readFile({ path: 'c.log' })", "recent thought"),
+    toolResult("c3", "RECENT " + filler("three", 16_000)),
+  ])
+  const config = {
+    ...Compaction.defaultConfig,
+    pruneProtectTokens: 5_000,
+    pruneMinimumTokens: 10_000,
+  }
+
+  it("stubs old execute results and their reasoning in one batch", () => {
+    const result = Compaction.prune(history, config)
+    assert.isTrue(Option.isSome(result))
+    const { prompt, toolResults, reasoningParts, tokensBefore, tokensAfter } =
+      Option.getOrThrow(result)
+    const messages = prompt.content
+
+    // Nothing is added, removed or reordered, and the scripts are unchanged.
+    assert.deepStrictEqual(
+      messages.map((m) => m.role),
+      history.content.map((m) => m.role),
+    )
+    for (const i of [2, 4, 6]) {
+      assert.deepStrictEqual(
+        parts(messages[i]!).filter((p) => p.type === "tool-call"),
+        parts(history.content[i]!).filter((p) => p.type === "tool-call"),
+      )
+    }
+    assert.strictEqual(messages[1], history.content[1])
+
+    // The old results are stubbed and say so.
+    for (const i of [3, 5]) {
+      const stubbed = toolResultText(messages[i]!)
+      assert.isAtMost(
+        stubbed.length,
+        Compaction.prunedToolResultStubChars + 1_000,
+      )
+      assert.include(stubbed, "pruned")
+    }
+    assert.isFalse(hasReasoning(messages[2]!))
+    assert.isFalse(hasReasoning(messages[4]!))
+
+    // The protected tail is untouched.
+    assert.strictEqual(messages[6], history.content[6])
+    assert.strictEqual(messages[7], history.content[7])
+    assert.isTrue(hasReasoning(messages[6]!))
+
+    assert.strictEqual(toolResults, 2)
+    assert.strictEqual(reasoningParts, 2)
+    assert.isBelow(tokensAfter, tokensBefore)
+
+    // A pruned prompt has nothing left to prune.
+    assert.isTrue(Option.isNone(Compaction.prune(prompt, config)))
+  })
+
+  it("does nothing until the savings reach the minimum, or when disabled", () => {
+    assert.isTrue(
+      Option.isNone(
+        Compaction.prune(history, { ...config, pruneMinimumTokens: 50_000 }),
+      ),
+    )
+    assert.isTrue(
+      Option.isNone(Compaction.prune(history, { ...config, enabled: false })),
     )
   })
 })

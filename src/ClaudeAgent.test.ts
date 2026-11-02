@@ -12,14 +12,18 @@ import * as Effect from "effect/Effect"
 import * as Exit from "effect/Exit"
 import * as Fiber from "effect/Fiber"
 import * as Layer from "effect/Layer"
+import * as Option from "effect/Option"
 import * as Base64 from "effect/encoding/Base64"
 import * as Schema from "effect/Schema"
 import * as Scope from "effect/Scope"
 import * as Stream from "effect/Stream"
 import * as LanguageModel from "effect/ai/LanguageModel"
 import * as Prompt from "effect/ai/Prompt"
+import type * as Response from "effect/ai/Response"
 import * as Tool from "effect/ai/Tool"
 import * as Toolkit from "effect/ai/Toolkit"
+import * as Agent from "./Agent.ts"
+import * as AgentExecutor from "./AgentExecutor.ts"
 import * as ClaudeAgent from "./ClaudeAgent.ts"
 import { tinyPng } from "./fixtures/TestImages.ts"
 
@@ -492,6 +496,11 @@ const runSteps = Effect.fnUntraced(function* (
   }).pipe(Effect.provide(modelWith(fake)))
 })
 
+// How a step's finish part says Claude Code re-read the history.
+const historyResent = (parts: ReadonlyArray<Response.StreamPart<any>>) =>
+  (parts.find((part) => part.type === "finish")?.metadata.clanka as any)
+    ?.historyResent
+
 describe("ClaudeAgent.model", () => {
   it.effect("hands each parked call the result of its own tool use", () =>
     Effect.gen(function* () {
@@ -681,6 +690,110 @@ describe("ClaudeAgent.model", () => {
         assert.lengthOf(fake.sessions, 2)
         assert.isTrue(fake.sessions[0]!.closed)
       }),
+  )
+
+  it.effect("tells the caller why it started the session over", () =>
+    Effect.gen(function* () {
+      const fake = fakeClaude(async function* (session) {
+        await session.input.next()
+        yield* finalStep
+      })
+      const first = Prompt.fromMessages([system, user("go")])
+      yield* Effect.gen(function* () {
+        const ai = yield* LanguageModel.LanguageModel
+        const step = (prompt: Prompt.Prompt) =>
+          ai.streamText({ prompt, toolkit: Execute }).pipe(Stream.runCollect)
+        assert.isUndefined(historyResent(yield* step(first)))
+        const edited = Prompt.fromMessages([
+          ...first.content,
+          Prompt.makeMessage("assistant", {
+            content: [Prompt.makePart("text", { text: "Edited." })],
+          }),
+          user("Repeat your answer"),
+        ])
+        assert.deepStrictEqual(historyResent(yield* step(edited)), {
+          reason: "history-changed",
+        })
+      }).pipe(Effect.provide(modelWith(fake)))
+      assert.lengthOf(fake.sessions, 2)
+    }),
+  )
+
+  it.effect("keeps the session when the agent is steered mid-step", () =>
+    Effect.gen(function* () {
+      const steered = Promise.withResolvers<void>()
+      let steering = ""
+      const fake = fakeClaude(async function* (session) {
+        await session.input.next()
+        // A restarted session answers straight away.
+        if (session !== fake.sessions[0]) return yield* finalStep
+        yield* replying
+        await steered.promise
+        yield event({ type: "content_block_stop", index: 0 })
+        yield assistant({ type: "text", text: "Working" })
+        yield* executeStep([["toolu_a", "a"]]).slice(1)
+        await callExecute(session, [["toolu_a", "a"]])
+        steering = JSON.stringify((await session.input.next()).value)
+        yield* finalStep
+      })
+      const executor = AgentExecutor.AgentExecutor.of({
+        capabilities: Effect.succeed(
+          new AgentExecutor.Capabilities({
+            toolsDts: "",
+            environment: new AgentExecutor.ExecutionEnvironment({
+              cwd: "/",
+              baseline: [],
+              seen: [],
+            }),
+            instructions: Option.none(),
+            supportsSearch: false,
+            tools: [],
+            skills: [],
+          }),
+        ),
+        execute: () => Stream.succeed("ran a"),
+        executeUnsafe: () => Effect.die("executeUnsafe not implemented"),
+      })
+      const summary = yield* Effect.gen(function* () {
+        const agent = yield* Agent.make
+        let sentSteering = false
+        return yield* agent.send({ prompt: "go" }).pipe(
+          Effect.flatMap((stream) =>
+            stream.pipe(
+              Stream.runForEach((output) =>
+                Effect.gen(function* () {
+                  if (output._tag !== "ReasoningDelta" || sentSteering) return
+                  sentSteering = true
+                  yield* Effect.forkChild(agent.steer("Also check the docs"), {
+                    startImmediately: true,
+                  })
+                  steered.resolve()
+                }),
+              ),
+              Effect.as(""),
+              Effect.catchTag("AgentFinished", (finished) =>
+                Effect.succeed(finished.summary),
+              ),
+            ),
+          ),
+        )
+      }).pipe(
+        Effect.provideService(AgentExecutor.AgentExecutor, executor),
+        Effect.provide(
+          Layer.merge(
+            ClaudeAgent.model("claude-opus-5-5", {
+              executable: "/fake/claude",
+              query: fake.query,
+            }),
+            Agent.ConversationMode.layer(true),
+          ),
+        ),
+        Effect.scoped,
+      )
+      assert.strictEqual(summary, "Done.")
+      assert.lengthOf(fake.sessions, 1)
+      assert.include(steering, "Also check the docs")
+    }),
   )
 
   it.effect("closes Claude Code when a step is cut short", () =>

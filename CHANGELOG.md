@@ -1,5 +1,21 @@
 # clanka
 
+## 0.18.0
+
+### Minor Changes
+
+- [#271](https://github.com/Effectful-Tech/clanka/pull/271) [`2620f67`](https://github.com/Effectful-Tech/clanka/commit/2620f67069c48d86f02ecc023e4101a09837661d) Thanks [@tim-smart](https://github.com/tim-smart)! - Codex requests now send a `prompt_cache_key` per model, and a `SessionRestarted` output part reports when the Claude provider had to resend the whole history and what that cost. Steering a Claude agent no longer restarts its Claude Code session.
+
+- [#270](https://github.com/Effectful-Tech/clanka/pull/270) [`9142d5c`](https://github.com/Effectful-Tech/clanka/commit/9142d5c5bb1b987d62856b2e6ca59bd5b6a6fef5) Thanks [@tim-smart](https://github.com/tim-smart)! - Compact earlier, at 160k tokens by default, through the new `thresholdTokens` compaction option. The CLI and `clanka acp` take `--compaction-threshold` (or `CLANKA_COMPACTION_THRESHOLD`).
+
+  Sub-agents and the compaction summarizer can run on a different model than the agent with `--subagent-model` and `--summarizer-model` (or `CLANKA_SUBAGENT_MODEL` and `CLANKA_SUMMARIZER_MODEL`). Library users can provide `Compaction.layerSummarizerModel`, and pass the models to `ModelLayer.make` and `ModelLayer.makeAcp`.
+
+### Patch Changes
+
+- [#271](https://github.com/Effectful-Tech/clanka/pull/271) [`2620f67`](https://github.com/Effectful-Tech/clanka/commit/2620f67069c48d86f02ecc023e4101a09837661d) Thanks [@tim-smart](https://github.com/tim-smart)! - Simplify the session restart reporting and Codex prompt cache key internals. No behaviour change. Providers can now use `AgentModelConfig.optionKeys` to split the shared agent options from their own model config.
+
+- [#266](https://github.com/Effectful-Tech/clanka/pull/266) [`4c6cf3d`](https://github.com/Effectful-Tech/clanka/commit/4c6cf3d29ebf54fb44c37c1bb84ff8ca9c8eabb0) Thanks [@tim-smart](https://github.com/tim-smart)! - Use fewer tokens on script output: `console.log` prints arrays and objects on one line, and the system prompt asks the model to print only what it needs
+
 ## 0.17.3
 
 ### Patch Changes

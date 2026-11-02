@@ -333,9 +333,9 @@ const pruneStub = (result: string): string => {
   )
 }
 
-const isPrunable = (
-  part: Prompt.ToolMessagePart,
-): part is Prompt.ToolResultPart & { readonly result: string } =>
+type PrunableResult = Prompt.ToolResultPart & { readonly result: string }
+
+const isPrunable = (part: Prompt.ToolMessagePart): part is PrunableResult =>
   part.type === "tool-result" &&
   typeof part.result === "string" &&
   part.result.length > prunedToolResultStubChars + prunedToolResultSlackChars
@@ -345,10 +345,12 @@ const charsToTokens = (chars: number) => Math.ceil(chars / 4)
 /**
  * Prune old history in one batch, before a model call.
  *
- * Walking back from the newest message, the `execute` results that fit in
- * `pruneProtectTokens` are protected. Every older result is stubbed to
+ * Walking back from the newest result, the `execute` results that fit in
+ * `pruneProtectTokens` are protected; within a tool message, later results
+ * count as newer. Every older result is stubbed to
  * `prunedToolResultStubChars` (head + marker + tail), and `reasoning` parts
- * are dropped from the assistant messages before the newest stubbed result.
+ * are dropped from the assistant messages before the newest stubbed result,
+ * except from those that made a call with a protected result.
  *
  * Any rewrite invalidates the provider caches from the first changed message
  * on, so this returns `None` unless the batch saves at least
@@ -368,13 +370,18 @@ export const prune = (
   if (!config.enabled) return Option.none()
   const messages = prompt.content
 
-  // The newest tool message with a result outside the protected window.
-  let boundary = -1
+  // The newest result outside the protected window: it and every older
+  // result can be pruned. The calls of the protected results keep their
+  // reasoning.
+  let cutMessage = -1
+  let cutPart = -1
   let protectedTokens = 0
-  for (let i = messages.length - 1; i >= 0 && boundary === -1; i--) {
+  const protectedCalls = new Set<string>()
+  for (let i = messages.length - 1; i >= 0 && cutMessage === -1; i--) {
     const message = messages[i]!
     if (message.role !== "tool") continue
-    for (const part of message.content) {
+    for (let j = message.content.length - 1; j >= 0; j--) {
+      const part = message.content[j]!
       if (part.type !== "tool-result") continue
       const text =
         typeof part.result === "string"
@@ -382,23 +389,42 @@ export const prune = (
           : (JSON.stringify(part.result) ?? "")
       protectedTokens += charsToTokens(text.length)
       if (protectedTokens > config.pruneProtectTokens) {
-        boundary = i
+        cutMessage = i
+        cutPart = j
         break
       }
+      protectedCalls.add(part.id)
     }
   }
-  if (boundary === -1) return Option.none()
+  if (cutMessage === -1) return Option.none()
+
+  const prunable = (
+    i: number,
+    j: number,
+    part: Prompt.ToolMessagePart,
+  ): part is PrunableResult =>
+    (i < cutMessage || j <= cutPart) && isPrunable(part)
+  const dropsReasoning = (
+    i: number,
+    message: Prompt.Message,
+  ): message is Prompt.AssistantMessage =>
+    i < cutMessage &&
+    message.role === "assistant" &&
+    message.content.some((part) => part.type === "reasoning") &&
+    !message.content.some(
+      (part) => part.type === "tool-call" && protectedCalls.has(part.id),
+    )
 
   let savedChars = 0
-  for (let i = 0; i <= boundary; i++) {
+  for (let i = 0; i <= cutMessage; i++) {
     const message = messages[i]!
     if (message.role === "tool") {
-      for (const part of message.content) {
-        if (isPrunable(part)) {
+      message.content.forEach((part, j) => {
+        if (prunable(i, j, part)) {
           savedChars += part.result.length - pruneStub(part.result).length
         }
-      }
-    } else if (message.role === "assistant" && i < boundary) {
+      })
+    } else if (dropsReasoning(i, message)) {
       for (const part of message.content) {
         if (part.type === "reasoning") {
           savedChars += JSON.stringify(part).length
@@ -413,12 +439,14 @@ export const prune = (
   let toolResults = 0
   let reasoningParts = 0
   const content = messages.map((message, i): Prompt.Message => {
-    if (i > boundary) return message
+    if (i > cutMessage) return message
     if (message.role === "tool") {
-      if (!message.content.some(isPrunable)) return message
+      if (!message.content.some((part, j) => prunable(i, j, part))) {
+        return message
+      }
       return Prompt.makeMessage("tool", {
-        content: message.content.map((part) => {
-          if (!isPrunable(part)) return part
+        content: message.content.map((part, j) => {
+          if (!prunable(i, j, part)) return part
           toolResults++
           return Prompt.makePart("tool-result", {
             id: part.id,
@@ -432,10 +460,7 @@ export const prune = (
         options: message.options,
       })
     }
-    if (
-      message.role !== "assistant" ||
-      !message.content.some((part) => part.type === "reasoning")
-    ) {
+    if (message.role !== "assistant" || !dropsReasoning(i, message)) {
       return message
     }
     const kept = message.content.filter((part) => part.type !== "reasoning")

@@ -11,6 +11,7 @@ import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Socket from "effect/socket/Socket"
 import type * as Acp from "./Acp.ts"
+import * as Agent from "./Agent.ts"
 import { DeviceCodeHandler } from "./DeviceCodeHandler.ts"
 import * as ModelLayer from "./ModelLayer.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
@@ -40,6 +41,7 @@ const makeModel = ModelLayer.makeAcp({
     apiKey: Redacted.make("test-key"),
     apiUrl: "https://codex.test",
   },
+  auxiliary: { subagent: { provider: "openai", model: "gpt-4.1" } },
 })
 
 // The other providers' login and socket services, which the API-key openai
@@ -55,11 +57,12 @@ const unused = Layer.mergeAll(
 )
 
 // The request body the model for `modelId` sends at session thought level
-// `thoughtLevel`.
+// `thoughtLevel`, or its sub-agent model with `subagent`.
 const requestBody = Effect.fnUntraced(function* (
   modelId: string,
   thoughtLevel: Acp.ThoughtLevel = "high",
   fastMode = false,
+  subagent = false,
 ) {
   const requests: Array<HttpClientRequest.HttpClientRequest> = []
   const client = HttpClient.make((request) =>
@@ -72,9 +75,12 @@ const requestBody = Effect.fnUntraced(function* (
     }),
   )
   const model = Option.getOrThrow(makeModel(modelId, thoughtLevel, fastMode))
-  yield* Effect.gen(function* () {
+  const send = Effect.gen(function* () {
     const ai = yield* LanguageModel.LanguageModel
     yield* ai.streamText({ prompt: "hello" }).pipe(Stream.runDrain, Effect.exit)
+  })
+  yield* Effect.gen(function* () {
+    yield* subagent ? Effect.provide(send, yield* Agent.SubagentModel) : send
   }).pipe(
     Effect.provide(
       model.pipe(
@@ -125,6 +131,15 @@ describe("ModelLayer.makeAcp", () => {
       )
       assert.isFalse(
         "service_tier" in (yield* requestBody("openai:gpt-6-astra")),
+      )
+    }),
+  )
+
+  it.effect("runs sub-agents on the auxiliary sub-agent model", () =>
+    Effect.gen(function* () {
+      assert.strictEqual(
+        (yield* requestBody("openai:gpt-6-astra", "high", false, true)).model,
+        "gpt-4.1",
       )
     }),
   )

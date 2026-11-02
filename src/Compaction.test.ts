@@ -184,17 +184,20 @@ describe("Compaction.estimateTokens", () => {
 })
 
 describe("Compaction.CompactionConfig", () => {
-  it.effect("defaults to a 236k window with a 16k reserve", () =>
-    Effect.gen(function* () {
-      const config = yield* Compaction.CompactionConfig
-      assert.deepStrictEqual(Compaction.defaultConfig, {
-        enabled: true,
-        contextWindow: 236_000,
-        reserveTokens: 16_000,
-        keepRecentTokens: 20_000,
-      })
-      assert.deepStrictEqual(config, Compaction.defaultConfig)
-    }),
+  it.effect(
+    "defaults to a 236k window, a 16k reserve and a 160k threshold",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* Compaction.CompactionConfig
+        assert.deepStrictEqual(Compaction.defaultConfig, {
+          enabled: true,
+          contextWindow: 236_000,
+          reserveTokens: 16_000,
+          thresholdTokens: 160_000,
+          keepRecentTokens: 20_000,
+        })
+        assert.deepStrictEqual(config, Compaction.defaultConfig)
+      }),
   )
 })
 
@@ -207,9 +210,9 @@ describe("Compaction.shouldCompact", () => {
   const small = Prompt.fromMessages([user("hi")])
 
   for (const [tokens, expected] of [
-    [219_999, false],
-    [220_000, false],
-    [220_001, true],
+    [159_999, false],
+    [160_000, false],
+    [160_001, true],
   ] as const) {
     it(`returns ${expected} with default config and ${tokens} reported tokens`, () => {
       assert.strictEqual(

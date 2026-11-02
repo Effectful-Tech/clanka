@@ -49,6 +49,30 @@ which tier actually handles a request. Without fast mode clanka sends no
 service tier, so the account or project default applies, which may itself be
 fast; the ACP option labels this choice "Default".
 
+## Sub-agent and summarizer models
+
+Sub-agents and the compaction summarizer run on the agent's own model by
+default. To run either on a cheaper model, pass `--subagent-model` or
+`--summarizer-model` (or set `CLANKA_SUBAGENT_MODEL` or
+`CLANKA_SUMMARIZER_MODEL`) as `<provider>/<model>[/<effort>]`:
+
+```sh
+clanka --provider openai --model gpt-6-astra/high \
+  --subagent-model openai/gpt-6-astra/low \
+  --summarizer-model openai/gpt-6-astra/low
+```
+
+Without an effort, the provider's default effort is used. The models can come
+from any provider. In `clanka acp` they apply to every session, whatever model
+the session picks. `--fast` applies to them as well.
+
+## Compaction
+
+Before each model call, clanka compacts the history into a summary once the
+context passes `--compaction-threshold` tokens (`CLANKA_COMPACTION_THRESHOLD`,
+default 160000), or the assumed 236k context window minus a 16k reserve if
+that is lower. `--no-compaction` or `CLANKA_COMPACTION=false` turns it off.
+
 ## Claude Agent
 
 The `claude` provider runs Claude models through the

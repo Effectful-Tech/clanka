@@ -132,6 +132,51 @@ const ModelId = Schema.String.pipe(
   ),
 )
 
+// An `--subagent-model` or `--summarizer-model` value. Without an effort, the
+// provider's default effort is used.
+const auxiliaryModel = (options: {
+  readonly name: string
+  readonly env: string
+  readonly description: string
+}) =>
+  Flag.String(options.name).pipe(
+    Flag.withDescription(
+      `${options.description} As <provider>/<model>[/<effort>], e.g. openai/gpt-6-astra/low; also ${options.env}.`,
+    ),
+    Flag.withFallbackConfig(Config.String(options.env)),
+    Flag.withSchema(ModelId),
+    Flag.map((modelId): ModelLayer.ModelSpec => {
+      const [provider, model, effort] = modelId.split("/") as [
+        Provider,
+        string,
+        string | undefined,
+      ]
+      return { provider, model, effort }
+    }),
+    Flag.optional,
+  )
+
+const subagentModel = auxiliaryModel({
+  name: "subagent-model",
+  env: "CLANKA_SUBAGENT_MODEL",
+  description: "Run sub-agents on this model instead of the agent's model.",
+})
+
+const summarizerModel = auxiliaryModel({
+  name: "summarizer-model",
+  env: "CLANKA_SUMMARIZER_MODEL",
+  description:
+    "Summarize the history for compaction with this model instead of the agent's model.",
+})
+
+const auxiliaryModels = (flags: {
+  readonly subagentModel: Option.Option<ModelLayer.ModelSpec>
+  readonly summarizerModel: Option.Option<ModelLayer.ModelSpec>
+}): ModelLayer.AuxiliaryModels => ({
+  subagent: Option.getOrUndefined(flags.subagentModel),
+  summarizer: Option.getOrUndefined(flags.summarizerModel),
+})
+
 const provider = Flag.Literals("provider", providers).pipe(
   Flag.withAlias("p"),
   Flag.withFallbackPrompt(
@@ -208,6 +253,44 @@ const compaction = Flag.Boolean("compaction").pipe(
     Config.Boolean("CLANKA_COMPACTION").pipe(Config.withDefault(true)),
   ),
 )
+
+const NonNegativeInt = Schema.Int.pipe(
+  Schema.check(Schema.isGreaterThanOrEqualTo(0)),
+)
+
+// A compaction token setting, defaulting to `Compaction.defaultConfig`.
+const tokens = (options: {
+  readonly name: string
+  readonly env: string
+  readonly description: string
+  readonly defaultValue: number
+}) =>
+  Flag.Int(options.name).pipe(
+    Flag.withDescription(
+      `${options.description} Defaults to ${options.env} or ${options.defaultValue}.`,
+    ),
+    Flag.withFallbackConfig(
+      Config.Int(options.env).pipe(Config.withDefault(options.defaultValue)),
+    ),
+    Flag.withSchema(NonNegativeInt),
+  )
+
+const compactionThreshold = tokens({
+  name: "compaction-threshold",
+  env: "CLANKA_COMPACTION_THRESHOLD",
+  description:
+    "Compact once the context exceeds this many tokens, or the context window minus its reserve when that is lower.",
+  defaultValue: Compaction.defaultConfig.thresholdTokens,
+})
+
+const compactionConfig = (flags: {
+  readonly compaction: boolean
+  readonly compactionThreshold: number
+}) =>
+  Compaction.CompactionConfig.layer({
+    enabled: flags.compaction,
+    thresholdTokens: flags.compactionThreshold,
+  })
 
 // Kill switch: `--no-mcp` or CLANKA_MCP=false.
 const mcp = Flag.Boolean("mcp").pipe(
@@ -319,13 +402,16 @@ const acp = Command.make("acp", {
   trustAllTools,
   fast,
   compaction,
+  compactionThreshold,
+  subagentModel,
+  summarizerModel,
   apiKey,
   apiUrl,
 }).pipe(
   Command.withDescription(
     "Run as an Agent Client Protocol (ACP) server over stdio",
   ),
-  Command.withHandler(({ model, fast, apiKey, apiUrl }) =>
+  Command.withHandler(({ model, fast, apiKey, apiUrl, ...flags }) =>
     Effect.gen(function* () {
       const repo = yield* ModelsRepo.ModelsRepo
       const defaultThoughtLevel = yield* reasoning
@@ -349,16 +435,17 @@ const acp = Command.make("acp", {
             apiKey: Option.getOrUndefined(apiKey),
             apiUrl: Option.getOrUndefined(apiUrl),
           },
+          auxiliary: auxiliaryModels(flags),
         }),
       })
     }),
   ),
-  Command.provide(({ compaction }) =>
+  Command.provide((flags) =>
     Layer.mergeAll(
       Agent.ConversationMode.layer(false),
       Layer.succeed(Logger.LogToStderr, true),
       DeviceCodeHandler.layerLog,
-      Compaction.CompactionConfig.layer({ enabled: compaction }),
+      compactionConfig(flags),
     ),
   ),
 )
@@ -370,6 +457,9 @@ Command.make("clanka", {
   semantic,
   prompt,
   compaction,
+  compactionThreshold,
+  subagentModel,
+  summarizerModel,
   apiKey,
   apiUrl,
   mcp,
@@ -386,6 +476,7 @@ Command.make("clanka", {
       apiUrl,
       mcp,
       mcpConfig,
+      ...flags
     }) {
       const stdio = yield* Stdio.Stdio
       const mcpServers = yield* McpConfig.load({
@@ -415,6 +506,7 @@ Command.make("clanka", {
           apiUrl: Option.getOrUndefined(apiUrl),
         },
         fast,
+        auxiliaryModels(flags),
       )
 
       return yield* Effect.gen(function* () {
@@ -466,10 +558,10 @@ Command.make("clanka", {
       )
     }),
   ),
-  Command.provide(({ prompt, compaction }) =>
+  Command.provide(({ prompt, ...flags }) =>
     Layer.mergeAll(
       Agent.ConversationMode.layer(Option.isNone(prompt)),
-      Compaction.CompactionConfig.layer({ enabled: compaction }),
+      compactionConfig(flags),
     ),
   ),
   Command.withSubcommands([acp]),

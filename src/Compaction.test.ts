@@ -737,6 +737,69 @@ describe("Compaction.prune", () => {
     assert.isTrue(Option.isNone(Compaction.prune(prompt, config)))
   })
 
+  it("protects the newest results within a message with several", () => {
+    // One response called execute twice; the newest result fits the
+    // protected window and the one before it does not.
+    const parallel = Prompt.fromMessages([
+      system,
+      user("Investigate the failing build"),
+      assistantCall("c1", "await readFile({ path: 'a.log' })", "old thought"),
+      toolResult("c1", "OLD-ONE " + filler("one", 40_000)),
+      Prompt.makeMessage("assistant", {
+        content: [
+          Prompt.makePart("reasoning", { text: "recent thought" }),
+          ...["c2", "c3"].map((id) =>
+            Prompt.makePart("tool-call", {
+              id,
+              name: "execute",
+              params: { script: `await readFile({ path: '${id}.log' })` },
+              providerExecuted: false,
+            }),
+          ),
+        ],
+      }),
+      Prompt.makeMessage("tool", {
+        content: ["c2", "c3"].map((id) =>
+          Prompt.makePart("tool-result", {
+            id,
+            name: "execute",
+            isFailure: false,
+            result: `${id.toUpperCase()} ` + filler(id, 40_000),
+            providerExecuted: false,
+          }),
+        ),
+      }),
+    ])
+    const result = Compaction.prune(parallel, {
+      ...config,
+      pruneProtectTokens: 15_000,
+      pruneMinimumTokens: 10_000,
+    })
+    assert.isTrue(Option.isSome(result))
+    const messages = Option.getOrThrow(result).prompt.content
+    const results = parts(messages[5]!).flatMap((part) =>
+      part.type === "tool-result" ? [part.result as string] : [],
+    )
+    assert.isAtMost(
+      results[0]!.length,
+      Compaction.prunedToolResultStubChars + 1_000,
+    )
+    assert.strictEqual(
+      results[1],
+      "C3 " + filler("c3", 40_000),
+      "the newest result is kept verbatim",
+    )
+    assert.isAtMost(
+      toolResultText(messages[3]!).length,
+      Compaction.prunedToolResultStubChars + 1_000,
+    )
+    assert.isFalse(hasReasoning(messages[2]!))
+    assert.isTrue(
+      hasReasoning(messages[4]!),
+      "reasoning of a response with a protected result is kept",
+    )
+  })
+
   it("does nothing until the savings reach the minimum, or when disabled", () => {
     assert.isTrue(
       Option.isNone(

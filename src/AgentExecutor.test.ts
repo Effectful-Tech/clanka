@@ -268,6 +268,28 @@ const withSlowGh = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       }),
   )
 
+// Node's default `console.log` breaks values over many lines and pads short
+// array entries into columns. That whitespace is paid for in every prompt.
+describe("console.log in scripts", () => {
+  it.live("prints arrays and objects on one line without padding", () =>
+    Effect.gen(function* () {
+      const output = yield* runScript(`
+console.log([".changeset", ".envrc", ".git", ".github", ".gitignore", ".husky", ".oxlintrc.json", ".prettierignore", ".prettierrc.json", ".specs", "AGENTS.md", "CHANGELOG.md", "CLAUDE.md", "README.md", "examples", "flake.lock", "flake.nix", "package.json", "pnpm-lock.yaml", "scripts", "src", "tsconfig.json", "tsdown.config.ts", "vitest.config.ts"])
+console.log([0, 37, 74, 111, 148, 185, 222, 259, 296, 333, 370, 407, 444, 481, 518, 555, 592, 629, 666, 703, 740, 777, 814, 851, 888, 925, 962, 999, 1036, 1073])
+console.log({ name: "my-project", version: "1.0.0", scripts: { check: "oxlint -c .oxlintrc.json --fix && pnpm tsc -b tsconfig.json", test: "vitest run" } })`)
+      const lines = output.trimEnd().split("\n")
+      assert.strictEqual(lines.length, 3, output)
+      assert.include(lines[0], "vitest.config.ts")
+      assert.include(lines[1], "1073")
+      assert.include(lines[2], "vitest run")
+      assert.notMatch(output, / {2,}/, "no padding or indentation")
+    }).pipe(
+      Effect.timeout("3 seconds"),
+      Effect.provide(executorModes.local({})),
+    ),
+  )
+})
+
 for (const [mode, executorLayer] of Object.entries(executorModes)) {
   describe(`${mode} executor environment`, () => {
     // A cancelled script keeps the directory it changed to, as an ACP

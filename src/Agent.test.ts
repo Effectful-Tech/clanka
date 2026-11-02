@@ -8,7 +8,6 @@ import * as Exit from "effect/Exit"
 import * as Layer from "effect/Layer"
 import * as MutableRef from "effect/MutableRef"
 import * as Option from "effect/Option"
-import * as Path from "effect/Path"
 import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
 import * as AiError from "effect/ai/AiError"
@@ -754,57 +753,6 @@ describe("Agent execute output cap", () => {
         "no summarizer call",
       )
     }),
-  )
-})
-
-// Tool calls log a line each into the script output. The client shows them,
-// but the model wrote the calls itself, so they stay out of its history.
-describe("Agent tool call logs", () => {
-  it.effect("keeps tool call log lines out of the execute result", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem
-      const path = yield* Path.Path
-      const directory = yield* fs.makeTempDirectoryScoped()
-      yield* fs.writeFileString(path.join(directory, "notes.txt"), "NOTES-BODY")
-      const { exit, calls, outputs } = yield* Effect.gen(function* () {
-        const executor = yield* AgentExecutor.AgentExecutor
-        return yield* runAgentCollect({
-          executor,
-          respond: (_call, index) =>
-            index === 0
-              ? Stream.fromIterable([
-                  toolCall(
-                    "call-1",
-                    'console.log(await readFile({ path: "notes.txt", lineNumbers: false }))',
-                  ),
-                  finish(100),
-                ])
-              : Stream.fromIterable(text("done")),
-        })
-      }).pipe(
-        Effect.provide(
-          AgentExecutor.layerLocal({ directory }).pipe(
-            Layer.provide(FetchHttpClient.layer),
-          ),
-        ),
-      )
-      assert.isTrue(Exit.isSuccess(exit))
-
-      const [result] = toolResults(calls[1]!.prompt)
-      const seen = result!.result as string
-      assert.include(seen, "NOTES-BODY")
-      assert.notInclude(seen, 'Calling "readFile"')
-
-      const [script] = outputsOfTag(outputs, "ScriptOutput")
-      assert.include(script!.output, "NOTES-BODY")
-      assert.include(script!.output, 'Calling "readFile"')
-
-      // The system prompt's example output does not show them either.
-      const system = calls[0]!.prompt.content.find(
-        (message) => message.role === "system",
-      )
-      assert.notInclude(system!.content as string, 'Calling "')
-    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   )
 })
 

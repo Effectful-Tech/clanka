@@ -801,7 +801,7 @@ ${prompt}`,
       maybeSend({ agentId, part: new ScriptEnd(), release: true })
       const normalizedScript = stripWrappingCodeFence(script)
       scriptsRan = true
-      const chunks = yield* pipe(
+      const output = yield* pipe(
         executor.execute({
           script: normalizedScript,
           environment: opts.environment.current,
@@ -814,16 +814,11 @@ ${prompt}`,
           onImage,
           loopTools: scriptLoopTools,
         }),
-        Stream.runCollect,
+        Stream.mkString,
       )
-      const output = chunks.join("")
       // Always-on cap on what enters the Prompt. The ScriptOutput event keeps
-      // the full output for display, tool call logs included; the formatter
-      // applies its own truncation. The model wrote the calls itself, so the
-      // logs are left out of what it sees.
-      const capped = Compaction.capOutput(
-        chunks.filter((chunk) => !AgentExecutor.isToolCallLog(chunk)).join(""),
-      )
+      // the full output for display; the formatter applies its own truncation.
+      const capped = Compaction.capOutput(output)
       if (capped.capped) {
         maybeSend({
           agentId,
@@ -1489,6 +1484,8 @@ console.log("package.json:", JSON.parse(content))
 And then you will receive back the console output:
 
 \`\`\`
+[22:44:53.050] INFO (#47): Calling "ls" { directory: '.' }
+[22:44:53.054] INFO (#47): Calling "readFile" { path: 'package.json' }
 files: [ 'package.json' ]
 package.json: { name: 'my-project', version: '1.0.0' }
 \`\`\``

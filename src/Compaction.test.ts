@@ -800,6 +800,36 @@ describe("Compaction.prune", () => {
     )
   })
 
+  it("protects results by position when a call id repeats", () => {
+    // Two turns reuse the id `c1`: an old ~10k-token result and a recent
+    // ~4k-token one. Only the recent one fits the protected window.
+    const repeated = Prompt.fromMessages([
+      system,
+      user("Investigate the failing build"),
+      assistantCall("c1", "await readFile({ path: 'a.log' })", "old thought"),
+      toolResult("c1", "OLD " + filler("one", 40_000)),
+      assistantCall(
+        "c1",
+        "await readFile({ path: 'b.log' })",
+        "recent thought",
+      ),
+      toolResult("c1", "RECENT " + filler("two", 16_000)),
+    ])
+    const result = Compaction.prune(repeated, {
+      ...config,
+      pruneProtectTokens: 5_000,
+      pruneMinimumTokens: 5_000,
+    })
+    assert.isTrue(Option.isSome(result), "the old result is pruned")
+    const messages = Option.getOrThrow(result).prompt.content
+    assert.isAtMost(
+      toolResultText(messages[3]!).length,
+      Compaction.prunedToolResultStubChars + 1_000,
+    )
+    assert.strictEqual(messages[4], repeated.content[4])
+    assert.strictEqual(messages[5], repeated.content[5])
+  })
+
   it("does nothing until the savings reach the minimum, or when disabled", () => {
     assert.isTrue(
       Option.isNone(

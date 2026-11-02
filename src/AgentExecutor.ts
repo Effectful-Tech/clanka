@@ -1384,7 +1384,11 @@ function runScriptWorker(load: (id: string) => unknown): void {
   })
 
   const sandbox: Record<string, unknown> = {
-    console: new Console({ stdout, colorMode: false }),
+    // Matches `inspectOptions`, which the worker source cannot reference.
+    console: new Console({
+      stdout,
+      inspectOptions: { colors: false, compact: true, breakLength: Infinity },
+    }),
     fetch,
     process: undefined,
   }
@@ -1432,6 +1436,16 @@ ${fromFailure}
 (${runScriptWorker})(require)
 `
 
+/**
+ * Prints values on one line, without the column padding Node uses for short
+ * array entries. `colors` replaces `colorMode`: Node rejects both together.
+ */
+const inspectOptions = {
+  colors: false,
+  compact: true,
+  breakLength: Infinity,
+}
+
 const homeDirectory = (): Option.Option<string> => {
   const fromEnv = process.env.HOME
   if (fromEnv) return Option.some(fromEnv)
@@ -1448,7 +1462,7 @@ const makeConsole = Effect.fn(function* (
   const writable = new QueueWriteStream(queue)
   const newConsole = new NodeConsole.Console({
     stdout: writable,
-    colorMode: false,
+    inspectOptions,
   })
   yield* Effect.addFinalizer(() => {
     writable.end()

@@ -1395,6 +1395,10 @@ const generateSystemTools = (
 ) => `YOU ONLY HAVE ONE TOOL AVAILABLE: "execute", to run javascript code to do your work.
 
 - Use \`console.log\` to print any output you need.
+- Print only what you need, as everything printed stays in your context.${when(
+  tools.offers("readFile"),
+  ` Read line ranges with "startLine" / "endLine" instead of whole files.`,
+)} Slice or filter large results before printing them.
 - Use top level await.${when(
   tools.offers("search") && tools.offers("rg"),
   `
@@ -1477,16 +1481,13 @@ console.log("files:", files)
 console.log("package.json:", JSON.parse(content))
 \`\`\`
 
-And then you will revieve back the console output:
+And then you will receive back the console output:
 
 \`\`\`
 [22:44:53.050] INFO (#47): Calling "ls" { directory: '.' }
 [22:44:53.054] INFO (#47): Calling "readFile" { path: 'package.json' }
 files: [ 'package.json' ]
-package.json: {
-  "name": "my-project",
-  "version": "1.0.0"
-}
+package.json: { name: 'my-project', version: '1.0.0' }
 \`\`\``
 
 const ReadSkillTools = Toolkit.make(

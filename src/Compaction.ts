@@ -396,7 +396,8 @@ export const prune = (
   }
   if (cut === -1) return Option.none()
 
-  const isProtected = (i: number, j: number) => i > cut || j > cutPart
+  const isProtected = (i: number, j: number) =>
+    i > cut || (i === cut && j > cutPart)
   const prunable = (
     i: number,
     j: number,

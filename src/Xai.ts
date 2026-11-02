@@ -54,6 +54,7 @@ export const model = (
             "reasoning",
             "systemPromptTransform",
             "supportsImages",
+            "cutStreamOnSteering",
           ]),
           store: options?.store ?? false,
           reasoning:
@@ -65,6 +66,7 @@ export const model = (
       AgentModelConfig.layer({
         systemPromptTransform: options?.systemPromptTransform,
         supportsImages: options?.supportsImages,
+        cutStreamOnSteering: options?.cutStreamOnSteering,
       }),
       // Cap compaction summaries; xAI honours max_output_tokens.
       Layer.succeed(Compaction.SummarizerTransform, (effect) =>
@@ -100,6 +102,7 @@ export const modelWebSocket = (
             "reasoning",
             "systemPromptTransform",
             "supportsImages",
+            "cutStreamOnSteering",
           ]),
           // xAI needs stored responses to resolve previous_response_id.
           store: true,
@@ -113,6 +116,7 @@ export const modelWebSocket = (
       AgentModelConfig.layer({
         systemPromptTransform: options?.systemPromptTransform,
         supportsImages: options?.supportsImages,
+        cutStreamOnSteering: options?.cutStreamOnSteering,
       }),
       // Cap compaction summaries; xAI honours max_output_tokens.
       Layer.succeed(Compaction.SummarizerTransform, (effect) =>

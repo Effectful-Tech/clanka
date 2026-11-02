@@ -1,14 +1,17 @@
 /**
  * Context compaction for the shared Agent loop.
  *
- * Two independent mechanisms live here:
+ * Three mechanisms live here:
  *
  * 1. An always-on cap on `execute` results before they enter the Prompt
  *    (`capOutput`). It runs on every surface and is not affected by the
  *    compaction kill switch.
- * 2. Auto-compaction of the live Prompt (`compactIfNeeded` before a model
- *    call, `compactAfterOverflow` after a context-length error). Both rewrite
- *    the Prompt to `system + <compaction-summary> user message + kept tail`.
+ * 2. Pruning of the live Prompt (`prune`): old `execute` results are stubbed
+ *    and old reasoning is dropped, in batches, so the provider caches are
+ *    invalidated once per batch rather than on every turn.
+ * 3. Auto-compaction of the live Prompt (`compactIfNeeded` before a model
+ *    call, `compact` after a context-length error). Both rewrite the Prompt
+ *    to `system + <compaction-summary> user message + kept tail`.
  *
  * @since 1.0.0
  */
@@ -40,6 +43,10 @@ import * as Image from "./Image.ts"
  *   `contextWindow - reserveTokens`.
  * - `keepRecentTokens`: size of the recent tail preserved verbatim after a
  *   compaction.
+ * - `pruneProtectTokens`: the newest `execute` results that fit in this many
+ *   tokens are never pruned.
+ * - `pruneMinimumTokens`: a prune only runs once it would save at least this
+ *   many tokens. This is what batches the rewrites.
  *
  * @since 1.0.0
  * @category Configuration
@@ -49,6 +56,8 @@ export interface CompactionConfigService {
   readonly contextWindow: number
   readonly reserveTokens: number
   readonly keepRecentTokens: number
+  readonly pruneProtectTokens: number
+  readonly pruneMinimumTokens: number
 }
 
 /**
@@ -60,6 +69,8 @@ export const defaultConfig: CompactionConfigService = {
   contextWindow: 236_000,
   reserveTokens: 16_000,
   keepRecentTokens: 20_000,
+  pruneProtectTokens: 40_000,
+  pruneMinimumTokens: 20_000,
 }
 
 /**
@@ -113,6 +124,22 @@ const summarizerToolResultCapChars = 2_000
  * @category Constants
  */
 export const keptToolResultStubChars = 2_000
+
+/**
+ * Size, in characters, that `prune` keeps of an old `execute` result: the
+ * head and the tail around a marker.
+ *
+ * @since 1.0.0
+ * @category Constants
+ */
+export const prunedToolResultStubChars = 1_000
+
+/**
+ * Results up to `prunedToolResultStubChars` plus this slack are never pruned.
+ * A pruned stub (head, marker and tail) fits in it, so a stub is never pruned
+ * again.
+ */
+const prunedToolResultSlackChars = 500
 
 /**
  * Maximum output tokens requested by providers that support a summary cap.
@@ -273,6 +300,160 @@ export const shouldCompact = (options: {
   if (!options.config.enabled) return false
   const tokens = options.contextTokens ?? estimateTokens(options.prompt)
   return tokens > options.config.contextWindow - options.config.reserveTokens
+}
+
+// =============================================================================
+// Pruning
+// =============================================================================
+
+/**
+ * @since 1.0.0
+ * @category Pruning
+ */
+export interface PruneResult {
+  readonly prompt: Prompt.Prompt
+  /** Number of `execute` results that were stubbed. */
+  readonly toolResults: number
+  /** Number of reasoning parts that were dropped. */
+  readonly reasoningParts: number
+  /** `estimateTokens` of the prompt before and after the prune. */
+  readonly tokensBefore: number
+  readonly tokensAfter: number
+}
+
+const pruneStub = (result: string): string => {
+  const headChars = Math.floor(prunedToolResultStubChars / 2)
+  const tailChars = prunedToolResultStubChars - headChars
+  const omitted = result.length - prunedToolResultStubChars
+  return (
+    result.slice(0, headChars) +
+    `\n\n[... old output pruned from history: ${omitted} of ${result.length} chars omitted. ` +
+    `Run the script again if you need it ...]\n\n` +
+    result.slice(result.length - tailChars)
+  )
+}
+
+const isPrunable = (
+  part: Prompt.ToolMessagePart,
+): part is Prompt.ToolResultPart & { readonly result: string } =>
+  part.type === "tool-result" &&
+  typeof part.result === "string" &&
+  part.result.length > prunedToolResultStubChars + prunedToolResultSlackChars
+
+const charsToTokens = (chars: number) => Math.ceil(chars / 4)
+
+/**
+ * Prune old history in one batch, before a model call.
+ *
+ * Walking back from the newest message, the `execute` results that fit in
+ * `pruneProtectTokens` are protected. Every older result is stubbed to
+ * `prunedToolResultStubChars` (head + marker + tail), and `reasoning` parts
+ * are dropped from the assistant messages before the newest stubbed result.
+ *
+ * Any rewrite invalidates the provider caches from the first changed message
+ * on, so this returns `None` unless the batch saves at least
+ * `pruneMinimumTokens`. It also returns `None` when compaction is disabled.
+ *
+ * Message order, message count, tool-call scripts and ids never change, and
+ * messages that are not pruned are kept as the same objects. Already pruned
+ * results are not pruned again.
+ *
+ * @since 1.0.0
+ * @category Pruning
+ */
+export const prune = (
+  prompt: Prompt.Prompt,
+  config: CompactionConfigService,
+): Option.Option<PruneResult> => {
+  if (!config.enabled) return Option.none()
+  const messages = prompt.content
+
+  // The newest tool message with a result outside the protected window.
+  let boundary = -1
+  let protectedTokens = 0
+  for (let i = messages.length - 1; i >= 0 && boundary === -1; i--) {
+    const message = messages[i]!
+    if (message.role !== "tool") continue
+    for (const part of message.content) {
+      if (part.type !== "tool-result") continue
+      const text =
+        typeof part.result === "string"
+          ? part.result
+          : (JSON.stringify(part.result) ?? "")
+      protectedTokens += charsToTokens(text.length)
+      if (protectedTokens > config.pruneProtectTokens) {
+        boundary = i
+        break
+      }
+    }
+  }
+  if (boundary === -1) return Option.none()
+
+  let savedChars = 0
+  for (let i = 0; i <= boundary; i++) {
+    const message = messages[i]!
+    if (message.role === "tool") {
+      for (const part of message.content) {
+        if (isPrunable(part)) {
+          savedChars += part.result.length - pruneStub(part.result).length
+        }
+      }
+    } else if (message.role === "assistant" && i < boundary) {
+      for (const part of message.content) {
+        if (part.type === "reasoning") {
+          savedChars += JSON.stringify(part).length
+        }
+      }
+    }
+  }
+  if (charsToTokens(savedChars) < config.pruneMinimumTokens) {
+    return Option.none()
+  }
+
+  let toolResults = 0
+  let reasoningParts = 0
+  const content = messages.map((message, i): Prompt.Message => {
+    if (i > boundary) return message
+    if (message.role === "tool") {
+      if (!message.content.some(isPrunable)) return message
+      return Prompt.makeMessage("tool", {
+        content: message.content.map((part) => {
+          if (!isPrunable(part)) return part
+          toolResults++
+          return Prompt.makePart("tool-result", {
+            id: part.id,
+            name: part.name,
+            isFailure: part.isFailure,
+            providerExecuted: part.providerExecuted,
+            result: pruneStub(part.result),
+            options: part.options,
+          })
+        }),
+        options: message.options,
+      })
+    }
+    if (
+      message.role !== "assistant" ||
+      !message.content.some((part) => part.type === "reasoning")
+    ) {
+      return message
+    }
+    const kept = message.content.filter((part) => part.type !== "reasoning")
+    reasoningParts += message.content.length - kept.length
+    return Prompt.makeMessage("assistant", {
+      content: kept,
+      options: message.options,
+    })
+  })
+
+  const pruned = Prompt.fromMessages(content)
+  return Option.some({
+    prompt: pruned,
+    toolResults,
+    reasoningParts,
+    tokensBefore: estimateTokens(prompt),
+    tokensAfter: estimateTokens(pruned),
+  })
 }
 
 // =============================================================================

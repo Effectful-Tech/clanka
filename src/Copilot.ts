@@ -42,13 +42,23 @@ export const model = (
         config: Struct.omit(
           options ?? {},
           options?.reasoning === null
-            ? ["reasoning", "systemPromptTransform", "supportsImages"]
-            : ["systemPromptTransform", "supportsImages"],
+            ? [
+                "reasoning",
+                "systemPromptTransform",
+                "supportsImages",
+                "cutStreamOnSteering",
+              ]
+            : [
+                "systemPromptTransform",
+                "supportsImages",
+                "cutStreamOnSteering",
+              ],
         ),
       }),
       AgentModelConfig.layer({
         systemPromptTransform: options?.systemPromptTransform,
         supportsImages: options?.supportsImages,
+        cutStreamOnSteering: options?.cutStreamOnSteering,
       }),
       // Cap compaction summaries; Copilot honours max_output_tokens.
       Layer.succeed(Compaction.SummarizerTransform, (effect) =>

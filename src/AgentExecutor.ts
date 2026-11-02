@@ -1384,7 +1384,11 @@ function runScriptWorker(load: (id: string) => unknown): void {
   })
 
   const sandbox: Record<string, unknown> = {
-    console: new Console({ stdout, colorMode: false }),
+    // Matches `inspectOptions`, which the worker source cannot reference.
+    console: new Console({
+      stdout,
+      inspectOptions: { colors: false, compact: true, breakLength: Infinity },
+    }),
     fetch,
     process: undefined,
   }
@@ -1432,6 +1436,30 @@ ${fromFailure}
 (${runScriptWorker})(require)
 `
 
+/**
+ * Whether a chunk of script output is the line a tool logs when it is called,
+ * such as `[01:09:13.536] INFO (#25): Calling "readFile" { path: 'a.ts' }`.
+ * Each log line arrives as its own chunk.
+ *
+ * @since 1.0.0
+ * @category Output
+ */
+export const isToolCallLog = (chunk: string): boolean =>
+  toolCallLogPattern.test(chunk)
+
+const toolCallLogPattern =
+  /^\[\d{2}:\d{2}:\d{2}\.\d{3}\] INFO \(#\d+\): Calling "[^"\n]+"/
+
+/**
+ * Prints values on one line, without the column padding Node uses for short
+ * array entries. A new object each time, as Node's Console writes to it.
+ */
+const inspectOptions = () => ({
+  colors: false,
+  compact: true,
+  breakLength: Infinity,
+})
+
 const homeDirectory = (): Option.Option<string> => {
   const fromEnv = process.env.HOME
   if (fromEnv) return Option.some(fromEnv)
@@ -1448,7 +1476,7 @@ const makeConsole = Effect.fn(function* (
   const writable = new QueueWriteStream(queue)
   const newConsole = new NodeConsole.Console({
     stdout: writable,
-    colorMode: false,
+    inspectOptions: inspectOptions(),
   })
   yield* Effect.addFinalizer(() => {
     writable.end()

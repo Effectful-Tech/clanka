@@ -801,7 +801,7 @@ ${prompt}`,
       maybeSend({ agentId, part: new ScriptEnd(), release: true })
       const normalizedScript = stripWrappingCodeFence(script)
       scriptsRan = true
-      const output = yield* pipe(
+      const chunks = yield* pipe(
         executor.execute({
           script: normalizedScript,
           environment: opts.environment.current,
@@ -814,11 +814,16 @@ ${prompt}`,
           onImage,
           loopTools: scriptLoopTools,
         }),
-        Stream.mkString,
+        Stream.runCollect,
       )
+      const output = chunks.join("")
       // Always-on cap on what enters the Prompt. The ScriptOutput event keeps
-      // the full output for display; the formatter applies its own truncation.
-      const capped = Compaction.capOutput(output)
+      // the full output for display, tool call logs included; the formatter
+      // applies its own truncation. The model wrote the calls itself, so the
+      // logs are left out of what it sees.
+      const capped = Compaction.capOutput(
+        chunks.filter((chunk) => !AgentExecutor.isToolCallLog(chunk)).join(""),
+      )
       if (capped.capped) {
         maybeSend({
           agentId,
@@ -1395,6 +1400,10 @@ const generateSystemTools = (
 ) => `YOU ONLY HAVE ONE TOOL AVAILABLE: "execute", to run javascript code to do your work.
 
 - Use \`console.log\` to print any output you need.
+- Print only what you need, as everything printed stays in your context.${when(
+  tools.offers("readFile"),
+  ` Read line ranges with "startLine" / "endLine" instead of whole files.`,
+)} Slice or filter large results before printing them.
 - Use top level await.${when(
   tools.offers("search") && tools.offers("rg"),
   `
@@ -1477,16 +1486,11 @@ console.log("files:", files)
 console.log("package.json:", JSON.parse(content))
 \`\`\`
 
-And then you will revieve back the console output:
+And then you will receive back the console output:
 
 \`\`\`
-[22:44:53.050] INFO (#47): Calling "ls" { directory: '.' }
-[22:44:53.054] INFO (#47): Calling "readFile" { path: 'package.json' }
 files: [ 'package.json' ]
-package.json: {
-  "name": "my-project",
-  "version": "1.0.0"
-}
+package.json: { name: 'my-project', version: '1.0.0' }
 \`\`\``
 
 const ReadSkillTools = Toolkit.make(

@@ -15,6 +15,7 @@ import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as Codex from "./Codex.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Copilot from "./Copilot.ts"
+import * as Xai from "./Xai.ts"
 
 const user = (text: string) =>
   Prompt.makeMessage("user", {
@@ -223,6 +224,41 @@ describe("Compaction provider transport", () => {
           "summary override must not leak into the next model call",
         )
         assert.strictEqual(continuation.stream, true)
+      }),
+  )
+
+  it.effect(
+    "summarizes on the SummarizerModel without the agent model's transform",
+    () =>
+      Effect.gen(function* () {
+        const http = captureHttp()
+        yield* compact.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              // xAI caps summaries with max_output_tokens on the same
+              // client Codex uses, so a leaked transform would show up.
+              Xai.model("grok-4.6").pipe(
+                Layer.provide(
+                  OpenAiClient.layer({ apiUrl: "https://xai.test" }),
+                ),
+              ),
+              Compaction.layerSummarizerModel(
+                Codex.model("gpt-6-astra").pipe(
+                  Layer.provide(
+                    OpenAiClient.layer({ apiUrl: "https://codex.test" }),
+                  ),
+                ),
+              ),
+            ).pipe(Layer.provide(http.layer)),
+          ),
+          Effect.exit,
+        )
+        assert.strictEqual(http.requests.length, 1)
+        assert.strictEqual(
+          http.requests[0]!.url,
+          "https://codex.test/responses",
+        )
+        assert.isFalse("max_output_tokens" in body(http.requests[0]!))
       }),
   )
 })

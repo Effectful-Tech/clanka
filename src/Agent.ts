@@ -69,7 +69,6 @@ import {
   ExecuteOutputCapped,
   CompactionStarted,
   CompactionEnded,
-  HistoryPruned,
   SessionRestarted,
   EnvironmentUpdated,
   HistoryAppended,
@@ -282,7 +281,6 @@ export const makeWith = Effect.fnUntraced(function* <
     const conversationMode = yield* ConversationMode
     const turnTimeout = yield* TurnTimeout
     const maxRetries = yield* MaxRetries
-    const compactionConfig = yield* Compaction.CompactionConfig
     let finalSummary = Option.none<string>()
     // `inputTokens.total` from the most recent finish part; undefined until
     // the first response and after every rewrite of the history.
@@ -916,10 +914,7 @@ ${Compaction.capOutput(turn.output ?? "").output}
           }
         }
 
-        // The one place the history is rewritten before a model call, so a
-        // provider cache is invalidated at most once per call: threshold
-        // compaction, or else a prune once it saves enough to be worth it.
-        const beforeCompaction = prompt.current
+        // Threshold compaction before the next model call
         yield* compactWithEvents(
           "threshold",
           Compaction.compactIfNeeded({
@@ -935,14 +930,6 @@ ${Compaction.capOutput(turn.output ?? "").output}
             ),
           ),
         )
-        if (prompt.current === beforeCompaction) {
-          const pruned = Compaction.prune(prompt.current, compactionConfig)
-          if (Option.isSome(pruned)) {
-            const { prompt: next, ...counts } = pruned.value
-            replaceHistory(next)
-            maybeSend({ agentId, part: new HistoryPruned(counts) })
-          }
-        }
 
         // Per attempt: the parts received, and what they reported.
         // oxlint-disable-next-line typescript/no-explicit-any

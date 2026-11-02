@@ -215,29 +215,11 @@ export class CompactionEnded extends Schema.TaggedClass<CompactionEnded>()(
 ) {}
 
 /**
- * Emitted when old `execute` results and reasoning were pruned from the
- * history before a model call. `toolResults` and `reasoningParts` count what
- * was stubbed and dropped; `tokensBefore` / `tokensAfter` are estimates.
- *
- * @since 1.0.0
- * @category Output
- */
-export class HistoryPruned extends Schema.TaggedClass<HistoryPruned>()(
-  "HistoryPruned",
-  {
-    toolResults: Schema.Number,
-    reasoningParts: Schema.Number,
-    tokensBefore: Schema.Number,
-    tokensAfter: Schema.Number,
-  },
-) {}
-
-/**
  * Emitted when the provider could not continue its live session and was sent
  * the whole history again, so the provider cache missed on it.
  *
  * `reason` is reported by the provider: `history-changed` (an earlier message
- * was rewritten, e.g. by compaction or pruning), `step-abandoned` (the last
+ * was rewritten, e.g. by compaction), `step-abandoned` (the last
  * step did not finish: a retry, timeout or interrupt) or `tools-changed`.
  * `contextTokens` and `cacheWrite` are the usage of the resent request.
  *
@@ -281,7 +263,6 @@ export type ContentPart =
   | ExecuteOutputCapped
   | CompactionStarted
   | CompactionEnded
-  | HistoryPruned
   | SessionRestarted
   | EnvironmentUpdated
 
@@ -298,7 +279,6 @@ export const ContentPart = Schema.Union([
   ExecuteOutputCapped,
   CompactionStarted,
   CompactionEnded,
-  HistoryPruned,
   SessionRestarted,
   EnvironmentUpdated,
 ])
@@ -335,7 +315,7 @@ export class HistoryAppended extends Schema.TaggedClass<HistoryAppended>()(
 ) {}
 
 /**
- * Emitted when compaction or pruning rewrites the agent's history. `messages` is the
+ * Emitted when compaction rewrites the agent's history. `messages` is the
  * whole new history, without the system message.
  *
  * @since 1.0.0

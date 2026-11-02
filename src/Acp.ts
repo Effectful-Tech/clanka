@@ -905,13 +905,6 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
               `Retrying after error: ${part.error.message}\n`,
             ),
           })
-        case "HistoryPruned":
-          return update(session.id, {
-            sessionUpdate: "agent_thought_chunk",
-            content: textContent(
-              `History pruned: ${part.toolResults} old results, ~${part.tokensBefore} tokens to ~${part.tokensAfter}\n`,
-            ),
-          })
         case "SessionRestarted":
           return update(session.id, {
             sessionUpdate: "agent_thought_chunk",

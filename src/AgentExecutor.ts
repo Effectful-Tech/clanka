@@ -1452,13 +1452,13 @@ const toolCallLogPattern =
 
 /**
  * Prints values on one line, without the column padding Node uses for short
- * array entries. A new object each time, as Node's Console writes to it.
+ * array entries. `colors` replaces `colorMode`: Node rejects both together.
  */
-const inspectOptions = () => ({
+const inspectOptions = {
   colors: false,
   compact: true,
   breakLength: Infinity,
-})
+}
 
 const homeDirectory = (): Option.Option<string> => {
   const fromEnv = process.env.HOME
@@ -1476,7 +1476,7 @@ const makeConsole = Effect.fn(function* (
   const writable = new QueueWriteStream(queue)
   const newConsole = new NodeConsole.Console({
     stdout: writable,
-    inspectOptions: inspectOptions(),
+    inspectOptions,
   })
   yield* Effect.addFinalizer(() => {
     writable.end()

@@ -371,12 +371,11 @@ export const prune = (
   const messages = prompt.content
 
   // Walk the results newest to oldest until the protected window is full.
-  // `cut` is the message holding the newest result outside it; the results
-  // inside it are protected by id, and the calls that made them keep their
-  // reasoning.
+  // The cut is the newest result outside it, as the index of its message
+  // and its index in that message; the results after it are protected.
   let cut = -1
+  let cutPart = -1
   let protectedTokens = 0
-  const protectedIds = new Set<string>()
   scan: for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]!
     if (message.role !== "tool") continue
@@ -390,29 +389,47 @@ export const prune = (
       protectedTokens += charsToTokens(text.length)
       if (protectedTokens > config.pruneProtectTokens) {
         cut = i
+        cutPart = j
         break scan
       }
-      protectedIds.add(part.id)
     }
   }
   if (cut === -1) return Option.none()
 
-  const prunable = (part: Prompt.ToolMessagePart): part is PrunableResult =>
-    isPrunable(part) && !protectedIds.has(part.id)
-  const keepsReasoning = (message: Prompt.AssistantMessage) =>
-    message.content.some(
-      (part) => part.type === "tool-call" && protectedIds.has(part.id),
-    )
+  const isProtected = (i: number, j: number) => i > cut || j > cutPart
+  const prunable = (
+    i: number,
+    j: number,
+    part: Prompt.ToolMessagePart,
+  ): part is PrunableResult => !isProtected(i, j) && isPrunable(part)
+
+  // The assistant message whose calls made the oldest protected results is
+  // the last one before the message holding them. It keeps its reasoning;
+  // every other assistant message before the cut loses it.
+  const firstProtected = messages.findIndex(
+    (message, i) =>
+      i >= cut &&
+      message.role === "tool" &&
+      message.content.some(
+        (part, j) => part.type === "tool-result" && isProtected(i, j),
+      ),
+  )
+  const keepsReasoning = messages.findLastIndex(
+    (message, i) => i < firstProtected && message.role === "assistant",
+  )
 
   let toolResults = 0
   let reasoningParts = 0
   let savedChars = 0
   const content = messages.map((message, i): Prompt.Message => {
     if (i > cut) return message
-    if (message.role === "tool" && message.content.some(prunable)) {
+    if (
+      message.role === "tool" &&
+      message.content.some((part, j) => prunable(i, j, part))
+    ) {
       return Prompt.makeMessage("tool", {
-        content: message.content.map((part) => {
-          if (!prunable(part)) return part
+        content: message.content.map((part, j) => {
+          if (!prunable(i, j, part)) return part
           const result = pruneStub(part.result)
           toolResults++
           savedChars += part.result.length - result.length
@@ -428,7 +445,7 @@ export const prune = (
         options: message.options,
       })
     }
-    if (message.role === "assistant" && i < cut && !keepsReasoning(message)) {
+    if (message.role === "assistant" && i < cut && i !== keepsReasoning) {
       const kept = message.content.filter((part) => {
         if (part.type !== "reasoning") return true
         reasoningParts++

@@ -21,6 +21,7 @@ import * as Predicate from "effect/Predicate"
 import * as Stream from "effect/Stream"
 import * as AiError from "effect/ai/AiError"
 import * as LanguageModel from "effect/ai/LanguageModel"
+import type * as Model from "effect/ai/Model"
 import * as Prompt from "effect/ai/Prompt"
 import type * as AgentOutput from "./AgentOutput.ts"
 import * as Image from "./Image.ts"
@@ -35,9 +36,11 @@ import * as Image from "./Image.ts"
  * - `enabled`: kill switch for both compact paths. Does **not** disable the
  *   `execute` output cap.
  * - `contextWindow`: assumed model context window in tokens.
- * - `reserveTokens`: headroom kept free below `contextWindow`. Compaction
- *   triggers once the last reported `contextTokens` (or the estimate) exceeds
- *   `contextWindow - reserveTokens`.
+ * - `reserveTokens`: headroom kept free below `contextWindow`.
+ * - `thresholdTokens`: compaction triggers once the last reported
+ *   `contextTokens` (or the estimate) exceeds this many tokens, or
+ *   `contextWindow - reserveTokens` when that is lower. Compacting well below
+ *   the context window keeps every turn's input smaller.
  * - `keepRecentTokens`: size of the recent tail preserved verbatim after a
  *   compaction.
  *
@@ -48,6 +51,7 @@ export interface CompactionConfigService {
   readonly enabled: boolean
   readonly contextWindow: number
   readonly reserveTokens: number
+  readonly thresholdTokens: number
   readonly keepRecentTokens: number
 }
 
@@ -59,6 +63,7 @@ export const defaultConfig: CompactionConfigService = {
   enabled: true,
   contextWindow: 236_000,
   reserveTokens: 16_000,
+  thresholdTokens: 160_000,
   keepRecentTokens: 20_000,
 }
 
@@ -88,6 +93,48 @@ export class SummarizerTransform extends Context.Reference<
 >("clanka/Compaction/SummarizerTransform", {
   defaultValue: () => identity,
 }) {}
+
+/**
+ * The model the summarizer runs on. Without it, the summarizer runs on the
+ * agent's own model.
+ *
+ * The layer is built for each summarizer call, so a stateful model such as
+ * Claude Agent never shares its session with an agent. It replaces the
+ * agent's `SummarizerTransform` with its own, or with the identity when it
+ * has none.
+ *
+ * @since 1.0.0
+ * @category Configuration
+ */
+export class SummarizerModel extends Context.Service<
+  SummarizerModel,
+  Layer.Layer<
+    LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName
+  >
+>()("clanka/Compaction/SummarizerModel") {}
+
+/**
+ * Run the summarizer on `layer` instead of the agent's model.
+ *
+ * @since 1.0.0
+ * @category Configuration
+ */
+export const layerSummarizerModel = <E, R>(
+  layer: Layer.Layer<
+    LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName,
+    E,
+    R
+  >,
+): Layer.Layer<SummarizerModel, never, R> =>
+  Layer.effect(
+    SummarizerModel,
+    Effect.gen(function* () {
+      const services = yield* Effect.context<R>()
+      return Layer.fresh(Layer.orDie(layer)).pipe(
+        Layer.provide(Layer.succeedContext(services)),
+      )
+    }),
+  )
 
 // =============================================================================
 // Constants
@@ -254,6 +301,16 @@ export const estimateMessageTokens = (message: Prompt.Message): number =>
   Math.ceil(estimateMessageChars(message) / 4)
 
 /**
+ * The token count above which the threshold trigger fires: `thresholdTokens`,
+ * or `contextWindow - reserveTokens` when that is lower.
+ *
+ * @since 1.0.0
+ * @category Tokens
+ */
+export const compactionThreshold = (config: CompactionConfigService): number =>
+  Math.min(config.thresholdTokens, config.contextWindow - config.reserveTokens)
+
+/**
  * Whether the threshold trigger fires for the next model call.
  *
  * `contextTokens` is the `inputTokens.total` from the most recent `finish`
@@ -272,7 +329,7 @@ export const shouldCompact = (options: {
 }): boolean => {
   if (!options.config.enabled) return false
   const tokens = options.contextTokens ?? estimateTokens(options.prompt)
-  return tokens > options.config.contextWindow - options.config.reserveTokens
+  return tokens > compactionThreshold(options.config)
 }
 
 // =============================================================================
@@ -727,7 +784,8 @@ export interface CompactionResult {
  * Returns `None` without calling the model when compaction is disabled or
  * when `split` finds nothing to summarize. Otherwise `onStart` runs, the
  * summarizer is called with `streamText` (the Codex backend rejects
- * non-streaming requests) through `SummarizerTransform`, and the prompt is
+ * non-streaming requests) through `SummarizerTransform`, on the
+ * `SummarizerModel` when one is provided, and the prompt is
  * rewritten to `system + summary + trimKept(kept)`.
  *
  * Fails with the summarizer's `AiError`. Callers decide whether that is fatal.
@@ -759,21 +817,32 @@ export const compact: (options: {
     yield* options.onStart(options.reason)
   }
 
-  const ai = yield* LanguageModel.LanguageModel
-  const transform = yield* SummarizerTransform
-  const summary = (yield* transform(
-    ai
-      .streamText({
-        prompt: summarizerPrompt({ previousSummary, messages: toSummarize }),
-      })
-      .pipe(
-        Stream.runFold(
-          () => "",
-          (text, part) =>
-            part.type === "text-delta" ? text + part.delta : text,
+  const summarize = Effect.gen(function* () {
+    const ai = yield* LanguageModel.LanguageModel
+    const transform = yield* SummarizerTransform
+    return yield* transform(
+      ai
+        .streamText({
+          prompt: summarizerPrompt({ previousSummary, messages: toSummarize }),
+        })
+        .pipe(
+          Stream.runFold(
+            () => "",
+            (text, part) =>
+              part.type === "text-delta" ? text + part.delta : text,
+          ),
         ),
+    )
+  })
+  const summarizerModel = yield* Effect.serviceOption(SummarizerModel)
+  const summary = (yield* Option.match(summarizerModel, {
+    onNone: () => summarize,
+    onSome: (model) =>
+      summarize.pipe(
+        Effect.provide(model),
+        Effect.provideService(SummarizerTransform, identity),
       ),
-  )).trim()
+  })).trim()
 
   if (summary.length === 0) {
     return yield* AiError.make({

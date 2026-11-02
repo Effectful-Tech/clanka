@@ -5,8 +5,6 @@
  * @since 1.0.0
  */
 import { OpenAiClient } from "@effect/ai-openai"
-import type * as LanguageModel from "effect/ai/LanguageModel"
-import type * as Model from "effect/ai/Model"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
@@ -15,17 +13,10 @@ import { ThoughtLevel } from "./Acp.ts"
 import * as Agent from "./Agent.ts"
 import * as ClaudeAgent from "./ClaudeAgent.ts"
 import * as Codex from "./Codex.ts"
+import * as Compaction from "./Compaction.ts"
 import * as Copilot from "./Copilot.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
 import * as Xai from "./Xai.ts"
-
-const withSubagentModel = <E, R>(
-  model: Layer.Layer<
-    LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName,
-    E,
-    R
-  >,
-) => Layer.merge(model, Agent.layerSubagentModel(model))
 
 /**
  * Whether a provider supports fast mode. Only OpenAI does, through the
@@ -38,20 +29,37 @@ export const supportsFastMode = (provider: ModelsRepo.Provider) =>
   provider === "openai"
 
 /**
- * The model layer for a provider and model id. `effort` is `null` for models
+ * A provider, model id and reasoning effort. `effort` is `null` for models
  * that take no reasoning effort, and `undefined` to keep the provider's
- * default effort. `fastMode` requests the `priority` service tier and is
- * ignored for providers without fast mode.
+ * default effort.
  *
  * @since 1.0.0
- * @category Layers
+ * @category Models
  */
-export const make = (
+export interface ModelSpec {
+  readonly provider: ModelsRepo.Provider
+  readonly model: string
+  readonly effort?: string | null | undefined
+}
+
+/**
+ * The models sub-agents and the compaction summarizer run on, when they
+ * should not run on the agent's own model.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export interface AuxiliaryModels {
+  readonly subagent?: ModelSpec | undefined
+  readonly summarizer?: ModelSpec | undefined
+}
+
+const languageModel = (
   provider: ModelsRepo.Provider,
   model: string,
   effort: string | null | undefined,
   openai: OpenAiClient.Options,
-  fastMode = false,
+  fastMode: boolean,
 ) => {
   const options =
     effort === undefined
@@ -63,23 +71,59 @@ export const make = (
   switch (provider) {
     case "openai":
       return openai.apiKey !== undefined
-        ? withSubagentModel(Codex.model(model, openaiOptions)).pipe(
+        ? Codex.model(model, openaiOptions).pipe(
             Layer.provide(OpenAiClient.layer(openai)),
           )
-        : withSubagentModel(Codex.modelWebSocket(model, openaiOptions)).pipe(
+        : Codex.modelWebSocket(model, openaiOptions).pipe(
             Layer.provide(Codex.layerClient),
           )
     case "xai":
-      return withSubagentModel(Xai.modelWebSocket(model, options)).pipe(
+      return Xai.modelWebSocket(model, options).pipe(
         Layer.provide(Xai.layerClient),
       )
     case "claude":
-      return withSubagentModel(ClaudeAgent.model(model, { effort }))
+      return ClaudeAgent.model(model, { effort })
     case "copilot":
-      return withSubagentModel(Copilot.model(model, options)).pipe(
+      return Copilot.model(model, options).pipe(
         Layer.provide(Copilot.layerClient),
       )
   }
+}
+
+/**
+ * The model layer for a provider and model id. `effort` is `null` for models
+ * that take no reasoning effort, and `undefined` to keep the provider's
+ * default effort. `fastMode` requests the `priority` service tier and is
+ * ignored for providers without fast mode; it also applies to the
+ * `auxiliary` models.
+ *
+ * Sub-agents run on `auxiliary.subagent`, or on this model when it is not
+ * set. The compaction summarizer runs on `auxiliary.summarizer`, or on the
+ * model of the agent that compacts when it is not set.
+ *
+ * @since 1.0.0
+ * @category Layers
+ */
+export const make = (
+  provider: ModelsRepo.Provider,
+  model: string,
+  effort: string | null | undefined,
+  openai: OpenAiClient.Options,
+  fastMode = false,
+  auxiliary?: AuxiliaryModels,
+) => {
+  const fromSpec = (spec: ModelSpec) =>
+    languageModel(spec.provider, spec.model, spec.effort, openai, fastMode)
+  const main = languageModel(provider, model, effort, openai, fastMode)
+  return Layer.mergeAll(
+    main,
+    Agent.layerSubagentModel(
+      auxiliary?.subagent === undefined ? main : fromSpec(auxiliary.subagent),
+    ),
+    auxiliary?.summarizer === undefined
+      ? Layer.empty
+      : Compaction.layerSummarizerModel(fromSpec(auxiliary.summarizer)),
+  )
 }
 
 const isProvider = Schema.is(ModelsRepo.Provider)
@@ -152,7 +196,7 @@ const resolveEffort = (
  * A listed model that does not support the session thought level runs at the
  * supported effort nearest to it in `ThoughtLevel` order, the higher one on a
  * tie. Unlisted models run at the session thought level. Fast mode applies
- * to OpenAI models only.
+ * to OpenAI models only. Every session uses the same `auxiliary` models.
  *
  * @since 1.0.0
  * @category ACP
@@ -161,6 +205,7 @@ export const makeAcp =
   (options: {
     readonly models: Effect.Effect<ReadonlyArray<ModelsRepo.ModelInfo>>
     readonly openai: OpenAiClient.Options
+    readonly auxiliary?: AuxiliaryModels | undefined
   }) =>
   (modelId: string, thoughtLevel: ThoughtLevel, fastMode = false) =>
     Option.map(parseAcpModelId(modelId), ({ provider, model }) =>
@@ -177,6 +222,7 @@ export const makeAcp =
               : resolveEffort(info.efforts, thoughtLevel),
             options.openai,
             fastMode,
+            options.auxiliary,
           )
         }),
       ),

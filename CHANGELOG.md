@@ -1,5 +1,11 @@
 # clanka
 
+## 0.18.1
+
+### Patch Changes
+
+- [#272](https://github.com/Effectful-Tech/clanka/pull/272) [`d403a5a`](https://github.com/Effectful-Tech/clanka/commit/d403a5aaaa6d4b7169a18c1b8490f9187a0912a8) Thanks [@tim-smart](https://github.com/tim-smart)! - The `writeFile` tool now accepts `Uint8Array` content and writes it to the file as raw bytes, including when called through `executeUnsafe` on the RPC executor.
+
 ## 0.18.0
 
 ### Minor Changes

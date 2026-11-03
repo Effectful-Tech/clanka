@@ -54,6 +54,7 @@ import * as RpcClient from "effect/rpc/RpcClient"
 import * as Layer from "effect/Layer"
 import * as RpcServer from "effect/rpc/RpcServer"
 import * as Schema from "effect/Schema"
+import * as SchemaTransformation from "effect/SchemaTransformation"
 import * as RpcGroup from "effect/rpc/RpcGroup"
 import * as Rpc from "effect/rpc/Rpc"
 import * as Result from "effect/Result"
@@ -775,11 +776,16 @@ export const makeRpc = Effect.gen(function* () {
         .renderEnvironment({ environment, reset: options?.reset ?? false })
         .pipe(Effect.orDie),
     executeUnsafe({ environment, ...options }) {
-      return client
-        .executeUnsafe(
-          environment === undefined ? options : { ...options, environment },
-        )
-        .pipe(Effect.orDie)
+      return encodeRpcParams(options.tool, options.params).pipe(
+        Effect.flatMap((params) =>
+          client.executeUnsafe(
+            environment === undefined
+              ? { ...options, params }
+              : { ...options, params, environment },
+          ),
+        ),
+        Effect.orDie,
+      )
     },
   })
 })
@@ -994,9 +1000,13 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
 
               return queue
             }),
-            executeUnsafe(opts) {
-              return local.executor.executeUnsafe(opts as any)
-            },
+            executeUnsafe: (opts) =>
+              decodeRpcParams(opts.tool, opts.params).pipe(
+                Effect.orDie,
+                Effect.flatMap((params) =>
+                  local.executor.executeUnsafe({ ...opts, params } as any),
+                ),
+              ),
           })
         }),
       ),
@@ -1103,6 +1113,42 @@ export class Rpcs extends RpcGroup.make(
 // ------------------------------------------
 // Internal
 // -------------------------------------------
+
+// `executeUnsafe` params cross RPC as JSON. `writeFile` is the only built-in
+// tool whose params JSON can't carry: its content may be bytes. The default
+// JSON form of bytes is a base64 string, which the server couldn't tell apart
+// from string content, so over RPC bytes travel as `{ base64 }` instead.
+const RpcWriteFileParams = Schema.Struct({
+  ...AgentTools.tools.writeFile.parametersSchema.fields,
+  content: Schema.Union([
+    Schema.String,
+    Schema.Struct({ base64: Schema.Uint8ArrayFromBase64 }).pipe(
+      Schema.decodeTo(
+        Schema.Uint8Array,
+        SchemaTransformation.transform({
+          decode: ({ base64 }) => base64,
+          encode: (base64) => ({ base64 }),
+        }),
+      ),
+    ),
+  ]),
+})
+
+const encodeRpcParams = (
+  tool: string,
+  params: unknown,
+): Effect.Effect<Schema.Json, Schema.SchemaError> =>
+  tool === "writeFile"
+    ? Schema.encodeUnknownEffect(RpcWriteFileParams)(params)
+    : Effect.succeed(params as Schema.Json)
+
+const decodeRpcParams = (
+  tool: string,
+  params: Schema.Json,
+): Effect.Effect<unknown, Schema.SchemaError> =>
+  tool === "writeFile"
+    ? Schema.decodeUnknownEffect(RpcWriteFileParams)(params)
+    : Effect.succeed(params)
 
 const handleRequest = (
   opts: ExecuteOptions,

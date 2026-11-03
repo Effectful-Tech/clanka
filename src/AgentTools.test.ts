@@ -5,7 +5,9 @@ import * as Effect from "effect/Effect"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
 import * as Path from "effect/Path"
+import * as Stream from "effect/Stream"
 import * as AgentExecutor from "./AgentExecutor.ts"
+import { subagentsUnavailable } from "./AgentTools.ts"
 
 const match = "ignored-directory-regression-match"
 
@@ -110,6 +112,32 @@ describe("rg", () => {
       Effect.gen(function* () {
         const output = yield* rg("node_modules/**")
         assert.include(output, "node_modules/dependency/ignored.ts")
+      }),
+    ),
+  )
+})
+
+describe("writeFile", () => {
+  it.effect("writes Uint8Array content as raw bytes", () =>
+    withProject(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const path = yield* Path.Path
+        const executor = yield* AgentExecutor.AgentExecutor
+        const { environment } = yield* executor.capabilities
+        yield* executor
+          .execute({
+            environment,
+            onEnvironment: () => Effect.void,
+            script:
+              'await writeFile({ path: "data.bin", content: new Uint8Array([0, 255, 128]) })',
+            onImage: () => Effect.void,
+            onTaskComplete: () => Effect.void,
+            subagents: subagentsUnavailable,
+          })
+          .pipe(Stream.runDrain)
+        const bytes = yield* fs.readFile(path.join(environment.cwd, "data.bin"))
+        assert.deepStrictEqual(Array.from(bytes), [0, 255, 128])
       }),
     ),
   )

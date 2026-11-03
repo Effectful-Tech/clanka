@@ -6,8 +6,11 @@ import * as Effect from "effect/Effect"
 import * as Fiber from "effect/Fiber"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
+import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
 import * as TestClock from "effect/testing/TestClock"
+import * as Tool from "effect/ai/Tool"
+import * as Toolkit from "effect/ai/Toolkit"
 import * as FetchHttpClient from "effect/http/FetchHttpClient"
 import * as HttpEffect from "effect/http/HttpEffect"
 import * as HttpServer from "effect/http/HttpServer"
@@ -24,6 +27,10 @@ const withRpc = <A, E, R>(
   f: (
     executor: AgentExecutor.AgentExecutor["Service"],
   ) => Effect.Effect<A, E, R>,
+  server: (
+    directory: string,
+  ) => ReturnType<typeof AgentExecutor.layerRpcServer> = (directory) =>
+    AgentExecutor.layerRpcServer({ directory }),
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
@@ -31,7 +38,7 @@ const withRpc = <A, E, R>(
     const { protocol, httpEffect } =
       yield* RpcServer.makeProtocolWithHttpEffect()
     yield* Layer.build(
-      AgentExecutor.layerRpcServer({ directory }).pipe(
+      server(directory).pipe(
         Layer.provide(Layer.succeed(RpcServer.Protocol, protocol)),
       ),
     )
@@ -180,6 +187,55 @@ describe("RPC subagent executor", () => {
         }),
       ),
   )
+})
+
+describe("RPC executeUnsafe", () => {
+  it.live("writes Uint8Array writeFile content as raw bytes", () =>
+    withRpc((executor) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const { environment } = yield* executor.capabilities
+        yield* executor.executeUnsafe({
+          tool: "writeFile",
+          params: { path: "data.bin", content: new Uint8Array([0, 255, 128]) },
+        })
+        const bytes = yield* fs.readFile(
+          NodePath.join(environment.cwd, "data.bin"),
+        )
+        assert.deepStrictEqual(Array.from(bytes), [0, 255, 128])
+      }),
+    ),
+  )
+
+  it.live("passes a caller's tool params shaped like bytes unchanged", () => {
+    const payload = { _tag: "Bytes", base64: "AA==" } as const
+    const Echo = Toolkit.make(
+      Tool.make("echo", {
+        parameters: Schema.Struct({
+          payload: Schema.TaggedStruct("Bytes", { base64: Schema.String }),
+        }),
+        success: Schema.TaggedStruct("Bytes", { base64: Schema.String }),
+      }),
+    )
+    return withRpc(
+      (executor) =>
+        Effect.gen(function* () {
+          // `executeUnsafe` is typed for the built-in tools, but the server
+          // runs the caller's tools too.
+          const output = yield* executor.executeUnsafe({
+            tool: "echo" as never,
+            params: { payload } as never,
+          })
+          assert.deepStrictEqual(output, payload)
+        }),
+      (directory) =>
+        AgentExecutor.layerRpcServer({ directory, tools: Echo }).pipe(
+          Layer.provide(
+            Echo.toLayer({ echo: ({ payload }) => Effect.succeed(payload) }),
+          ),
+        ),
+    )
+  })
 })
 
 // Both executor modes with the same limits. The RPC mode serves

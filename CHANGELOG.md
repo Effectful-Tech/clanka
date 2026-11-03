@@ -1,5 +1,11 @@
 # clanka
 
+## 0.18.2
+
+### Patch Changes
+
+- [#274](https://github.com/Effectful-Tech/clanka/pull/274) [`297cdb7`](https://github.com/Effectful-Tech/clanka/commit/297cdb78bb626e35da0b6364393f68a2a8c2717f) Thanks [@tim-smart](https://github.com/tim-smart)! - `executeUnsafe` on the RPC executor now accepts `undefined` params and params with `undefined` properties, instead of dying with a schema validation error.
+
 ## 0.18.1
 
 ### Patch Changes

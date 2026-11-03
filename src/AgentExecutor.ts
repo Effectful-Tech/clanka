@@ -54,7 +54,6 @@ import * as RpcClient from "effect/rpc/RpcClient"
 import * as Layer from "effect/Layer"
 import * as RpcServer from "effect/rpc/RpcServer"
 import * as Schema from "effect/Schema"
-import * as SchemaTransformation from "effect/SchemaTransformation"
 import * as RpcGroup from "effect/rpc/RpcGroup"
 import * as Rpc from "effect/rpc/Rpc"
 import * as Result from "effect/Result"
@@ -776,11 +775,18 @@ export const makeRpc = Effect.gen(function* () {
         .renderEnvironment({ environment, reset: options?.reset ?? false })
         .pipe(Effect.orDie),
     executeUnsafe({ environment, ...options }) {
-      return client
-        .executeUnsafe(
-          environment === undefined ? options : { ...options, environment },
+      return toolParamsCodec(options.tool)
+        .encode(options.params)
+        .pipe(
+          Effect.flatMap((params) =>
+            client.executeUnsafe(
+              environment === undefined
+                ? { tool: options.tool, params }
+                : { tool: options.tool, params, environment },
+            ),
+          ),
+          Effect.orDie,
         )
-        .pipe(Effect.orDie)
     },
   })
 })
@@ -995,9 +1001,15 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
 
               return queue
             }),
-            executeUnsafe(opts) {
-              return local.executor.executeUnsafe(opts as any)
-            },
+            executeUnsafe: (opts) =>
+              toolParamsCodec(opts.tool)
+                .decode(opts.params)
+                .pipe(
+                  Effect.orDie,
+                  Effect.flatMap((params) =>
+                    local.executor.executeUnsafe({ ...opts, params } as any),
+                  ),
+                ),
           })
         }),
       ),
@@ -1059,43 +1071,6 @@ export const ExecuteOutput = Schema.TaggedUnion({
   Environment: { environment: ExecutionEnvironment },
 })
 
-type ToolParams =
-  | null
-  | number
-  | boolean
-  | string
-  | Uint8Array
-  | ReadonlyArray<ToolParams>
-  | { readonly [key: string]: ToolParams }
-
-// Bytes are sent as a tagged object, so they can't be confused with a string
-// once serialized to JSON.
-const Bytes = Schema.TaggedStruct("Bytes", {
-  base64: Schema.Uint8ArrayFromBase64,
-}).pipe(
-  Schema.decodeTo(
-    Schema.Uint8Array,
-    SchemaTransformation.transform({
-      decode: ({ base64 }) => base64,
-      encode: (base64) => ({ _tag: "Bytes" as const, base64 }),
-    }),
-  ),
-)
-
-// The `executeUnsafe` params: JSON values that may also contain bytes.
-const ToolParams: Schema.Codec<ToolParams, unknown> = Schema.Union([
-  Bytes,
-  Schema.Null,
-  Schema.Finite,
-  Schema.Boolean,
-  Schema.String,
-  Schema.Array(Schema.suspend(() => ToolParams)),
-  Schema.Record(
-    Schema.String,
-    Schema.suspend(() => ToolParams),
-  ),
-])
-
 /**
  * @since 1.0.0
  * @category Rpcs
@@ -1131,7 +1106,7 @@ export class Rpcs extends RpcGroup.make(
   Rpc.make("executeUnsafe", {
     payload: Schema.Struct({
       tool: Schema.String,
-      params: ToolParams,
+      params: Schema.Json,
       environment: Schema.optionalKey(ExecutionEnvironment),
     }),
     success: Schema.Json,
@@ -1141,6 +1116,44 @@ export class Rpcs extends RpcGroup.make(
 // ------------------------------------------
 // Internal
 // -------------------------------------------
+
+interface ToolParamsCodec {
+  readonly encode: (
+    params: unknown,
+  ) => Effect.Effect<Schema.Json, Schema.SchemaError>
+  readonly decode: (
+    params: Schema.Json,
+  ) => Effect.Effect<unknown, Schema.SchemaError>
+}
+
+const jsonParams: ToolParamsCodec = {
+  encode: (params) => Effect.succeed(params as Schema.Json),
+  decode: Effect.succeed,
+}
+
+let builtInParamsCodecs: Map<string, ToolParamsCodec> | undefined
+
+// `executeUnsafe` params are the encoded side of the tool's parameters, which
+// can hold values JSON can't, like the bytes `writeFile` takes. Built-in tools
+// cross RPC through the JSON codec of that encoded side. The client doesn't
+// know the caller's own tools, so their params cross as plain JSON.
+const toolParamsCodec = (tool: string): ToolParamsCodec => {
+  builtInParamsCodecs ??= new Map(
+    Object.entries(AgentToolsWithSearch.tools).map(([name, tool]) => {
+      const codec = Schema.toCodecJson(
+        Schema.toEncoded(tool.parametersSchema as Schema.Top),
+      )
+      return [
+        name,
+        {
+          encode: Schema.encodeUnknownEffect(codec),
+          decode: Schema.decodeUnknownEffect(codec),
+        } as ToolParamsCodec,
+      ]
+    }),
+  )
+  return builtInParamsCodecs.get(tool) ?? jsonParams
+}
 
 const handleRequest = (
   opts: ExecuteOptions,

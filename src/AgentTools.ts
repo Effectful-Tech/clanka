@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect"
 import * as Toolkit from "effect/ai/Toolkit"
 import * as Tool from "effect/ai/Tool"
 import * as Schema from "effect/Schema"
+import * as SchemaGetter from "effect/SchemaGetter"
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
 import * as FileSystem from "effect/FileSystem"
 import * as Path from "effect/Path"
@@ -276,6 +277,20 @@ export const makeContextNoop = (cwd?: string) =>
     Context.add(ImageAttacher, () => Effect.void),
   )
 
+// The default JSON form of bytes is a base64 string, which a JSON decoder
+// can't tell apart from string content. An object is unambiguous.
+const Bytes = Schema.Uint8Array.annotate({
+  identifier: "Uint8Array",
+  toCodecJson: () =>
+    Schema.link<Uint8Array>()(
+      Schema.Struct({ base64: Schema.Uint8ArrayFromBase64 }),
+      {
+        decode: SchemaGetter.transform(({ base64 }) => base64),
+        encode: SchemaGetter.transform((base64) => ({ base64 })),
+      },
+    ),
+})
+
 /**
  * @since 1.0.0
  * @category Toolkit
@@ -402,10 +417,7 @@ export const AgentTools = Toolkit.make(
       "Write content to a file, creating parent directories if needed.",
     parameters: Schema.Struct({
       path: Schema.String,
-      content: Schema.Union([
-        Schema.String,
-        Schema.Uint8Array.annotate({ identifier: "Uint8Array" }),
-      ]),
+      content: Schema.Union([Schema.String, Bytes]),
     }),
     dependencies: [CurrentDirectory],
   }),

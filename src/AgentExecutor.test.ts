@@ -207,6 +207,29 @@ describe("RPC executeUnsafe", () => {
     ),
   )
 
+  it.live("accepts undefined params and undefined param properties", () =>
+    withRpc((executor) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const { environment } = yield* executor.capabilities
+        yield* fs.writeFileString(
+          NodePath.join(environment.cwd, "x.txt"),
+          "hello",
+        )
+        const agents = yield* executor.executeUnsafe({
+          tool: "listAgents",
+          params: undefined,
+        })
+        assert.deepStrictEqual(agents, [])
+        const content = yield* executor.executeUnsafe({
+          tool: "readFile",
+          params: { path: "x.txt", startLine: undefined, lineNumbers: false },
+        })
+        assert.strictEqual(content, "hello")
+      }),
+    ),
+  )
+
   it.live("passes a caller's tool params shaped like bytes unchanged", () => {
     const payload = { _tag: "Bytes", base64: "AA==" } as const
     const Echo = Toolkit.make(

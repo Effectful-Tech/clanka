@@ -776,12 +776,12 @@ export const makeRpc = Effect.gen(function* () {
       client
         .renderEnvironment({ environment, reset: options?.reset ?? false })
         .pipe(Effect.orDie),
-    executeUnsafe({ tool, environment, ...options }) {
-      return encodeRpcParams(tool, options.params).pipe(
-        Effect.flatMap((params) =>
+    executeUnsafe({ tool, params, environment }) {
+      return encodeRpcParams(tool, params).pipe(
+        Effect.flatMap((json) =>
           client.executeUnsafe({
             tool,
-            ...(params === undefined ? undefined : { params }),
+            ...(json === undefined ? undefined : { params: json }),
             ...(environment === undefined ? undefined : { environment }),
           }),
         ),
@@ -1138,26 +1138,24 @@ const RpcWriteFileParams = Schema.Struct({
   ]),
 })
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+  if (!Predicate.isObject(value)) return false
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
 // Only arrays and plain objects are walked, so bytes and other values reach
 // the schema untouched.
 const dropUndefined = (value: unknown): unknown => {
   if (Array.isArray(value)) {
-    return value.map((item) =>
-      item === undefined ? null : dropUndefined(item),
-    )
+    return value.map((item) => dropUndefined(item) ?? null)
   }
-  if (
-    !Predicate.isObject(value) ||
-    (Object.getPrototypeOf(value) !== Object.prototype &&
-      Object.getPrototypeOf(value) !== null)
-  ) {
-    return value
-  }
+  if (!isPlainObject(value)) return value
   // `Object.fromEntries` keeps an own `__proto__` key as a data property.
   return Object.fromEntries(
-    Object.entries(value).flatMap(([key, field]) =>
-      field === undefined ? [] : [[key, dropUndefined(field)]],
-    ),
+    Object.entries(value)
+      .filter(([, field]) => field !== undefined)
+      .map(([key, field]) => [key, dropUndefined(field)]),
   )
 }
 

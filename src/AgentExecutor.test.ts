@@ -182,6 +182,25 @@ describe("RPC subagent executor", () => {
   )
 })
 
+describe("RPC executeUnsafe", () => {
+  it.live("writes Uint8Array writeFile content as raw bytes", () =>
+    withRpc((executor) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const { environment } = yield* executor.capabilities
+        yield* executor.executeUnsafe({
+          tool: "writeFile",
+          params: { path: "data.bin", content: new Uint8Array([0, 255, 128]) },
+        })
+        const bytes = yield* fs.readFile(
+          NodePath.join(environment.cwd, "data.bin"),
+        )
+        assert.deepStrictEqual(Array.from(bytes), [0, 255, 128])
+      }),
+    ),
+  )
+})
+
 // Both executor modes with the same limits. The RPC mode serves
 // `layerRpcServer` through an in-memory web handler, so requests go through
 // the real serialization without opening a socket.

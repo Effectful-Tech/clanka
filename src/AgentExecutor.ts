@@ -54,6 +54,7 @@ import * as RpcClient from "effect/rpc/RpcClient"
 import * as Layer from "effect/Layer"
 import * as RpcServer from "effect/rpc/RpcServer"
 import * as Schema from "effect/Schema"
+import * as SchemaTransformation from "effect/SchemaTransformation"
 import * as RpcGroup from "effect/rpc/RpcGroup"
 import * as Rpc from "effect/rpc/Rpc"
 import * as Result from "effect/Result"
@@ -1133,6 +1134,25 @@ const jsonParams: ToolParamsCodec = {
 
 let builtInParamsCodecs: Map<string, ToolParamsCodec> | undefined
 
+// The default JSON form of bytes is a base64 string, which can't be told apart
+// from string content once in JSON. Over RPC, `writeFile` sends bytes as
+// `{ base64 }` instead.
+const rpcWriteFileParams = Schema.Struct({
+  ...AgentToolsWithSearch.tools.writeFile.parametersSchema.fields,
+  content: Schema.Union([
+    Schema.String,
+    Schema.Struct({ base64: Schema.Uint8ArrayFromBase64 }).pipe(
+      Schema.decodeTo(
+        Schema.Uint8Array,
+        SchemaTransformation.transform({
+          decode: ({ base64 }) => base64,
+          encode: (base64) => ({ base64 }),
+        }),
+      ),
+    ),
+  ]),
+})
+
 // `executeUnsafe` params are the encoded side of the tool's parameters, which
 // can hold values JSON can't, like the bytes `writeFile` takes. Built-in tools
 // cross RPC through the JSON codec of that encoded side. The client doesn't
@@ -1140,9 +1160,12 @@ let builtInParamsCodecs: Map<string, ToolParamsCodec> | undefined
 const toolParamsCodec = (tool: string): ToolParamsCodec => {
   builtInParamsCodecs ??= new Map(
     Object.entries(AgentToolsWithSearch.tools).map(([name, tool]) => {
-      const codec = Schema.toCodecJson(
-        Schema.toEncoded(tool.parametersSchema as Schema.Top),
-      )
+      const codec =
+        name === "writeFile"
+          ? rpcWriteFileParams
+          : Schema.toCodecJson(
+              Schema.toEncoded(tool.parametersSchema as Schema.Top),
+            )
       return [
         name,
         {

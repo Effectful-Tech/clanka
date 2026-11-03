@@ -402,7 +402,10 @@ export const AgentTools = Toolkit.make(
       "Write content to a file, creating parent directories if needed.",
     parameters: Schema.Struct({
       path: Schema.String,
-      content: Schema.String,
+      content: Schema.Union([
+        Schema.String,
+        Schema.Uint8Array.annotate({ identifier: "Uint8Array" }),
+      ]),
     }),
     dependencies: [CurrentDirectory],
   }),
@@ -639,7 +642,9 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         yield* fs.makeDirectory(pathService.dirname(path), {
           recursive: true,
         })
-        yield* fs.writeFileString(path, options.content)
+        yield* typeof options.content === "string"
+          ? fs.writeFileString(path, options.content)
+          : fs.writeFile(path, options.content)
         yield* SemanticSearch.maybeUpdateFile(path)
       }, Effect.orDie),
       removeFile: Effect.fn("AgentTools.removeFile")(function* (path) {

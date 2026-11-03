@@ -207,6 +207,29 @@ describe("RPC executeUnsafe", () => {
     ),
   )
 
+  it.live("accepts undefined params and undefined param properties", () =>
+    withRpc((executor) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const { environment } = yield* executor.capabilities
+        yield* fs.writeFileString(
+          NodePath.join(environment.cwd, "x.txt"),
+          "hello",
+        )
+        const agents = yield* executor.executeUnsafe({
+          tool: "listAgents",
+          params: undefined,
+        })
+        assert.deepStrictEqual(agents, [])
+        const content = yield* executor.executeUnsafe({
+          tool: "readFile",
+          params: { path: "x.txt", startLine: undefined, lineNumbers: false },
+        })
+        assert.strictEqual(content, "hello")
+      }),
+    ),
+  )
+
   it.live("passes a caller's tool params shaped like bytes unchanged", () => {
     const payload = { _tag: "Bytes", base64: "AA==" } as const
     const Echo = Toolkit.make(
@@ -232,6 +255,38 @@ describe("RPC executeUnsafe", () => {
         AgentExecutor.layerRpcServer({ directory, tools: Echo }).pipe(
           Layer.provide(
             Echo.toLayer({ echo: ({ payload }) => Effect.succeed(payload) }),
+          ),
+        ),
+    )
+  })
+
+  it.live("passes a caller's null params and __proto__ keys unchanged", () => {
+    const Echo = Toolkit.make(
+      Tool.make("echo", { parameters: Schema.Json, success: Schema.Json }),
+    )
+    return withRpc(
+      (executor) =>
+        Effect.gen(function* () {
+          const nullOutput = yield* executor.executeUnsafe({
+            tool: "echo" as never,
+            params: null as never,
+          })
+          assert.strictEqual(nullOutput, null)
+          const output = (yield* executor.executeUnsafe({
+            tool: "echo" as never,
+            params: JSON.parse('{"__proto__":{"x":1}}') as never,
+          })) as object
+          // An own `__proto__` key, not a prototype.
+          assert.deepStrictEqual(Object.keys(output), ["__proto__"])
+          assert.deepStrictEqual(
+            Object.getOwnPropertyDescriptor(output, "__proto__")?.value,
+            { x: 1 },
+          )
+        }),
+      (directory) =>
+        AgentExecutor.layerRpcServer({ directory, tools: Echo }).pipe(
+          Layer.provide(
+            Echo.toLayer({ echo: (params) => Effect.succeed(params) }),
           ),
         ),
     )

@@ -54,6 +54,7 @@ import * as RpcClient from "effect/rpc/RpcClient"
 import * as Layer from "effect/Layer"
 import * as RpcServer from "effect/rpc/RpcServer"
 import * as Schema from "effect/Schema"
+import * as SchemaTransformation from "effect/SchemaTransformation"
 import * as RpcGroup from "effect/rpc/RpcGroup"
 import * as Rpc from "effect/rpc/Rpc"
 import * as Result from "effect/Result"
@@ -1058,6 +1059,43 @@ export const ExecuteOutput = Schema.TaggedUnion({
   Environment: { environment: ExecutionEnvironment },
 })
 
+type ToolParams =
+  | null
+  | number
+  | boolean
+  | string
+  | Uint8Array
+  | ReadonlyArray<ToolParams>
+  | { readonly [key: string]: ToolParams }
+
+// Bytes are sent as a tagged object, so they can't be confused with a string
+// once serialized to JSON.
+const Bytes = Schema.TaggedStruct("Bytes", {
+  base64: Schema.Uint8ArrayFromBase64,
+}).pipe(
+  Schema.decodeTo(
+    Schema.Uint8Array,
+    SchemaTransformation.transform({
+      decode: ({ base64 }) => base64,
+      encode: (base64) => ({ _tag: "Bytes" as const, base64 }),
+    }),
+  ),
+)
+
+// The `executeUnsafe` params: JSON values that may also contain bytes.
+const ToolParams: Schema.Codec<ToolParams, unknown> = Schema.Union([
+  Bytes,
+  Schema.Null,
+  Schema.Finite,
+  Schema.Boolean,
+  Schema.String,
+  Schema.Array(Schema.suspend(() => ToolParams)),
+  Schema.Record(
+    Schema.String,
+    Schema.suspend(() => ToolParams),
+  ),
+])
+
 /**
  * @since 1.0.0
  * @category Rpcs
@@ -1093,7 +1131,7 @@ export class Rpcs extends RpcGroup.make(
   Rpc.make("executeUnsafe", {
     payload: Schema.Struct({
       tool: Schema.String,
-      params: Schema.Json,
+      params: ToolParams,
       environment: Schema.optionalKey(ExecutionEnvironment),
     }),
     success: Schema.Json,

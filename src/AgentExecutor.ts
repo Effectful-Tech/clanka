@@ -776,14 +776,14 @@ export const makeRpc = Effect.gen(function* () {
       client
         .renderEnvironment({ environment, reset: options?.reset ?? false })
         .pipe(Effect.orDie),
-    executeUnsafe({ environment, ...options }) {
-      return encodeRpcParams(options.tool, options.params).pipe(
+    executeUnsafe({ tool, environment, ...options }) {
+      return encodeRpcParams(tool, options.params).pipe(
         Effect.flatMap((params) =>
-          client.executeUnsafe(
-            environment === undefined
-              ? { ...options, params }
-              : { ...options, params, environment },
-          ),
+          client.executeUnsafe({
+            tool,
+            ...(params === undefined ? undefined : { params }),
+            ...(environment === undefined ? undefined : { environment }),
+          }),
         ),
         Effect.orDie,
       )
@@ -1104,7 +1104,7 @@ export class Rpcs extends RpcGroup.make(
   Rpc.make("executeUnsafe", {
     payload: Schema.Struct({
       tool: Schema.String,
-      params: Schema.Json,
+      params: Schema.optionalKey(Schema.Json),
       environment: Schema.optionalKey(ExecutionEnvironment),
     }),
     success: Schema.Json,
@@ -1115,12 +1115,13 @@ export class Rpcs extends RpcGroup.make(
 // Internal
 // -------------------------------------------
 
-// `executeUnsafe` params cross RPC as JSON. JSON has no `undefined`, so it is
-// dropped from objects and sent as `null` elsewhere, as `JSON.stringify` does;
-// a top-level `null` decodes back to `undefined`. `writeFile` is the only
-// built-in tool whose params JSON can't carry: its content may be bytes. The
-// default JSON form of bytes is a base64 string, which the server couldn't tell
-// apart from string content, so over RPC bytes travel as `{ base64 }` instead.
+// `executeUnsafe` params cross RPC as JSON. JSON has no `undefined`, so
+// `undefined` params are omitted from the payload, `undefined` properties are
+// dropped, and `undefined` array items become `null`, as `JSON.stringify` does.
+// `writeFile` is the only built-in tool whose params JSON can't carry: its
+// content may be bytes. The default JSON form of bytes is a base64 string,
+// which the server couldn't tell apart from string content, so over RPC bytes
+// travel as `{ base64 }` instead.
 const RpcWriteFileParams = Schema.Struct({
   ...AgentTools.tools.writeFile.parametersSchema.fields,
   content: Schema.Union([
@@ -1140,8 +1141,11 @@ const RpcWriteFileParams = Schema.Struct({
 // Only arrays and plain objects are walked, so bytes and other values reach
 // the schema untouched.
 const dropUndefined = (value: unknown): unknown => {
-  if (value === undefined) return null
-  if (Array.isArray(value)) return value.map(dropUndefined)
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      item === undefined ? null : dropUndefined(item),
+    )
+  }
   if (
     !Predicate.isObject(value) ||
     (Object.getPrototypeOf(value) !== Object.prototype &&
@@ -1149,30 +1153,31 @@ const dropUndefined = (value: unknown): unknown => {
   ) {
     return value
   }
-  const out: Record<string, unknown> = {}
-  for (const [key, field] of Object.entries(value)) {
-    if (field !== undefined) out[key] = dropUndefined(field)
-  }
-  return out
+  // `Object.fromEntries` keeps an own `__proto__` key as a data property.
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, field]) =>
+      field === undefined ? [] : [[key, dropUndefined(field)]],
+    ),
+  )
 }
 
 const encodeRpcParams = (
   tool: string,
   params: unknown,
-): Effect.Effect<Schema.Json, Schema.SchemaError> => {
+): Effect.Effect<Schema.Json | undefined, Schema.SchemaError> => {
   const json = dropUndefined(params)
   return tool === "writeFile"
     ? Schema.encodeUnknownEffect(RpcWriteFileParams)(json)
-    : Effect.succeed(json as Schema.Json)
+    : Effect.succeed(json as Schema.Json | undefined)
 }
 
 const decodeRpcParams = (
   tool: string,
-  params: Schema.Json,
+  params: Schema.Json | undefined,
 ): Effect.Effect<unknown, Schema.SchemaError> =>
   tool === "writeFile"
     ? Schema.decodeUnknownEffect(RpcWriteFileParams)(params)
-    : Effect.succeed(params ?? undefined)
+    : Effect.succeed(params)
 
 const handleRequest = (
   opts: ExecuteOptions,

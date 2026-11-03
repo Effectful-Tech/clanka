@@ -259,6 +259,38 @@ describe("RPC executeUnsafe", () => {
         ),
     )
   })
+
+  it.live("passes a caller's null params and __proto__ keys unchanged", () => {
+    const Echo = Toolkit.make(
+      Tool.make("echo", { parameters: Schema.Json, success: Schema.Json }),
+    )
+    return withRpc(
+      (executor) =>
+        Effect.gen(function* () {
+          const nullOutput = yield* executor.executeUnsafe({
+            tool: "echo" as never,
+            params: null as never,
+          })
+          assert.strictEqual(nullOutput, null)
+          const output = (yield* executor.executeUnsafe({
+            tool: "echo" as never,
+            params: JSON.parse('{"__proto__":{"x":1}}') as never,
+          })) as object
+          // An own `__proto__` key, not a prototype.
+          assert.deepStrictEqual(Object.keys(output), ["__proto__"])
+          assert.deepStrictEqual(
+            Object.getOwnPropertyDescriptor(output, "__proto__")?.value,
+            { x: 1 },
+          )
+        }),
+      (directory) =>
+        AgentExecutor.layerRpcServer({ directory, tools: Echo }).pipe(
+          Layer.provide(
+            Echo.toLayer({ echo: (params) => Effect.succeed(params) }),
+          ),
+        ),
+    )
+  })
 })
 
 // Both executor modes with the same limits. The RPC mode serves

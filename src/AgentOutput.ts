@@ -250,6 +250,23 @@ export class EnvironmentUpdated extends Schema.TaggedClass<EnvironmentUpdated>()
   },
 ) {}
 
+/**
+ * Emitted when a background `bash` job the agent started ends, whether or not
+ * the model is told about it.
+ *
+ * @since 1.0.0
+ * @category Output
+ */
+export class JobComplete extends Schema.TaggedClass<JobComplete>()(
+  "JobComplete",
+  {
+    id: Schema.String,
+    status: Schema.Literals(["completed", "failed", "stopped"]),
+    exitCode: Schema.optional(Schema.Number),
+    output: Schema.String,
+  },
+) {}
+
 export type ContentPart =
   | ReasoningStart
   | ReasoningDelta
@@ -265,6 +282,7 @@ export type ContentPart =
   | CompactionEnded
   | SessionRestarted
   | EnvironmentUpdated
+  | JobComplete
 
 export const ContentPart = Schema.Union([
   ReasoningStart,
@@ -281,6 +299,7 @@ export const ContentPart = Schema.Union([
   CompactionEnded,
   SessionRestarted,
   EnvironmentUpdated,
+  JobComplete,
 ])
 
 /**

@@ -9,6 +9,8 @@ import { Worker } from "node:worker_threads"
 import type * as NodeWorkerThreads from "node:worker_threads"
 import {
   AgentToolHandlers,
+  type BackgroundJob,
+  BashJob,
   type DelegateResult,
   type SubagentInfo,
   type SubagentResult,
@@ -21,6 +23,7 @@ import {
   type ExcludableTool,
   ImageAttacher,
   type ImageAttachment,
+  JobWatcher,
   makeBashTool,
   SubagentExecutor,
   type Subagents,
@@ -137,6 +140,12 @@ export interface ExecuteOptions {
    */
   readonly onImage: (image: ImageAttachment) => Effect.Effect<void>
   /**
+   * Receives every background `bash` job the script starts, including a
+   * command moved to the background at its timeout. The job can outlive the
+   * script, so `await` and `claim` stay usable after it ends.
+   */
+  readonly onJob?: ((job: BackgroundJob) => Effect.Effect<void>) | undefined
+  /**
    * Functions added to the script sandbox whose handlers run on the loop
    * side, next to the Agent.
    */
@@ -239,6 +248,16 @@ export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
   skills: Schema.Array(AgentSkills.Skill).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed([])),
     Schema.withConstructorDefault(Effect.succeed([])),
+  ),
+  /**
+   * Whether the executor hands background `bash` jobs to
+   * `ExecuteOptions.onJob`, so the agent can push their results. Executors
+   * and executor servers from before job pushes leave it out, and then the
+   * model is told to poll with `jobOutput`.
+   */
+  jobPushes: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+    Schema.withConstructorDefault(Effect.succeed(false)),
   ),
 }) {}
 
@@ -500,6 +519,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
           ),
       }),
       Context.add(ImageAttacher, opts.onImage),
+      Context.add(JobWatcher, opts.onJob ?? (() => Effect.void)),
       Context.add(CommandLimits, commandLimits),
       Context.add(Console.Console, console),
       Context.add(References.CurrentLogAnnotations, {}),
@@ -661,6 +681,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
         }),
         tools: Object.keys(tools.tools),
         skills,
+        jobPushes: true,
       })
     }),
     execute: (opts) => execute(opts),
@@ -729,6 +750,7 @@ export const makeRpc = Effect.gen(function* () {
             script: opts.script,
             environment: opts.environment,
             loopTools: Object.keys(opts.loopTools ?? {}),
+            ...(opts.onJob === undefined ? {} : { watchJobs: true }),
           })
           .pipe(
             Stream.tap((part) => {
@@ -760,6 +782,15 @@ export const makeRpc = Effect.gen(function* () {
                 case "Environment": {
                   latest = part.environment
                   return Effect.void
+                }
+                case "Job": {
+                  if (opts.onJob === undefined) return Effect.void
+                  const id = part.id
+                  return opts.onJob({
+                    id,
+                    await: Effect.orDie(client.awaitJob({ id })),
+                    claim: Effect.orDie(client.claimJob({ id })),
+                  })
                 }
               }
             }),
@@ -871,11 +902,25 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
             (effect: Effect.Effect<unknown, string>) => void
           >()
           let requestId = 0
+          // Background jobs started by any script, for `awaitJob` and
+          // `claimJob`.
+          const jobs = new Map<string, BackgroundJob>()
+          const findJob = (id: string) =>
+            Effect.suspend(() => {
+              const job = jobs.get(id)
+              return job === undefined
+                ? Effect.fail(`No background job with id "${id}"`)
+                : Effect.succeed(job)
+            })
 
           return Rpcs.of({
             capabilities: () => local.executor.capabilities,
             renderEnvironment: ({ environment, reset }) =>
               local.renderEnvironment(environment, { reset }),
+            awaitJob: ({ id }) =>
+              Effect.flatMap(findJob(id), (job) => job.await),
+            claimJob: ({ id }) =>
+              Effect.flatMap(findJob(id), (job) => job.claim),
             respond: ({ id, response }) => {
               const resume = requestResumes.get(id)
               if (resume) {
@@ -892,6 +937,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
               script,
               environment,
               loopTools,
+              watchJobs,
             }) {
               const queue = yield* Queue.unbounded<
                 typeof ExecuteOutput.Type,
@@ -956,6 +1002,18 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                         data: image.data,
                       })
                     },
+                    // Older clients cannot decode a `Job` part.
+                    ...(watchJobs === true
+                      ? {
+                          onJob: (job: BackgroundJob) => {
+                            jobs.set(job.id, job)
+                            return Queue.offer(queue, {
+                              _tag: "Job",
+                              id: job.id,
+                            })
+                          },
+                        }
+                      : {}),
                     loopTools: Object.fromEntries(
                       loopTools.map((name) => [
                         name,
@@ -1067,6 +1125,12 @@ export const ExecuteOutput = Schema.TaggedUnion({
    * `EnvironmentChanged` requests.
    */
   Environment: { environment: ExecutionEnvironment },
+  /**
+   * The script started a background `bash` job. Only sent when the client
+   * asked with `watchJobs`. The client follows it with `awaitJob` and
+   * `claimJob`.
+   */
+  Job: { id: Schema.String },
 })
 
 /**
@@ -1093,9 +1157,31 @@ export class Rpcs extends RpcGroup.make(
       loopTools: Schema.Array(Schema.String).pipe(
         Schema.withDecodingDefaultKey(Effect.succeed([])),
       ),
+      /**
+       * Send a `Job` part for each background job the script starts. Older
+       * clients leave it out, as they cannot decode those parts.
+       */
+      watchJobs: Schema.optionalKey(Schema.Boolean),
     }),
     success: ExecuteOutput,
     stream: true,
+  }),
+  /**
+   * Waits for a background job to end and returns its final state.
+   */
+  Rpc.make("awaitJob", {
+    payload: { id: Schema.String },
+    success: BashJob,
+    error: Schema.String,
+  }),
+  /**
+   * Marks a background job's final state as reported. Returns `false` when
+   * it already was.
+   */
+  Rpc.make("claimJob", {
+    payload: { id: Schema.String },
+    success: Schema.Boolean,
+    error: Schema.String,
   }),
   Rpc.make("renderEnvironment", {
     payload: { environment: ExecutionEnvironment, reset: Schema.Boolean },

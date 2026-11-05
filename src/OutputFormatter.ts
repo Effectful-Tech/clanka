@@ -123,6 +123,13 @@ ${chalk.dim(output.summary)}\n\n`
           case "EnvironmentUpdated": {
             return `${prefix}${chalkInfoHeading(`${infoIcon} Environment update:`)}\n\n${chalk.dim(truncate(output.update))}\n\n`
           }
+          case "JobComplete": {
+            const exitCode =
+              output.exitCode === undefined
+                ? ""
+                : ` (exit code ${output.exitCode})`
+            return `${prefix}${chalkScriptHeading(`${scriptIcon} Background job ${output.id} ${output.status}${exitCode}`)}\n\n${chalk.dim(truncate(output.output))}\n\n`
+          }
           case "HistoryAppended":
           case "HistoryReplaced": {
             return ""

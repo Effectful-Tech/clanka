@@ -12,6 +12,8 @@ import type * as Path from "effect/Path"
 import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
 import type * as HttpClient from "effect/http/HttpClient"
 import type {
+  BackgroundJob,
+  BashJob,
   CurrentDirectory,
   DirectoryChanger,
   ExcludableTool,
@@ -73,6 +75,7 @@ import {
   EnvironmentUpdated,
   HistoryAppended,
   HistoryReplaced,
+  JobComplete,
   RetriesExhausted,
 } from "./AgentOutput.ts"
 
@@ -203,6 +206,9 @@ export const makeWith = Effect.fnUntraced(function* <
   Scope.Scope | AgentExecutor.AgentExecutor | LoopToolServices<LoopTools>
 > {
   const executor = yield* AgentExecutor.AgentExecutor
+  // Background bash jobs are followed here rather than in a run, since they
+  // can outlive the run that started them.
+  const agentScope = yield* Effect.scope
 
   const singleTool = yield* SingleTools.pipe(Effect.provide(SingleToolHandlers))
   const capabilities = yield* executor.capabilities
@@ -315,6 +321,32 @@ export const makeWith = Effect.fnUntraced(function* <
     let cacheWrite = 0
     const prompt = opts.history
     const mailbox = opts.mailbox
+
+    // A job that ends is queued for the model and shown straight away. It
+    // neither wakes a waiting run nor keeps one alive.
+    const onJob = (job: BackgroundJob) =>
+      job.await.pipe(
+        Effect.flatMap((final) =>
+          Effect.sync(() => {
+            // `await` only returns once the job has ended.
+            if (final.status === "running") return
+            mailbox.jobs.push({ job: final, claim: job.claim })
+            maybeSend({
+              agentId,
+              part: new JobComplete({
+                id: final.id,
+                status: final.status,
+                ...(final.exitCode === undefined
+                  ? {}
+                  : { exitCode: final.exitCode }),
+                output: final.output,
+              }),
+            })
+          }),
+        ),
+        Effect.forkIn(agentScope),
+        Effect.asVoid,
+      )
 
     // Every change to `prompt` after the system message is set goes through
     // these two, so the history events always add up to the history.
@@ -813,6 +845,7 @@ ${prompt}`,
           subagents,
           onTaskComplete,
           onImage,
+          onJob,
           loopTools: scriptLoopTools,
         }),
         Stream.mkString,
@@ -908,6 +941,24 @@ ${prompt}`,
                   content: `<subagent id="${turn.agentId}" status="${turn.status}">
 ${Compaction.capOutput(turn.output ?? "").output}
 </subagent>`,
+                })),
+              ),
+            )
+          }
+        }
+
+        // Background bash jobs that ended and were not reported otherwise.
+        if (mailbox.jobs.length > 0) {
+          const pushes: Array<BashJob> = []
+          for (const { job, claim } of mailbox.jobs.splice(0)) {
+            if (yield* claim) pushes.push(job)
+          }
+          if (pushes.length > 0) {
+            appendHistory(
+              Prompt.make(
+                pushes.map((job) => ({
+                  role: "user" as const,
+                  content: jobMessage(job),
                 })),
               ),
             )
@@ -1276,12 +1327,29 @@ interface Mailbox {
   }>
   /** Wakes the agent's run if it is waiting for activity. */
   notify: () => void
+  /**
+   * Background bash jobs that ended. Each one is pushed to the model before
+   * its next call, unless `claim` finds it was already reported.
+   */
+  readonly jobs: Array<{
+    readonly job: BashJob
+    readonly claim: Effect.Effect<boolean>
+  }>
 }
 
 const makeMailbox = (): Mailbox => ({
   messages: new Set(),
   notify: () => {},
+  jobs: [],
 })
+
+const jobMessage = (job: BashJob): string => {
+  const exitCode =
+    job.exitCode === undefined ? "" : ` exitCode="${job.exitCode}"`
+  return `<job id="${job.id}" status="${job.status}"${exitCode}>
+${Compaction.capOutput(job.output).output}
+</job>`
+}
 
 interface Child {
   readonly id: number
@@ -1422,7 +1490,7 @@ const generateSystemTools = (
   tools.offers("bash"),
   `
 - Avoid passing scripts into the "bash" function, and instead write javascript.
-- Pass \`background: true\` to "bash" for commands that keep running, such as dev servers or watchers. A command still running at its timeout is moved to the background instead of being stopped. Use "jobOutput" and "stopJob" with the returned job id.`,
+- Pass \`background: true\` to "bash" for commands that keep running, such as dev servers or watchers. A command still running at its timeout is moved to the background instead of being stopped. Use "jobOutput" and "stopJob" with the returned job id. When a job ends, its status and output are sent to you as a \`<job id="..." status="..." exitCode="...">\` message, unless "jobOutput" or "stopJob" already gave you its final status. You do not need to poll jobs with "jobOutput" to find out when they end.`,
 )}
 - Variables are not shared between executions.
 - Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.${when(

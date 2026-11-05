@@ -934,6 +934,21 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
             rawOutput: part.summary,
             content: [{ type: "content", content: textContent(part.summary) }],
           })
+        // The script that started the job has already ended, so the job gets
+        // a tool call of its own.
+        case "JobComplete": {
+          const exitCode =
+            part.exitCode === undefined ? "" : ` (exit code ${part.exitCode})`
+          return update(session.id, {
+            sessionUpdate: "tool_call",
+            toolCallId: `job-${part.id}`,
+            title: `background job ${part.id} ${part.status}${exitCode}`,
+            kind: "execute",
+            status: part.status === "completed" ? "completed" : "failed",
+            rawOutput: part.output,
+            content: [{ type: "content", content: textContent(part.output) }],
+          })
+        }
         default:
           return Effect.void
       }

@@ -241,6 +241,38 @@ export const BashJob = Schema.Struct({
 export type BashJob = typeof BashJob.Type
 
 /**
+ * A background `bash` job, handed to the `JobWatcher` when it starts.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export interface BackgroundJob {
+  readonly id: string
+  /** Waits for the job to end and succeeds with its final state. */
+  readonly await: Effect.Effect<BashJob>
+  /**
+   * Marks the job's final state as reported. Succeeds with `false` when it
+   * already was: by `stopJob`, by a `jobOutput` call that returned it, or by
+   * an earlier `claim`.
+   */
+  readonly claim: Effect.Effect<boolean>
+}
+
+/**
+ * Receives every background `bash` job as it starts: those started with
+ * `background: true` and those moved to the background at their timeout.
+ * The executor sets it from `ExecuteOptions.onJob`.
+ *
+ * @since 1.0.0
+ * @category Context
+ */
+export class JobWatcher extends Context.Reference<
+  (job: BackgroundJob) => Effect.Effect<void>
+>("clanka/AgentTools/JobWatcher", {
+  defaultValue: () => () => Effect.void,
+}) {}
+
+/**
  * The `bash` timeout when the caller sets none.
  *
  * @since 1.0.0
@@ -287,7 +319,7 @@ export class CommandLimits extends Context.Reference<{
 export const makeBashTool = (timeout: Duration.Duration) =>
   Tool.make("bash", {
     description:
-      'Run a bash command and return the output. With `background: true` it returns straight away with a job id while the command keeps running. A command still running at its timeout is not stopped: it is moved to the background, and the output so far is returned with its job id. Read a job with "jobOutput" and stop it with "stopJob".',
+      'Run a bash command and return the output. With `background: true` it returns straight away with a job id while the command keeps running. A command still running at its timeout is not stopped: it is moved to the background, and the output so far is returned with its job id. Read a job with "jobOutput" and stop it with "stopJob". When a job ends you are sent a `<job id="..." status="..." exitCode="...">` message with its output, unless "stopJob" or "jobOutput" already returned its final status.',
     parameters: Schema.Struct({
       command: Schema.String,
       timeoutMs: Schema.optional(Schema.Finite).annotate({
@@ -436,7 +468,7 @@ export const AgentTools = Toolkit.make(
   makeBashTool(defaultBashTimeout),
   Tool.make("jobOutput", {
     description:
-      'Return the status and output so far of a background bash job.',
+      "Return the status and output so far of a background bash job.",
     parameters: Schema.String.annotate({
       identifier: "id",
     }),
@@ -593,11 +625,26 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
 
     const jobs = new Map<string, RunningCommand>()
     let nextJobId = 1
-    const addJob = (running: RunningCommand) => {
+    const addJob = Effect.fnUntraced(function* (
+      command: Omit<RunningCommand, "reported">,
+    ) {
       const id = String(nextJobId++)
+      const running: RunningCommand = { ...command, reported: false }
       jobs.set(id, running)
+      const watch = yield* JobWatcher
+      yield* watch({
+        id,
+        await: Fiber.await(running.fiber).pipe(
+          Effect.map(() => jobInfo(id, running)),
+        ),
+        claim: Effect.sync(() => {
+          if (running.reported) return false
+          running.reported = true
+          return true
+        }),
+      })
       return id
-    }
+    })
     const findJob = (id: string) => {
       const running = jobs.get(id)
       return running === undefined
@@ -628,7 +675,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
             new Error(`Command timed out after ${timeoutMs}ms`),
           )
         }
-        const id = addJob(running)
+        const id = yield* addJob(running)
         const output = running.output()
         return `${output}${output === "" || output.endsWith("\n") ? "" : "\n"}[Still running after ${timeoutMs}ms, so it was moved to the background as job ${id}. ${jobUsage(id)}]`
       }
@@ -857,7 +904,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           stdin: "ignore",
         })
         if (options.background === true) {
-          const id = addJob(yield* startCommand(cmd))
+          const id = yield* addJob(yield* startCommand(cmd))
           return `Started background job ${id}. ${jobUsage(id)}`
         }
         return yield* runCommand(cmd, Duration.millis(timeoutMs), "background")
@@ -867,7 +914,10 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         yield* Effect.logInfo(`Calling "jobOutput"`).pipe(
           Effect.annotateLogs({ id }),
         )
-        return jobInfo(id, yield* findJob(id))
+        const running = yield* findJob(id)
+        const job = jobInfo(id, running)
+        if (job.status !== "running") running.reported = true
+        return job
       }),
       stopJob: Effect.fn("AgentTools.stopJob")(function* (input: unknown) {
         const id = yield* decodeStopJob(input)
@@ -876,6 +926,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         )
         const running = yield* findJob(id)
         yield* Fiber.interrupt(running.fiber)
+        running.reported = true
         return jobInfo(id, running)
       }),
       gh: Effect.fn("AgentTools.gh")(function* (args) {
@@ -1168,6 +1219,11 @@ interface RunningCommand {
     PlatformError.PlatformError
   >
   readonly output: () => string
+  /**
+   * Whether the final state has been reported, so it is not pushed to the
+   * model as well.
+   */
+  reported: boolean
 }
 
 const jobUsage = (id: string) =>

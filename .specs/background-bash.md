@@ -47,10 +47,38 @@ stopJob(id): { id, status, exitCode?, output }
   the caller's `commandOutputChars` in the same way as foreground output:
   the start and end are kept.
 
+## Completion pushes
+
+- When a job ends, its final state is pushed to the agent that started it,
+  the way `<subagent>` results are. Before its next model call the agent adds
+  a user message:
+
+  ```
+  <job id="1" status="failed" exitCode="3">
+  output, capped like script output
+  </job>
+  ```
+
+  `exitCode` is left out when the command did not exit on its own.
+
+- A job whose final state was already reported is not pushed: one stopped
+  with `stopJob`, or one whose final status a `jobOutput` call returned. The
+  executor keeps that flag. The agent claims each job just before pushing it,
+  so a `jobOutput` read after the job ended but before the push still wins.
+- Pushes wait for the agent's next model call. A running job neither keeps a
+  conversation-mode run alive nor wakes a run that is waiting for
+  sub-agents, so dev servers and watchers never hold a run open. A job that
+  ends after its run is pushed in the agent's next run.
+- The agent emits a `JobComplete` output event as soon as the job ends,
+  whether or not it is pushed. `clanka acp` reports it as a finished
+  `execute` tool call with the id `job-<id>`.
+- The executor hands each job to `ExecuteOptions.onJob` as it starts, with
+  `await` for its final state and `claim` to mark it reported. Over RPC the
+  `execute` stream sends a `Job` part, and the client follows it with the
+  `awaitJob` and `claimJob` RPCs.
+
 ## Not included
 
-- Results are not pushed to the model when a job finishes, the way
-  `<subagent>` results are. The model reads them with `jobOutput`.
 - `taskComplete` does not wait for or reject on running jobs, so long-lived
   commands such as dev servers do not block it.
 

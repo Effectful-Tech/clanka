@@ -530,6 +530,58 @@ describe("Acp", () => {
     ),
   )
 
+  it.effect("reports a finished background job as a tool call", () =>
+    withStore(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* makeServer(runsScript("bash()"), {
+            ...executor,
+            execute: ({ onJob }) =>
+              Stream.fromEffect(
+                onJob!({
+                  id: "7",
+                  await: Effect.succeed({
+                    id: "7",
+                    status: "failed",
+                    exitCode: 3,
+                    output: "boom\n",
+                  }),
+                  claim: Effect.succeed(true),
+                }).pipe(Effect.as("Started background job 7.")),
+              ),
+          })
+          const created = yield* server.request(1, "session/new", {
+            cwd: "/tmp",
+          })
+          const sessionId: string = created.result.sessionId
+          yield* server.request(2, "session/prompt", {
+            sessionId,
+            prompt: [{ type: "text", text: "run it" }],
+          })
+          const jobs = server
+            .updates(sessionId)
+            .filter(
+              (u) =>
+                u.sessionUpdate.startsWith("tool_call") &&
+                u.toolCallId === "job-7",
+            )
+          assert.strictEqual(jobs.length, 1)
+          assert.strictEqual(jobs[0].sessionUpdate, "tool_call")
+          assert.strictEqual(jobs[0].kind, "execute")
+          assert.strictEqual(jobs[0].status, "failed")
+          assert.strictEqual(
+            jobs[0].title,
+            "background job 7 failed (exit code 3)",
+          )
+          assert.strictEqual(jobs[0].rawOutput, "boom\n")
+          assert.deepStrictEqual(jobs[0].content, [
+            { type: "content", content: { type: "text", text: "boom\n" } },
+          ])
+        }),
+      ),
+    ),
+  )
+
   it.effect("reports subagents with a delegate prompt preview", () =>
     withStore(
       Effect.scoped(

@@ -226,6 +226,7 @@ export const makeWith = Effect.fnUntraced(function* <
       .filter((dts) => dts !== "")
       .join("\n\n"),
     offers: (name) => capabilities.tools.includes(name),
+    jobPushes: capabilities.jobPushes,
     skillsCatalog:
       options.skills === undefined
         ? AgentSkills.renderCatalog(capabilities.skills)
@@ -322,8 +323,9 @@ export const makeWith = Effect.fnUntraced(function* <
     const prompt = opts.history
     const mailbox = opts.mailbox
 
-    // A job that ends is queued for the model and shown straight away. It
-    // neither wakes a waiting run nor keeps one alive.
+    // A job that ends is queued for the model and shown straight away, or at
+    // the start of the next run when none is running. It neither wakes a
+    // waiting run nor keeps one alive.
     const onJob = (job: BackgroundJob) =>
       job.await.pipe(
         Effect.flatMap((final) =>
@@ -331,17 +333,19 @@ export const makeWith = Effect.fnUntraced(function* <
             // `await` only returns once the job has ended.
             if (final.status === "running") return
             mailbox.jobs.push({ job: final, claim: job.claim })
-            maybeSend({
-              agentId,
-              part: new JobComplete({
-                id: final.id,
-                status: final.status,
-                ...(final.exitCode === undefined
-                  ? {}
-                  : { exitCode: final.exitCode }),
-                output: final.output,
-              }),
+            const event = new JobComplete({
+              id: final.id,
+              status: final.status,
+              ...(final.exitCode === undefined
+                ? {}
+                : { exitCode: final.exitCode }),
+              output: final.output,
             })
+            if (mailbox.emit === undefined) {
+              mailbox.events.push(event)
+            } else {
+              mailbox.emit(event)
+            }
           }),
         ),
         Effect.forkIn(agentScope),
@@ -900,9 +904,17 @@ ${prompt}`,
       }
     }
 
+    // Events from between runs, then everything else as it happens.
+    for (const part of mailbox.events.splice(0)) {
+      maybeSend({ agentId, part })
+    }
+    const emit = (part: Output) => maybeSend({ agentId, part })
+    mailbox.emit = emit
+
     yield* Effect.gen(function* () {
       while (true) {
         if (Option.isSome(finalSummary)) {
+          mailbox.emit = undefined
           yield* Queue.fail(
             output,
             new AgentFinished({ summary: finalSummary.value }),
@@ -1270,6 +1282,11 @@ ${Compaction.capOutput(turn.output ?? "").output}
         return executeScript(script)
       }),
       Effect.ensuring(Scope.close(runScope, Exit.void)),
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (mailbox.emit === emit) mailbox.emit = undefined
+        }),
+      ),
       Effect.catchCause((cause) => Queue.failCause(output, cause)),
       Effect.forkScoped,
     )
@@ -1335,12 +1352,18 @@ interface Mailbox {
     readonly job: BashJob
     readonly claim: Effect.Effect<boolean>
   }>
+  /** Emits output on the agent's current run. Unset between runs. */
+  emit: ((part: Output) => void) | undefined
+  /** Output from between runs, emitted when the next run starts. */
+  readonly events: Array<Output>
 }
 
 const makeMailbox = (): Mailbox => ({
   messages: new Set(),
   notify: () => {},
   jobs: [],
+  emit: undefined,
+  events: [],
 })
 
 const jobMessage = (job: BashJob): string => {
@@ -1461,6 +1484,8 @@ interface PromptTools {
   readonly skillsCatalog: Option.Option<string>
   /** The MCP servers section, or `""` without servers. */
   readonly mcp: string
+  /** Whether finished background bash jobs are pushed to the model. */
+  readonly jobPushes: boolean
 }
 
 const when = (condition: boolean, text: string) => (condition ? text : "")
@@ -1490,7 +1515,10 @@ const generateSystemTools = (
   tools.offers("bash"),
   `
 - Avoid passing scripts into the "bash" function, and instead write javascript.
-- Pass \`background: true\` to "bash" for commands that keep running, such as dev servers or watchers. A command still running at its timeout is moved to the background instead of being stopped. Use "jobOutput" and "stopJob" with the returned job id. When a job ends, its status and output are sent to you as a \`<job id="..." status="..." exitCode="...">\` message, unless "jobOutput" or "stopJob" already gave you its final status. You do not need to poll jobs with "jobOutput" to find out when they end.`,
+- Pass \`background: true\` to "bash" for commands that keep running, such as dev servers or watchers. A command still running at its timeout is moved to the background instead of being stopped. Use "jobOutput" and "stopJob" with the returned job id.${when(
+    tools.jobPushes,
+    ` When a job ends, its status and output are sent to you as a \`<job id="..." status="..." exitCode="...">\` message, unless "jobOutput" or "stopJob" already gave you its final status. You do not need to poll jobs with "jobOutput" to find out when they end.`,
+  )}`,
 )}
 - Variables are not shared between executions.
 - Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.${when(

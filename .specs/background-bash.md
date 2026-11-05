@@ -70,12 +70,31 @@ stopJob(id): { id, status, exitCode?, output }
   sub-agents, so dev servers and watchers never hold a run open. A job that
   ends after its run is pushed in the agent's next run.
 - The agent emits a `JobComplete` output event as soon as the job ends,
-  whether or not it is pushed. `clanka acp` reports it as a finished
-  `execute` tool call with the id `job-<id>`.
+  whether or not it is pushed. A job that ends between runs has no run to
+  emit on, so its event is held and emitted when the agent's next run
+  starts. `clanka acp` reports it as a finished `execute` tool call with the
+  id `job-<id>`.
 - The executor hands each job to `ExecuteOptions.onJob` as it starts, with
   `await` for its final state and `claim` to mark it reported. Over RPC the
   `execute` stream sends a `Job` part, and the client follows it with the
   `awaitJob` and `claimJob` RPCs.
+
+## Mixed versions
+
+Agents, executors and executor servers of different versions keep working
+together. Where one side predates job pushes, the model polls with
+`jobOutput` as before.
+
+- `Capabilities.jobPushes` says whether the executor hands jobs to `onJob`.
+  The local executor and current executor servers set it. Older servers and
+  executors that leave it out decode as `false`.
+- The system prompt describes the `<job>` message only when `jobPushes` is
+  set. Otherwise it keeps the `jobOutput` and `stopJob` instructions alone,
+  so the model is never told to wait for a push that cannot come.
+- The client opts in to `Job` parts with the optional `watchJobs` key of the
+  `execute` payload, which it sets when it has an `onJob`. The server sends
+  `Job` parts only then, since an older client cannot decode them and would
+  end the script with a defect. Older servers ignore the key.
 
 ## Not included
 

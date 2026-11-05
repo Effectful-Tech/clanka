@@ -249,6 +249,16 @@ export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
     Schema.withDecodingDefaultKey(Effect.succeed([])),
     Schema.withConstructorDefault(Effect.succeed([])),
   ),
+  /**
+   * Whether the executor hands background `bash` jobs to
+   * `ExecuteOptions.onJob`, so the agent can push their results. Executors
+   * and executor servers from before job pushes leave it out, and then the
+   * model is told to poll with `jobOutput`.
+   */
+  jobPushes: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+    Schema.withConstructorDefault(Effect.succeed(false)),
+  ),
 }) {}
 
 /**
@@ -671,6 +681,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
         }),
         tools: Object.keys(tools.tools),
         skills,
+        jobPushes: true,
       })
     }),
     execute: (opts) => execute(opts),
@@ -739,6 +750,7 @@ export const makeRpc = Effect.gen(function* () {
             script: opts.script,
             environment: opts.environment,
             loopTools: Object.keys(opts.loopTools ?? {}),
+            ...(opts.onJob === undefined ? {} : { watchJobs: true }),
           })
           .pipe(
             Stream.tap((part) => {
@@ -925,6 +937,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
               script,
               environment,
               loopTools,
+              watchJobs,
             }) {
               const queue = yield* Queue.unbounded<
                 typeof ExecuteOutput.Type,
@@ -989,10 +1002,18 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                         data: image.data,
                       })
                     },
-                    onJob(job) {
-                      jobs.set(job.id, job)
-                      return Queue.offer(queue, { _tag: "Job", id: job.id })
-                    },
+                    // Older clients cannot decode a `Job` part.
+                    ...(watchJobs === true
+                      ? {
+                          onJob: (job: BackgroundJob) => {
+                            jobs.set(job.id, job)
+                            return Queue.offer(queue, {
+                              _tag: "Job",
+                              id: job.id,
+                            })
+                          },
+                        }
+                      : {}),
                     loopTools: Object.fromEntries(
                       loopTools.map((name) => [
                         name,
@@ -1105,8 +1126,9 @@ export const ExecuteOutput = Schema.TaggedUnion({
    */
   Environment: { environment: ExecutionEnvironment },
   /**
-   * The script started a background `bash` job. The client follows it with
-   * `awaitJob` and `claimJob`.
+   * The script started a background `bash` job. Only sent when the client
+   * asked with `watchJobs`. The client follows it with `awaitJob` and
+   * `claimJob`.
    */
   Job: { id: Schema.String },
 })
@@ -1135,6 +1157,11 @@ export class Rpcs extends RpcGroup.make(
       loopTools: Schema.Array(Schema.String).pipe(
         Schema.withDecodingDefaultKey(Effect.succeed([])),
       ),
+      /**
+       * Send a `Job` part for each background job the script starts. Older
+       * clients leave it out, as they cannot decode those parts.
+       */
+      watchJobs: Schema.optionalKey(Schema.Boolean),
     }),
     success: ExecuteOutput,
     stream: true,

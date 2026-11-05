@@ -425,9 +425,13 @@ const acp = Command.make("acp", {
         defaultFastMode: fast,
         supportsFastMode: ModelLayer.acpSupportsFastMode,
         availableModels: Effect.map(repo.models, ModelLayer.acpModels),
+        // Built in the session scope: the executor runs commands in its own
+        // scope, which `Effect.provide` would close once the agent is made.
         makeAgent: (cwd) =>
-          Agent.make.pipe(
-            Effect.provide(AgentExecutor.layerLocal({ directory: cwd })),
+          Layer.build(AgentExecutor.layerLocal({ directory: cwd })).pipe(
+            Effect.flatMap((context) =>
+              Agent.make.pipe(Effect.provideContext(context)),
+            ),
           ),
         makeModel: ModelLayer.makeAcp({
           models: repo.models,

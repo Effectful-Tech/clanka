@@ -436,7 +436,7 @@ export const AgentTools = Toolkit.make(
   makeBashTool(defaultBashTimeout),
   Tool.make("jobOutput", {
     description:
-      'Return the status and output so far of a background bash job. Status is "running", "completed", "failed" or "stopped"; exitCode is set once the command has exited.',
+      'Return the status and output so far of a background bash job.',
     parameters: Schema.String.annotate({
       identifier: "id",
     }),

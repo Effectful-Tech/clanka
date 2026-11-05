@@ -1,5 +1,11 @@
 # clanka
 
+## 0.19.0
+
+### Minor Changes
+
+- [#276](https://github.com/Effectful-Tech/clanka/pull/276) [`6657234`](https://github.com/Effectful-Tech/clanka/commit/6657234d37c4a1f967111b65f2c8944b366b90ea) Thanks [@effect-bot](https://github.com/effect-bot)! - The `bash` tool can run commands in the background.
+
 ## 0.18.2
 
 ### Patch Changes

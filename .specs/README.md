@@ -13,6 +13,10 @@
   sub-agents in the background, address them by ID with `waitAgents`,
   `messageAgent`, `stopAgent` and `listAgents`, and push their results to the
   parent between model turns.
+- [Background bash commands](./background-bash.md) - Run `bash` commands in
+  the background, hand a command that reaches its timeout over to the
+  background instead of killing it, and read or stop jobs by ID with
+  `jobOutput` and `stopJob`.
 - [Caller-selected tools, instructions, skills and loop-side tools](./caller-tools.md) -
   Let a caller leave out built-in tools, supply the project instructions and
   skills, and register tools whose handlers run next to the `Agent` rather than

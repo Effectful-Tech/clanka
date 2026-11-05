@@ -1257,7 +1257,8 @@ const errorMessage = (error: unknown): string =>
       ? error.message
       : String(error)
 
-// Leaving out `delegate` leaves out the tools that address its sub-agents.
+// Leaving out `delegate` leaves out the tools that address its sub-agents,
+// and leaving out `bash` leaves out the tools that address its jobs.
 const excludedToolNames = (
   excludeTools: ReadonlyArray<ExcludableTool> | undefined,
 ): ReadonlySet<string> => {
@@ -1271,6 +1272,10 @@ const excludedToolNames = (
     ]) {
       names.add(name)
     }
+  }
+  if (names.has("bash")) {
+    names.add("jobOutput")
+    names.add("stopJob")
   }
   return names
 }

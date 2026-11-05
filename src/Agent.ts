@@ -1421,7 +1421,8 @@ const generateSystemTools = (
 )}${when(
   tools.offers("bash"),
   `
-- Avoid passing scripts into the "bash" function, and instead write javascript.`,
+- Avoid passing scripts into the "bash" function, and instead write javascript.
+- Pass \`background: true\` to "bash" for commands that keep running, such as dev servers or watchers. A command still running at its timeout is moved to the background instead of being stopped. Use "jobOutput" and "stopJob" with the returned job id.`,
 )}
 - Variables are not shared between executions.
 - Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.${when(

@@ -359,16 +359,45 @@ const runScript = (script: string) =>
 const readLog = (path: string) =>
   NodeFs.existsSync(path) ? NodeFs.readFileSync(path, "utf8") : ""
 
-// A command that logs its start, then waits for `openGate` before it logs
-// its finish. The log shows whether it was killed or started twice, without
-// racing a sleep.
+// A command that records its shell's pid and logs its start, then waits for
+// `openGate` before it logs its finish. The log shows whether it was killed
+// or started twice, without racing a sleep.
 const gatedCommand = (directory: string) => {
+  const pid = NodePath.join(directory, "pid")
   const log = NodePath.join(directory, "runs.log")
   const gate = NodePath.join(directory, "gate")
-  return `echo start >> ${log} && until [ -f ${gate} ]; do sleep 0.02; done && echo finish >> ${log}`
+  return `echo $$ > ${pid} && echo start >> ${log} && until [ -f ${gate} ]; do sleep 0.02; done && echo finish >> ${log}`
 }
 const openGate = (directory: string) =>
   NodeFs.writeFileSync(NodePath.join(directory, "gate"), "")
+
+const isAlive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false
+    throw error
+  }
+}
+
+// Polls until the gated command's shell has exited. The kill can land after
+// the caller has moved on, as an RPC interrupt does not wait for the server.
+// A command that is never killed waits at its gate, so it fails the deadline.
+const waitForExit = (directory: string) =>
+  Effect.gen(function* () {
+    const pid = Number(
+      NodeFs.readFileSync(NodePath.join(directory, "pid"), "utf8"),
+    )
+    while (isAlive(pid)) {
+      yield* Effect.sleep("20 millis")
+    }
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: "2 seconds",
+      orElse: () => Effect.die(new Error("The command was not stopped")),
+    }),
+  )
 
 // Polls the log until `done` holds.
 const waitForLog = (directory: string, done: (log: string) => boolean) =>
@@ -654,8 +683,7 @@ try {
           ).pipe(Effect.forkScoped)
           yield* waitForLog(environment.cwd, started)
           yield* Fiber.interrupt(fiber)
-          openGate(environment.cwd)
-          yield* Effect.sleep("500 millis")
+          yield* waitForExit(environment.cwd)
           assert.strictEqual(
             readLog(NodePath.join(environment.cwd, "runs.log")),
             "start\n",

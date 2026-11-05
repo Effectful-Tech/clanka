@@ -356,6 +356,18 @@ const runScript = (script: string) =>
       .pipe(Stream.mkString)
   })
 
+const readLog = (path: string) =>
+  NodeFs.existsSync(path) ? NodeFs.readFileSync(path, "utf8") : ""
+
+// Polls until the background command has logged its finish.
+const waitForFinish = (path: string) =>
+  Effect.gen(function* () {
+    while (!readLog(path).includes("finish")) {
+      yield* Effect.sleep("20 millis")
+    }
+    return readLog(path)
+  })
+
 // Puts a `gh` that only sleeps first on PATH, so the test needs neither the
 // real CLI nor the network.
 const withSlowGh = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -502,19 +514,51 @@ await sleep(60000)`,
   })
 
   describe(`${mode} executor limits`, () => {
-    it.live("stops a bash command at the caller's command timeout", () =>
+    // The command logs each start and finish to a file, so the file shows it
+    // was neither killed when the call returned nor started a second time.
+    it.live("runs a bash command in the background", () =>
       Effect.gen(function* () {
+        const executor = yield* AgentExecutor.AgentExecutor
+        const { environment } = yield* executor.capabilities
+        const log = NodePath.join(environment.cwd, "runs.log")
+        const output = yield* runScript(`
+const result = await bash({
+  command: "echo start >> runs.log && sleep 1 && echo finish >> runs.log",
+  background: true,
+})
+console.log("RETURNED:", result)`)
+        assert.include(output, "RETURNED:")
+        assert.match(output, /background/i)
+        assert.notInclude(readLog(log), "finish", "returned before it ended")
+        assert.strictEqual(yield* waitForFinish(log), "start\nfinish\n")
+      }).pipe(
+        Effect.timeout("5 seconds"),
+        Effect.provide(executorLayer({})),
+      ),
+    )
+
+    it.live("moves a bash command to the background at its timeout", () =>
+      Effect.gen(function* () {
+        const executor = yield* AgentExecutor.AgentExecutor
+        const { environment } = yield* executor.capabilities
+        const log = NodePath.join(environment.cwd, "runs.log")
         const output = yield* runScript(`
 try {
-  await bash({ command: 'sleep 10 && echo fini""shed', timeoutMs: 60000 })
+  const result = await bash({
+    command: "echo start >> runs.log && sleep 1 && echo finish >> runs.log",
+    timeoutMs: 60000,
+  })
+  console.log("RETURNED:", result)
 } catch (error) {
   console.log("REJECTED:", String(error))
 }`)
-        assert.include(output, "REJECTED:")
-        assert.match(output, /timed out/i)
-        assert.notInclude(output, "finished")
+        assert.include(output, "RETURNED:")
+        assert.notInclude(output, "REJECTED:")
+        assert.match(output, /background/i)
+        assert.strictEqual(readLog(log), "start\n", "still running")
+        assert.strictEqual(yield* waitForFinish(log), "start\nfinish\n")
       }).pipe(
-        Effect.timeout("3 seconds"),
+        Effect.timeout("5 seconds"),
         Effect.provide(executorLayer({ commandTimeout: "300 millis" })),
       ),
     )

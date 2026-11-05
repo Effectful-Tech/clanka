@@ -11,7 +11,6 @@ import * as Stream from "effect/Stream"
 import type * as AiError from "effect/ai/AiError"
 import * as LanguageModel from "effect/ai/LanguageModel"
 import * as Model from "effect/ai/Model"
-import * as Option from "effect/Option"
 import type * as Prompt from "effect/ai/Prompt"
 import type * as Response from "effect/ai/Response"
 import * as RpcClient from "effect/rpc/RpcClient"
@@ -150,26 +149,6 @@ const rpcExecutorLayer = AgentExecutor.layerRpc.pipe(
   Layer.provide(rpcProtocolLayer),
 )
 
-// Like an executor, or executor server, from before job pushes: its
-// capabilities say nothing about them.
-const withoutJobPushes = AgentExecutor.AgentExecutor.of({
-  capabilities: Effect.succeed(
-    new AgentExecutor.Capabilities({
-      toolsDts: "",
-      instructions: Option.none(),
-      supportsSearch: false,
-      environment: new AgentExecutor.ExecutionEnvironment({
-        cwd: "/",
-        baseline: [],
-        seen: [],
-      }),
-      tools: ["bash", "jobOutput", "stopJob"],
-    }),
-  ),
-  execute: () => Stream.empty,
-  executeUnsafe: () => Effect.die("executeUnsafe not implemented"),
-})
-
 const executors = [
   ["local", localExecutorLayer],
   ["rpc", rpcExecutorLayer],
@@ -263,15 +242,33 @@ describe("background bash jobs across versions", () => {
     "the prompt promises job pushes only when the executor sends them",
     () =>
       Effect.gen(function* () {
-        const current = yield* runAgent(() => text("done")).pipe(
-          Effect.provide(localExecutorLayer),
-        )
+        const { current, capabilities } = yield* Effect.gen(function* () {
+          const executor = yield* AgentExecutor.AgentExecutor
+          return {
+            current: yield* runAgent(() => text("done")),
+            capabilities: yield* executor.capabilities,
+          }
+        }).pipe(Effect.provide(localExecutorLayer))
         assert.include(systemPrompt(current.prompts), '<job id="..."')
 
+        // The current executor's tool typings without job pushes: what an
+        // older client sees from a current server, or what a custom executor
+        // that does not set `jobPushes` renders.
+        const withoutJobPushes = AgentExecutor.AgentExecutor.of({
+          capabilities: Effect.succeed(
+            new AgentExecutor.Capabilities({
+              ...capabilities,
+              jobPushes: false,
+            }),
+          ),
+          execute: () => Stream.empty,
+          executeUnsafe: () => Effect.die("executeUnsafe not implemented"),
+        })
         const older = yield* runAgent(() => text("done")).pipe(
           Effect.provideService(AgentExecutor.AgentExecutor, withoutJobPushes),
         )
         const olderPrompt = systemPrompt(older.prompts)
+        assert.include(olderPrompt, "bash(", "the tool typings are included")
         assert.include(olderPrompt, '"jobOutput"')
         assert.notInclude(olderPrompt, "<job", "no push is promised")
       }),

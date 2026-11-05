@@ -6,9 +6,13 @@ import { parsePatch, patchChunks } from "./ApplyPatch.ts"
 import * as ExaSearch from "./ExaSearch.ts"
 import * as WebToMarkdown from "./WebToMarkdown.ts"
 import type * as HttpClient from "effect/http/HttpClient"
+import type * as PlatformError from "effect/PlatformError"
 import * as Context from "effect/Context"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
+import * as Cause from "effect/Cause"
+import * as Exit from "effect/Exit"
+import * as Fiber from "effect/Fiber"
 import * as Toolkit from "effect/ai/Toolkit"
 import * as Tool from "effect/ai/Tool"
 import * as Schema from "effect/Schema"
@@ -200,6 +204,43 @@ export class ImageAttacher extends Context.Service<
 >()("clanka/AgentTools/ImageAttacher") {}
 
 /**
+ * @since 1.0.0
+ * @category Models
+ */
+export const BashJobStatus = Schema.Literals([
+  "running",
+  "completed",
+  "failed",
+  "stopped",
+])
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export type BashJobStatus = typeof BashJobStatus.Type
+
+/**
+ * A `bash` command running in the background, as returned by `jobOutput`
+ * and `stopJob`.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export const BashJob = Schema.Struct({
+  id: Schema.String,
+  status: BashJobStatus,
+  exitCode: Schema.optional(Schema.Number),
+  output: Schema.String,
+})
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export type BashJob = typeof BashJob.Type
+
+/**
  * The `bash` timeout when the caller sets none.
  *
  * @since 1.0.0
@@ -245,11 +286,16 @@ export class CommandLimits extends Context.Reference<{
  */
 export const makeBashTool = (timeout: Duration.Duration) =>
   Tool.make("bash", {
-    description: "Run a bash command and return the output",
+    description:
+      'Run a bash command and return the output. With `background: true` it returns straight away with a job id while the command keeps running. A command still running at its timeout is not stopped: it is moved to the background, and the output so far is returned with its job id. Read a job with "jobOutput" and stop it with "stopJob".',
     parameters: Schema.Struct({
       command: Schema.String,
       timeoutMs: Schema.optional(Schema.Finite).annotate({
-        documentation: `Timeout in ms (default and max: ${Duration.toMillis(timeout)})`,
+        documentation: `How long to wait in ms before moving the command to the background (default and max: ${Duration.toMillis(timeout)})`,
+      }),
+      background: Schema.optional(Schema.Boolean).annotate({
+        documentation:
+          "Start the command in the background and return its job id without waiting",
       }),
     }).annotate({
       identifier: "command",
@@ -388,6 +434,24 @@ export const AgentTools = Toolkit.make(
     dependencies: [CurrentDirectory],
   }),
   makeBashTool(defaultBashTimeout),
+  Tool.make("jobOutput", {
+    description:
+      'Return the status and output so far of a background bash job.',
+    parameters: Schema.String.annotate({
+      identifier: "id",
+    }),
+    success: BashJob,
+    failure: Schema.String,
+  }),
+  Tool.make("stopJob", {
+    description:
+      "Stop a background bash job and return its final status and output.",
+    parameters: Schema.String.annotate({
+      identifier: "id",
+    }),
+    success: BashJob,
+    failure: Schema.String,
+  }),
   Tool.make("applyPatch", {
     description:
       "Add, update or remove multiple files with a git diff / unified diff / wrapped patch.",
@@ -502,45 +566,79 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     const pathService = yield* Path.Path
     const webSearch = yield* ExaSearch.ExaSearch
     const fetchMarkdown = yield* WebToMarkdown.WebToMarkdown
-    const execute = Effect.fn(
-      function* (
-        command: ChildProcess.Command,
-        _timeout: Duration.Duration | undefined,
-      ) {
-        const { outputChars } = yield* CommandLimits
-        const handle = yield* spawner.spawn(command)
-        return yield* handle.all.pipe(
-          Stream.decodeText,
-          outputChars === undefined
-            ? Stream.mkString
-            : collectBounded(outputChars),
-          Effect.flatMap(
-            Effect.fnUntraced(function* (output) {
-              const exitCode = yield* handle.exitCode
-              if (exitCode === 0) return output
-              return yield* Effect.die(
-                new Error(
-                  `Command failed with exit code ${exitCode}: ${output}`,
-                ),
-              )
-            }),
+    // Commands run in fibers owned by the executor rather than the tool call,
+    // so one that is moved to the background outlives the script that
+    // started it. Closing the executor stops them all.
+    const commandScope = yield* Effect.scope
+    const startCommand = Effect.fnUntraced(function* (
+      command: ChildProcess.Command,
+    ) {
+      const { outputChars } = yield* CommandLimits
+      const output = makeOutputBuffer(outputChars)
+      const fiber = yield* spawner.spawn(command).pipe(
+        Effect.flatMap((handle) =>
+          handle.all.pipe(
+            Stream.decodeText,
+            Stream.runForEach((chunk) =>
+              Effect.sync(() => output.append(chunk)),
+            ),
+            Effect.andThen(handle.exitCode),
           ),
-        )
-      },
-      (effect, _command, timeout) =>
+        ),
+        Effect.scoped,
+        Effect.forkIn(commandScope),
+      )
+      return { fiber, output: output.render }
+    })
+
+    const jobs = new Map<string, RunningCommand>()
+    let nextJobId = 1
+    const addJob = (running: RunningCommand) => {
+      const id = String(nextJobId++)
+      jobs.set(id, running)
+      return id
+    }
+    const findJob = (id: string) => {
+      const running = jobs.get(id)
+      return running === undefined
+        ? Effect.fail(`No background job with id "${id}"`)
+        : Effect.succeed(running)
+    }
+
+    // A command still running at its timeout is stopped, or with
+    // `background` handed over as a job. A caller that is interrupted first
+    // stops it either way.
+    const runCommand = Effect.fnUntraced(function* (
+      command: ChildProcess.Command,
+      timeout: Duration.Duration | undefined,
+      onTimeout: "stop" | "background",
+    ) {
+      const running = yield* startCommand(command)
+      const awaited = Fiber.await(running.fiber)
+      const exit = yield* (
         timeout === undefined
-          ? effect
-          : Effect.timeoutOrElse(effect, {
-              duration: timeout,
-              orElse: () =>
-                Effect.die(
-                  new Error(
-                    `Command timed out after ${Duration.toMillis(timeout)}ms`,
-                  ),
-                ),
-            }),
-      Effect.scoped,
-    )
+          ? Effect.asSome(awaited)
+          : Effect.timeoutOption(awaited, timeout)
+      ).pipe(Effect.onInterrupt(() => Fiber.interrupt(running.fiber)))
+      if (Option.isNone(exit)) {
+        const timeoutMs = Duration.toMillis(timeout!)
+        if (onTimeout === "stop") {
+          yield* Fiber.interrupt(running.fiber)
+          return yield* Effect.die(
+            new Error(`Command timed out after ${timeoutMs}ms`),
+          )
+        }
+        const id = addJob(running)
+        const output = running.output()
+        return `${output}${output === "" || output.endsWith("\n") ? "" : "\n"}[Still running after ${timeoutMs}ms, so it was moved to the background as job ${id}. ${jobUsage(id)}]`
+      }
+      const exitCode = yield* exit.value
+      const output = running.output()
+      if (exitCode === 0) return output
+      return yield* Effect.die(
+        new Error(`Command failed with exit code ${exitCode}: ${output}`),
+      )
+    })
 
     /**
      * Image branch of `readFile`: the bytes go to the `ImageAttacher` for
@@ -758,8 +856,28 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           cwd,
           stdin: "ignore",
         })
-        return yield* execute(cmd, Duration.millis(timeoutMs))
+        if (options.background === true) {
+          const id = addJob(yield* startCommand(cmd))
+          return `Started background job ${id}. ${jobUsage(id)}`
+        }
+        return yield* runCommand(cmd, Duration.millis(timeoutMs), "background")
       }, Effect.orDie),
+      jobOutput: Effect.fn("AgentTools.jobOutput")(function* (input: unknown) {
+        const id = yield* decodeJobOutput(input)
+        yield* Effect.logInfo(`Calling "jobOutput"`).pipe(
+          Effect.annotateLogs({ id }),
+        )
+        return jobInfo(id, yield* findJob(id))
+      }),
+      stopJob: Effect.fn("AgentTools.stopJob")(function* (input: unknown) {
+        const id = yield* decodeStopJob(input)
+        yield* Effect.logInfo(`Calling "stopJob"`).pipe(
+          Effect.annotateLogs({ id }),
+        )
+        const running = yield* findJob(id)
+        yield* Fiber.interrupt(running.fiber)
+        return jobInfo(id, running)
+      }),
       gh: Effect.fn("AgentTools.gh")(function* (args) {
         yield* Effect.logInfo(`Calling "gh"`).pipe(
           Effect.annotateLogs({ args }),
@@ -770,7 +888,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           stdin: "ignore",
         })
         const { timeout } = yield* CommandLimits
-        return yield* execute(cmd, timeout)
+        return yield* runCommand(cmd, timeout, "stop")
       }, Effect.orDie),
       webSearch: Effect.fn("AgentTools.webSearch")(function* (options) {
         yield* Effect.logInfo(`Calling "webSearch"`).pipe(
@@ -1035,41 +1153,80 @@ const decodeStopAgent = decodeParams(
   'stopAgent requires an agent id, for example: stopAgent("3").',
 )
 
-/**
- * Collects text output keeping at most `maxChars` characters: the start, the
- * end, and a marker in place of the middle. Only the kept text is held in
- * memory while the stream runs.
- */
-const collectBounded =
-  (maxChars: number) =>
-  <E, R>(stream: Stream.Stream<string, E, R>): Effect.Effect<string, E, R> => {
-    const headChars = Math.floor(maxChars / 2)
-    const tailChars = maxChars - headChars
-    let head = ""
-    let tail = ""
-    let total = 0
-    return stream.pipe(
-      Stream.runForEach((chunk) =>
-        Effect.sync(() => {
-          total += chunk.length
-          let rest = chunk
-          if (head.length < headChars) {
-            const take = headChars - head.length
-            head += rest.slice(0, take)
-            rest = rest.slice(take)
-          }
-          if (rest.length > 0 && tailChars > 0) {
-            tail = (tail + rest).slice(-tailChars)
-          }
-        }),
-      ),
-      Effect.map(() => {
-        const omitted = total - head.length - tail.length
-        if (omitted <= 0) return head + tail
-        return `${head}\n\n[... ${omitted} of ${total} chars omitted from the middle of the output ...]\n\n${tail}`
-      }),
-    )
+const decodeJobOutput = decodeParams(
+  AgentTools.tools.jobOutput.parametersSchema,
+  'jobOutput requires a job id, for example: jobOutput("1").',
+)
+const decodeStopJob = decodeParams(
+  AgentTools.tools.stopJob.parametersSchema,
+  'stopJob requires a job id, for example: stopJob("1").',
+)
+
+interface RunningCommand {
+  readonly fiber: Fiber.Fiber<
+    ChildProcessSpawner.ExitCode,
+    PlatformError.PlatformError
+  >
+  readonly output: () => string
+}
+
+const jobUsage = (id: string) =>
+  `Use jobOutput("${id}") for its status and output, or stopJob("${id}") to stop it.`
+
+const jobInfo = (id: string, running: RunningCommand): BashJob => {
+  const exit = running.fiber.pollUnsafe()
+  const output = running.output()
+  if (exit === undefined) return { id, status: "running", output }
+  if (Exit.isSuccess(exit)) {
+    return {
+      id,
+      status: exit.value === 0 ? "completed" : "failed",
+      exitCode: exit.value,
+      output,
+    }
   }
+  if (Cause.hasInterruptsOnly(exit.cause)) {
+    return { id, status: "stopped", output }
+  }
+  return {
+    id,
+    status: "failed",
+    output: `${output}${output === "" ? "" : "\n"}${Cause.pretty(exit.cause)}`,
+  }
+}
+
+/**
+ * Accumulates text output keeping at most `maxChars` characters: the start,
+ * the end, and a marker in place of the middle. Only the kept text is held in
+ * memory. Without a limit everything is kept.
+ */
+const makeOutputBuffer = (maxChars: number | undefined) => {
+  const headChars =
+    maxChars === undefined ? Number.POSITIVE_INFINITY : Math.floor(maxChars / 2)
+  const tailChars = maxChars === undefined ? 0 : maxChars - headChars
+  let head = ""
+  let tail = ""
+  let total = 0
+  return {
+    append(chunk: string) {
+      total += chunk.length
+      let rest = chunk
+      if (head.length < headChars) {
+        const take = headChars - head.length
+        head += rest.slice(0, take)
+        rest = rest.slice(take)
+      }
+      if (rest.length > 0 && tailChars > 0) {
+        tail = (tail + rest).slice(-tailChars)
+      }
+    },
+    render() {
+      const omitted = total - head.length - tail.length
+      if (omitted <= 0) return head + tail
+      return `${head}\n\n[... ${omitted} of ${total} chars omitted from the middle of the output ...]\n\n${tail}`
+    },
+  }
+}
 
 class ApplyPatchError extends Data.TaggedClass("ApplyPatchError")<{
   readonly message: string

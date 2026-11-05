@@ -1,5 +1,11 @@
 # clanka
 
+## 0.19.1
+
+### Patch Changes
+
+- [#278](https://github.com/Effectful-Tech/clanka/pull/278) [`5ea58c3`](https://github.com/Effectful-Tech/clanka/commit/5ea58c333edd983ecc242af1d45a4cc20f707971) Thanks [@tim-smart](https://github.com/tim-smart)! - Fix bash and gh tool calls being interrupted in `clanka acp` sessions. The session's executor is now built in the session scope, so the scope its commands run in stays open.
+
 ## 0.19.0
 
 ### Minor Changes

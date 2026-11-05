@@ -91,6 +91,9 @@ together. Where one side predates job pushes, the model polls with
 - The system prompt describes the `<job>` message only when `jobPushes` is
   set. Otherwise it keeps the `jobOutput` and `stopJob` instructions alone,
   so the model is never told to wait for a push that cannot come.
+- The `bash` tool description does not mention pushes. The executor renders
+  it into `toolsDts` for every client, including older clients that never
+  receive `Job` parts, so only the agent's own prompt text can promise them.
 - The client opts in to `Job` parts with the optional `watchJobs` key of the
   `execute` payload, which it sets when it has an `onJob`. The server sends
   `Job` parts only then, since an older client cannot decode them and would

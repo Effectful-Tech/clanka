@@ -319,7 +319,7 @@ export class CommandLimits extends Context.Reference<{
 export const makeBashTool = (timeout: Duration.Duration) =>
   Tool.make("bash", {
     description:
-      'Run a bash command and return the output. With `background: true` it returns straight away with a job id while the command keeps running. A command still running at its timeout is not stopped: it is moved to the background, and the output so far is returned with its job id. Read a job with "jobOutput" and stop it with "stopJob". When a job ends you are sent a `<job id="..." status="..." exitCode="...">` message with its output, unless "stopJob" or "jobOutput" already returned its final status.',
+      'Run a bash command and return the output. With `background: true` it returns straight away with a job id while the command keeps running. A command still running at its timeout is not stopped: it is moved to the background, and the output so far is returned with its job id. Read a job with "jobOutput" and stop it with "stopJob".',
     parameters: Schema.Struct({
       command: Schema.String,
       timeoutMs: Schema.optional(Schema.Finite).annotate({

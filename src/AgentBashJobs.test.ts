@@ -11,6 +11,7 @@ import * as Stream from "effect/Stream"
 import type * as AiError from "effect/ai/AiError"
 import * as LanguageModel from "effect/ai/LanguageModel"
 import * as Model from "effect/ai/Model"
+import * as Option from "effect/Option"
 import type * as Prompt from "effect/ai/Prompt"
 import type * as Response from "effect/ai/Response"
 import * as RpcClient from "effect/rpc/RpcClient"
@@ -98,6 +99,10 @@ const messageText = (message: Prompt.Message): string =>
         .map((part) => (part.type === "text" ? part.text : ""))
         .join("")
 
+/** The system message of the first model call. */
+const systemPrompt = (prompts: ReadonlyArray<Prompt.Prompt>): string =>
+  messageText(prompts[0]!.content[0]!)
+
 /** The user messages in `prompt` that carry a completion push. */
 const jobPushes = (prompt: Prompt.Prompt): Array<string> =>
   prompt.content.flatMap((message) => {
@@ -116,7 +121,8 @@ const localExecutorLayer = Layer.unwrap(
   }),
 ).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)))
 
-const rpcExecutorLayer = Layer.unwrap(
+// Serves a fresh executor and connects an RPC client protocol to it.
+const rpcProtocolLayer = Layer.unwrap(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const directory = yield* fs.makeTempDirectoryScoped()
@@ -128,9 +134,7 @@ const rpcExecutorLayer = Layer.unwrap(
       ),
     )
     yield* HttpServer.serveEffect(httpEffect)
-    return AgentExecutor.layerRpc.pipe(
-      Layer.provide(RpcClient.layerProtocolHttp({ url: "" })),
-    )
+    return RpcClient.layerProtocolHttp({ url: "" })
   }),
 ).pipe(
   Layer.provide(
@@ -141,6 +145,30 @@ const rpcExecutorLayer = Layer.unwrap(
     ),
   ),
 )
+
+const rpcExecutorLayer = AgentExecutor.layerRpc.pipe(
+  Layer.provide(rpcProtocolLayer),
+)
+
+// Like an executor, or executor server, from before job pushes: its
+// capabilities say nothing about them.
+const withoutJobPushes = AgentExecutor.AgentExecutor.of({
+  capabilities: Effect.succeed(
+    new AgentExecutor.Capabilities({
+      toolsDts: "",
+      instructions: Option.none(),
+      supportsSearch: false,
+      environment: new AgentExecutor.ExecutionEnvironment({
+        cwd: "/",
+        baseline: [],
+        seen: [],
+      }),
+      tools: ["bash", "jobOutput", "stopJob"],
+    }),
+  ),
+  execute: () => Stream.empty,
+  executeUnsafe: () => Effect.die("executeUnsafe not implemented"),
+})
 
 const executors = [
   ["local", localExecutorLayer],
@@ -227,3 +255,44 @@ await sleep(500)`,
     )
   })
 }
+
+// Clients and executor servers of different versions must keep working
+// together.
+describe("background bash jobs across versions", () => {
+  it.live(
+    "the prompt promises job pushes only when the executor sends them",
+    () =>
+      Effect.gen(function* () {
+        const current = yield* runAgent(() => text("done")).pipe(
+          Effect.provide(localExecutorLayer),
+        )
+        assert.include(systemPrompt(current.prompts), '<job id="..."')
+
+        const older = yield* runAgent(() => text("done")).pipe(
+          Effect.provideService(AgentExecutor.AgentExecutor, withoutJobPushes),
+        )
+        const olderPrompt = systemPrompt(older.prompts)
+        assert.include(olderPrompt, '"jobOutput"')
+        assert.notInclude(olderPrompt, "<job", "no push is promised")
+      }),
+  )
+
+  // A client from before job pushes cannot decode a `Job` part, so one would
+  // end its script with a defect.
+  it.live("the server sends no Job parts to a client that did not ask", () =>
+    Effect.gen(function* () {
+      const client = yield* RpcClient.make(AgentExecutor.Rpcs)
+      const { environment } = yield* client.capabilities()
+      const parts = yield* client
+        .execute({
+          script: `await bash({ command: "true", background: true })`,
+          environment,
+          loopTools: [],
+        })
+        .pipe(Stream.runCollect)
+      const tags = parts.map((part) => part._tag)
+      assert.include(tags, "Environment", "the script ran")
+      assert.notInclude(tags, "Job")
+    }).pipe(Effect.scoped, Effect.provide(rpcProtocolLayer)),
+  )
+})

@@ -359,14 +359,28 @@ const runScript = (script: string) =>
 const readLog = (path: string) =>
   NodeFs.existsSync(path) ? NodeFs.readFileSync(path, "utf8") : ""
 
-// Polls until the background command has logged its finish.
-const waitForFinish = (path: string) =>
+// A command that logs its start, then waits for `openGate` before it logs
+// its finish. The log shows whether it was killed or started twice, without
+// racing a sleep.
+const gatedCommand = (directory: string) => {
+  const log = NodePath.join(directory, "runs.log")
+  const gate = NodePath.join(directory, "gate")
+  return `echo start >> ${log} && until [ -f ${gate} ]; do sleep 0.02; done && echo finish >> ${log}`
+}
+const openGate = (directory: string) =>
+  NodeFs.writeFileSync(NodePath.join(directory, "gate"), "")
+
+// Polls the log until `done` holds.
+const waitForLog = (directory: string, done: (log: string) => boolean) =>
   Effect.gen(function* () {
-    while (!readLog(path).includes("finish")) {
+    const path = NodePath.join(directory, "runs.log")
+    while (!done(readLog(path))) {
       yield* Effect.sleep("20 millis")
     }
     return readLog(path)
   })
+const started = (log: string) => log !== ""
+const finished = (log: string) => log.includes("finish")
 
 // Puts a `gh` that only sleeps first on PATH, so the test needs neither the
 // real CLI nor the network.
@@ -514,38 +528,39 @@ await sleep(60000)`,
   })
 
   describe(`${mode} executor limits`, () => {
-    // The command logs each start and finish to a file, so the file shows it
-    // was neither killed when the call returned nor started a second time.
     it.live("runs a bash command in the background", () =>
       Effect.gen(function* () {
         const executor = yield* AgentExecutor.AgentExecutor
         const { environment } = yield* executor.capabilities
-        const log = NodePath.join(environment.cwd, "runs.log")
         const output = yield* runScript(`
 const result = await bash({
-  command: "echo start >> runs.log && sleep 1 && echo finish >> runs.log",
+  command: ${JSON.stringify(gatedCommand(environment.cwd))},
   background: true,
 })
 console.log("RETURNED:", result)`)
         assert.include(output, "RETURNED:")
         assert.match(output, /background/i)
-        assert.notInclude(readLog(log), "finish", "returned before it ended")
-        assert.strictEqual(yield* waitForFinish(log), "start\nfinish\n")
-      }).pipe(
-        Effect.timeout("5 seconds"),
-        Effect.provide(executorLayer({})),
-      ),
+        assert.strictEqual(
+          yield* waitForLog(environment.cwd, started),
+          "start\n",
+          "still running after the script ended",
+        )
+        openGate(environment.cwd)
+        assert.strictEqual(
+          yield* waitForLog(environment.cwd, finished),
+          "start\nfinish\n",
+        )
+      }).pipe(Effect.timeout("5 seconds"), Effect.provide(executorLayer({}))),
     )
 
     it.live("moves a bash command to the background at its timeout", () =>
       Effect.gen(function* () {
         const executor = yield* AgentExecutor.AgentExecutor
         const { environment } = yield* executor.capabilities
-        const log = NodePath.join(environment.cwd, "runs.log")
         const output = yield* runScript(`
 try {
   const result = await bash({
-    command: "echo start >> runs.log && sleep 1 && echo finish >> runs.log",
+    command: ${JSON.stringify(gatedCommand(environment.cwd))},
     timeoutMs: 60000,
   })
   console.log("RETURNED:", result)
@@ -555,11 +570,127 @@ try {
         assert.include(output, "RETURNED:")
         assert.notInclude(output, "REJECTED:")
         assert.match(output, /background/i)
-        assert.strictEqual(readLog(log), "start\n", "still running")
-        assert.strictEqual(yield* waitForFinish(log), "start\nfinish\n")
+        assert.strictEqual(
+          yield* waitForLog(environment.cwd, started),
+          "start\n",
+          "still running after the script ended",
+        )
+        openGate(environment.cwd)
+        assert.strictEqual(
+          yield* waitForLog(environment.cwd, finished),
+          "start\nfinish\n",
+        )
       }).pipe(
         Effect.timeout("5 seconds"),
         Effect.provide(executorLayer({ commandTimeout: "300 millis" })),
+      ),
+    )
+
+    it.live("reports background jobs through jobOutput", () =>
+      Effect.gen(function* () {
+        const executor = yield* AgentExecutor.AgentExecutor
+        const { environment } = yield* executor.capabilities
+        const output = yield* runScript(`
+const done = async (id) => {
+  let job = await jobOutput(id)
+  while (job.status === "running") {
+    await sleep(20)
+    job = await jobOutput(id)
+  }
+  return job
+}
+await bash({ command: ${JSON.stringify(gatedCommand(environment.cwd))}, background: true })
+await bash({ command: "echo out && exit 3", background: true })
+console.log("RUNNING:", JSON.stringify(await jobOutput("1")))
+await writeFile({ path: "gate", content: "" })
+console.log("COMPLETED:", JSON.stringify(await done("1")))
+console.log("FAILED:", JSON.stringify(await done("2")))`)
+        assert.include(output, 'RUNNING: {"id":"1","status":"running"')
+        assert.include(
+          output,
+          'COMPLETED: {"id":"1","status":"completed","exitCode":0,"output":""}',
+        )
+        assert.include(
+          output,
+          'FAILED: {"id":"2","status":"failed","exitCode":3,"output":"out\\n"}',
+        )
+      }).pipe(Effect.timeout("5 seconds"), Effect.provide(executorLayer({}))),
+    )
+
+    it.live("stops a background job with stopJob", () =>
+      Effect.gen(function* () {
+        const executor = yield* AgentExecutor.AgentExecutor
+        const { environment } = yield* executor.capabilities
+        const output = yield* runScript(`
+await bash({ command: ${JSON.stringify(gatedCommand(environment.cwd))}, background: true })
+console.log("STOPPED:", JSON.stringify(await stopJob("1")))
+try {
+  await stopJob("99")
+} catch (error) {
+  console.log("REJECTED:", String(error))
+}`)
+        assert.include(output, 'STOPPED: {"id":"1","status":"stopped"')
+        assert.match(output, /REJECTED:.*No background job with id "99"/)
+        openGate(environment.cwd)
+        yield* Effect.sleep("500 millis")
+        assert.notInclude(
+          readLog(NodePath.join(environment.cwd, "runs.log")),
+          "finish",
+          "killed",
+        )
+      }).pipe(Effect.timeout("5 seconds"), Effect.provide(executorLayer({}))),
+    )
+
+    // Interrupting the script ends the call before the command timeout, so
+    // the command is stopped rather than handed over.
+    it.live(
+      "stops a foreground bash command when the script is interrupted",
+      () =>
+        Effect.gen(function* () {
+          const executor = yield* AgentExecutor.AgentExecutor
+          const { environment } = yield* executor.capabilities
+          const fiber = yield* runScript(
+            `await bash({ command: ${JSON.stringify(gatedCommand(environment.cwd))} })`,
+          ).pipe(Effect.forkScoped)
+          yield* waitForLog(environment.cwd, started)
+          yield* Fiber.interrupt(fiber)
+          openGate(environment.cwd)
+          yield* Effect.sleep("500 millis")
+          assert.strictEqual(
+            readLog(NodePath.join(environment.cwd, "runs.log")),
+            "start\n",
+            "killed",
+          )
+        }).pipe(
+          Effect.scoped,
+          Effect.timeout("5 seconds"),
+          Effect.provide(executorLayer({})),
+        ),
+    )
+
+    // The log sits outside the executor's directory, which is removed with
+    // the executor.
+    it.live("stops background jobs when the executor shuts down", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const directory = yield* fs.makeTempDirectoryScoped()
+        yield* runScript(
+          `await bash({ command: ${JSON.stringify(gatedCommand(directory))}, background: true })`,
+        ).pipe(
+          Effect.andThen(waitForLog(directory, started)),
+          Effect.provide(executorLayer({})),
+        )
+        openGate(directory)
+        yield* Effect.sleep("500 millis")
+        assert.strictEqual(
+          readLog(NodePath.join(directory, "runs.log")),
+          "start\n",
+          "killed",
+        )
+      }).pipe(
+        Effect.scoped,
+        Effect.timeout("5 seconds"),
+        Effect.provide(NodeServices.layer),
       ),
     )
 

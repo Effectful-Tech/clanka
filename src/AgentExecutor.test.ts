@@ -619,27 +619,29 @@ try {
       ),
     )
 
-    // A non-zero exit is a failed task rather than a rejection, and each
-    // command gets an id from the same counter as background jobs.
-    it.live("returns a task from a foreground bash command", () =>
-      Effect.gen(function* () {
-        const output = yield* runScript(`
+    // A foreground command that succeeds returns a task with an id from the
+    // same counter as background jobs; one that fails still rejects.
+    it.live(
+      "returns a task from a foreground bash command, or rejects on failure",
+      () =>
+        Effect.gen(function* () {
+          const output = yield* runScript(`
 try {
   console.log("OK:", JSON.stringify(await bash({ command: "echo hi" })))
-  console.log("FAILED:", JSON.stringify(await bash({ command: "echo out && exit 3" })))
+  console.log("RETURNED:", JSON.stringify(await bash({ command: "echo out && exit 3" })))
 } catch (error) {
   console.log("REJECTED:", String(error))
 }`)
-        assert.include(
-          output,
-          'OK: {"id":"1","status":"completed","exitCode":0,"output":"hi\\n"}',
-        )
-        assert.include(
-          output,
-          'FAILED: {"id":"2","status":"failed","exitCode":3,"output":"out\\n"}',
-        )
-        assert.notInclude(output, "REJECTED:")
-      }).pipe(Effect.timeout("5 seconds"), Effect.provide(executorLayer({}))),
+          assert.include(
+            output,
+            'OK: {"id":"1","status":"completed","exitCode":0,"output":"hi\\n"}',
+          )
+          assert.match(
+            output,
+            /REJECTED:.*Command failed with exit code 3: out/,
+          )
+          assert.notInclude(output, "RETURNED:")
+        }).pipe(Effect.timeout("5 seconds"), Effect.provide(executorLayer({}))),
     )
 
     it.live("waits for a background task with waitJob", () =>

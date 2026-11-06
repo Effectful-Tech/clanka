@@ -1359,12 +1359,12 @@ describe("Agent auto-compaction", () => {
   )
 
   it.live(
-    "keeps a finished background summary when the next call overflows",
+    "retries an overflowing call on a finished summary before compacting again",
     () =>
       Effect.gen(function* () {
-        const callStarted = yield* Deferred.make<void>()
+        const secondCallStarted = yield* Deferred.make<void>()
         const summarized = yield* Deferred.make<void>()
-        const summarizerInputs: Array<string> = []
+        let summarizerCalls = 0
         let agentCalls = 0
         const { exit, calls } = yield* runAgentCollect({
           history: fatHistory,
@@ -1373,13 +1373,17 @@ describe("Agent auto-compaction", () => {
             reserveTokens: 2_000,
             keepRecentTokens: 9_000,
           },
+          // Grows the history past the summary's kept tail, so a second
+          // compaction would have something to summarize.
+          executor: makeExecutor(() =>
+            Stream.succeed("SCRIPT-OUTPUT " + filler("out", 30_000)),
+          ),
           respond: (call) => {
             if (call.isSummarizer) {
-              summarizerInputs.push(promptJson(call.prompt))
-              if (summarizerInputs.length > 1) {
+              if (summarizerCalls++ > 0) {
                 return Stream.fromIterable(text("OVERFLOW-SUMMARY"))
               }
-              return Stream.fromEffect(Deferred.await(callStarted)).pipe(
+              return Stream.fromEffect(Deferred.await(secondCallStarted)).pipe(
                 Stream.flatMap(() =>
                   Stream.fromIterable(text("BACKGROUND-SUMMARY")),
                 ),
@@ -1388,12 +1392,16 @@ describe("Agent auto-compaction", () => {
             }
             switch (agentCalls++) {
               case 0:
+                return Stream.fromIterable([
+                  toolCall("call-1", "console.log('out')"),
+                ])
+              case 1:
                 // Overflows once the background summary has finished.
-                Deferred.doneUnsafe(callStarted, Exit.void)
+                Deferred.doneUnsafe(secondCallStarted, Exit.void)
                 return Stream.fromEffect(Deferred.await(summarized)).pipe(
                   Stream.flatMap(() => Stream.fail(contextLengthError)),
                 )
-              case 1:
+              case 2:
                 return Stream.fromIterable(text("recovered"))
               default:
                 return Stream.die(`unexpected model call #${agentCalls}`)
@@ -1402,18 +1410,69 @@ describe("Agent auto-compaction", () => {
         }).pipe(Effect.timeout("2 seconds"))
 
         assert.deepStrictEqual(exit, Exit.succeed("recovered"))
-        for (const input of summarizerInputs.slice(1)) {
-          assert.include(
-            input,
-            "BACKGROUND-SUMMARY",
-            "the overflow compaction must start from the finished summary",
-          )
-        }
-        const last = calls.findLast((call) => !call.isSummarizer)!
-        assert.isTrue(
-          Option.isSome(Compaction.findPreviousSummary(last.prompt)),
+        assert.strictEqual(
+          summarizerCalls,
+          1,
+          "the finished summary must be tried before another one",
         )
+        const last = calls.findLast((call) => !call.isSummarizer)!
+        assert.deepStrictEqual(
+          Compaction.findPreviousSummary(last.prompt),
+          Option.some("BACKGROUND-SUMMARY"),
+        )
+        assert.include(promptJson(last.prompt), "SCRIPT-OUTPUT")
       }),
+  )
+
+  it.live("waits for a running threshold summary when the call overflows", () =>
+    Effect.gen(function* () {
+      const callStarted = yield* Deferred.make<void>()
+      let summarizerCalls = 0
+      let agentCalls = 0
+      const { exit, calls } = yield* runAgentCollect({
+        history: fatHistory,
+        compaction: {
+          contextWindow: 12_000,
+          reserveTokens: 2_000,
+          keepRecentTokens: 9_000,
+        },
+        respond: (call) => {
+          if (call.isSummarizer) {
+            if (summarizerCalls++ > 0) {
+              return Stream.fromIterable(text("OVERFLOW-SUMMARY"))
+            }
+            // Still running when the call overflows.
+            return Stream.fromEffect(
+              Deferred.await(callStarted).pipe(
+                Effect.andThen(Effect.sleep("50 millis")),
+              ),
+            ).pipe(
+              Stream.flatMap(() =>
+                Stream.fromIterable(text("BACKGROUND-SUMMARY")),
+              ),
+            )
+          }
+          switch (agentCalls++) {
+            case 0:
+              Deferred.doneUnsafe(callStarted, Exit.void)
+              return Stream.fail(contextLengthError)
+            case 1:
+              return Stream.fromIterable(text("recovered"))
+            default:
+              return Stream.die(`unexpected model call #${agentCalls}`)
+          }
+        },
+      }).pipe(Effect.timeout("2 seconds"))
+
+      assert.deepStrictEqual(exit, Exit.succeed("recovered"))
+      assert.strictEqual(
+        summarizerCalls,
+        1,
+        "the running summary must be awaited, not started over",
+      )
+      const last = calls.findLast((call) => !call.isSummarizer)!
+      assertCompactedShape(last.prompt, "BACKGROUND-SUMMARY")
+    }),
   )
 })
 

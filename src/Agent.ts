@@ -973,65 +973,76 @@ ${prompt}`,
         }),
       )
     })
-    // Succeeds with whether the history was compacted.
-    const settleCompaction = Effect.suspend((): Effect.Effect<boolean> => {
-      const running = state.running
-      if (running?.exit === undefined) return Effect.succeed(false)
-      state.running = undefined
-      const exit = running.exit
-      // Cancelled with the run that started it, not a failure.
-      if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
-        endCompactionUnchanged("threshold")
-        return Effect.succeed(false)
-      }
-      if (Exit.isFailure(exit)) {
-        state.failures++
-        state.failed = {
-          split: running.split,
-          retryAt: state.calls + 4 * 2 ** (state.failures - 1),
+    // Succeeds with what became of a finished compaction: `applied` when
+    // the history was compacted, `timed-out` when the summarizer went quiet.
+    const settleCompaction = Effect.suspend(
+      (): Effect.Effect<"applied" | "timed-out" | "unchanged"> => {
+        const running = state.running
+        if (running?.exit === undefined) return Effect.succeed("unchanged")
+        state.running = undefined
+        const exit = running.exit
+        // Cancelled with the run that started it, not a failure.
+        if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
+          endCompactionUnchanged("threshold")
+          return Effect.succeed("unchanged")
         }
-        endCompactionUnchanged("threshold")
-        return Effect.as(
-          Effect.logWarning(
-            "Compaction failed, continuing with the uncompacted prompt",
-            Cause.squash(exit.cause),
-          ),
-          false,
-        )
-      }
-      state.failures = 0
-      state.failed = undefined
-      // The history may have grown since the compaction started. Anything
-      // else, such as another rewrite, makes the result stale.
-      const next = Option.flatMap(exit.value, (result) =>
-        rebaseCompaction(running.snapshot, prompt.current, result.prompt),
-      )
-      if (Option.isNone(next)) {
-        endCompactionUnchanged("threshold")
-        return Effect.succeed(false)
-      }
-      return Effect.map(renderEnvironment({ reset: true }), (refresh) => {
-        const tokensBefore = Compaction.estimateTokens(prompt.current)
-        // The refresh sends the kept updates again, so they are dropped
-        // here to appear once.
-        replaceHistory(
-          Prompt.fromMessages(
-            next.value.content.filter(
-              (message) => !isEnvironmentUpdate(message),
+        if (Exit.isFailure(exit)) {
+          state.failures++
+          state.failed = {
+            split: running.split,
+            retryAt: state.calls + 4 * 2 ** (state.failures - 1),
+          }
+          endCompactionUnchanged("threshold")
+          const error = Cause.squash(exit.cause)
+          return Effect.as(
+            Effect.logWarning(
+              "Compaction failed, continuing with the uncompacted prompt",
+              error,
             ),
-          ),
+            Cause.isTimeoutError(error) ? "timed-out" : "unchanged",
+          )
+        }
+        state.failures = 0
+        state.failed = undefined
+        // The history may have grown since the compaction started. Anything
+        // else, such as another rewrite, makes the result stale.
+        const next = Option.flatMap(exit.value, (result) =>
+          rebaseCompaction(running.snapshot, prompt.current, result.prompt),
         )
-        maybeSend({
-          agentId,
-          part: new CompactionEnded({
-            reason: "threshold",
-            tokensBefore,
-            tokensAfter: Compaction.estimateTokens(next.value),
-          }),
+        if (Option.isNone(next)) {
+          endCompactionUnchanged("threshold")
+          return Effect.succeed("unchanged")
+        }
+        return Effect.map(renderEnvironment({ reset: true }), (refresh) => {
+          const tokensBefore = Compaction.estimateTokens(prompt.current)
+          // The refresh sends the kept updates again, so they are dropped
+          // here to appear once.
+          replaceHistory(
+            Prompt.fromMessages(
+              next.value.content.filter(
+                (message) => !isEnvironmentUpdate(message),
+              ),
+            ),
+          )
+          maybeSend({
+            agentId,
+            part: new CompactionEnded({
+              reason: "threshold",
+              tokensBefore,
+              tokensAfter: Compaction.estimateTokens(next.value),
+            }),
+          })
+          applyEnvironmentUpdate(refresh)
+          return "applied" as const
         })
-        applyEnvironmentUpdate(refresh)
-        return true
-      })
+      },
+    )
+    // Waits for a threshold compaction in flight to finish, then settles it.
+    const awaitCompaction = Effect.suspend(() => {
+      const fiber = state.running?.fiber
+      return fiber === undefined
+        ? settleCompaction
+        : Effect.andThen(Fiber.await(fiber), settleCompaction)
     })
     // Cancels the compaction in flight, or with `runOnly` only one that
     // cannot outlive this run.
@@ -1424,39 +1435,55 @@ ${prompt}`,
             },
           ),
         )
-        // Overflow: compact once, retry the attempt once, then fail.
+        // Overflow: compact the whole history once, retry the attempt once,
+        // then fail. `retryOnTimeout` retries a summary that went quiet.
+        const overflowCompaction = (
+          err: AiError.AiError,
+          retryOnTimeout: boolean,
+        ) =>
+          Effect.gen(function* () {
+            discardAttempt()
+            yield* cancelCompaction()
+            const compacted = yield* compactWithEvents(
+              "overflow",
+              withIdleTimeout((onActivity) =>
+                Compaction.compact({
+                  prompt: prompt.current,
+                  reason: "overflow",
+                  onStart: onCompactionStart,
+                  onActivity,
+                }),
+              ).pipe(
+                Effect.retry({
+                  while: (error) => error._tag === "TimeoutError",
+                  times: retryOnTimeout ? 1 : 0,
+                }),
+                Effect.catchTag("TimeoutError", Effect.die),
+              ),
+            )
+            return Option.isSome(compacted)
+              ? yield* attemptWithImageFallback
+              : yield* err
+          })
         yield* attemptWithImageFallback.pipe(
-          Effect.catchIf(
-            (err): err is AiError.AiError =>
-              err._tag === "AiError" && Compaction.isContextLengthError(err),
-            (err) =>
-              Effect.gen(function* () {
-                discardAttempt()
-                // A finished threshold summary is kept, and the overflow
-                // compaction starts from it. One still running is cancelled.
-                const settled = yield* settleCompaction
-                yield* cancelCompaction()
-                const compacted = yield* compactWithEvents(
-                  "overflow",
-                  withIdleTimeout((onActivity) =>
-                    Compaction.compact({
-                      prompt: prompt.current,
-                      reason: "overflow",
-                      onStart: onCompactionStart,
-                      onActivity,
-                    }),
-                  ).pipe(
-                    Effect.retry({
-                      while: (error) => error._tag === "TimeoutError",
-                      times: 1,
-                    }),
-                    Effect.catchTag("TimeoutError", Effect.die),
+          Effect.catchIf(isOverflow, (err) =>
+            Effect.gen(function* () {
+              discardAttempt()
+              // A threshold summary in flight covers the start of this
+              // history, so it is awaited rather than started over. When it
+              // compacted the history, the call is retried on it first.
+              const settled = yield* awaitCompaction
+              if (settled === "applied") {
+                return yield* attemptWithImageFallback.pipe(
+                  Effect.catchIf(isOverflow, (err) =>
+                    overflowCompaction(err, true),
                   ),
                 )
-                return settled || Option.isSome(compacted)
-                  ? yield* attemptWithImageFallback
-                  : yield* err
-              }),
+              }
+              // After a summary that went quiet, one more quiet summary
+              // fails the turn, so the wait stays at two timeouts.
+              return yield* overflowCompaction(err, settled !== "timed-out")
+            }),
           ),
         )
         appendHistory(Prompt.fromResponseParts(response))
@@ -1545,6 +1572,10 @@ export const make: Effect.Effect<
   never,
   Scope.Scope | AgentExecutor.AgentExecutor
 > = makeWith({})
+
+/** A context-length error, which the overflow path compacts for. */
+const isOverflow = (err: unknown): err is AiError.AiError =>
+  AiError.isAiError(err) && Compaction.isContextLengthError(err)
 
 interface RunningCompaction {
   /** The history the compaction started from. */

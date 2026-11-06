@@ -220,39 +220,43 @@ const unexpected = (call: Call) =>
 
 // --- executors ---------------------------------------------------------------
 
-const localExecutorLayer = Layer.unwrap(
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem
-    const directory = yield* fs.makeTempDirectoryScoped()
-    return AgentExecutor.layerLocal({ directory })
-  }),
-).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)))
+const localExecutorLayer = (limits?: AgentExecutor.Limits) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const directory = yield* fs.makeTempDirectoryScoped()
+      return AgentExecutor.layerLocal({ directory, limits })
+    }),
+  ).pipe(
+    Layer.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
+  )
 
-const rpcExecutorLayer = Layer.unwrap(
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem
-    const directory = yield* fs.makeTempDirectoryScoped()
-    const { protocol, httpEffect } =
-      yield* RpcServer.makeProtocolWithHttpEffect()
-    yield* Layer.build(
-      AgentExecutor.layerRpcServer({ directory }).pipe(
-        Layer.provide(Layer.succeed(RpcServer.Protocol, protocol)),
+const rpcExecutorLayer = (limits?: AgentExecutor.Limits) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const directory = yield* fs.makeTempDirectoryScoped()
+      const { protocol, httpEffect } =
+        yield* RpcServer.makeProtocolWithHttpEffect()
+      yield* Layer.build(
+        AgentExecutor.layerRpcServer({ directory, limits }).pipe(
+          Layer.provide(Layer.succeed(RpcServer.Protocol, protocol)),
+        ),
+      )
+      yield* HttpServer.serveEffect(httpEffect)
+      return AgentExecutor.layerRpc.pipe(
+        Layer.provide(RpcClient.layerProtocolHttp({ url: "" })),
+      )
+    }),
+  ).pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        RpcSerialization.layerNdjson,
+        NodeHttpServer.layerTest,
+        NodeServices.layer,
       ),
-    )
-    yield* HttpServer.serveEffect(httpEffect)
-    return AgentExecutor.layerRpc.pipe(
-      Layer.provide(RpcClient.layerProtocolHttp({ url: "" })),
-    )
-  }),
-).pipe(
-  Layer.provide(
-    Layer.mergeAll(
-      RpcSerialization.layerNdjson,
-      NodeHttpServer.layerTest,
-      NodeServices.layer,
     ),
-  ),
-)
+  )
 
 const executors = [
   ["local", localExecutorLayer],
@@ -266,7 +270,8 @@ for (const [executorName, executorLayer] of executors) {
   const test = (
     name: string,
     self: () => Effect.Effect<void, unknown, AgentExecutor.AgentExecutor>,
-  ) => it.live(name, () => self().pipe(Effect.provide(executorLayer)))
+    limits?: AgentExecutor.Limits,
+  ) => it.live(name, () => self().pipe(Effect.provide(executorLayer(limits))))
 
   describe(`agent tasks (${executorName} executor)`, () => {
     test("an idle conversation turn waits for a running child, then gets its capped output", () =>
@@ -913,5 +918,57 @@ console.log("ROOT:" + JSON.stringify(mine.map((task) => task.kind + ":" + task.s
           "the parent lists both of its tasks, and its bash task still runs",
         )
       }))
+
+    // The script times out while `waitTasks` still waits for the slow task,
+    // so it never returns the two that ended. They must still be pushed.
+    test(
+      "tasks a waitTasks call never returned are still pushed",
+      () =>
+        Effect.gen(function* () {
+          const { exit, calls } = yield* runAgent({
+            conversationMode: true,
+            respond: (call) => {
+              if (call.role === "child") return complete("CHILD-OUT")
+              switch (call.index) {
+                case 0:
+                  return Stream.make(
+                    toolCall(
+                      "wait",
+                      `const quick = await bash({ command: "echo BASH-OUT", background: true })
+const child = await delegate({ prompt: "TASK-CHILD", background: true })
+const slow = await bash({ command: "sleep 30", background: true })
+await waitTasks([quick.id, child.id, slow.id])
+console.log("RETURNED")`,
+                    ),
+                  )
+                case 1:
+                  return Stream.fromIterable(text("done"))
+                default:
+                  return unexpected(call)
+              }
+            },
+          })
+
+          assert.deepStrictEqual(exit, Exit.succeed("done"))
+          const root = calls.filter((call) => call.role === "root")
+          const result = lastToolResult(root[1]!.prompt)
+          assert.include(result, "timed out")
+          assert.notInclude(result, "RETURNED")
+          assert.isTrue(
+            pushTexts(root[1]!.prompt).some((push) =>
+              /^<task id="1" kind="bash" status="completed" exitCode="0">\s*BASH-OUT\s*<\/task>$/.test(
+                push,
+              ),
+            ),
+            "the bash task is pushed",
+          )
+          assert.include(
+            findPush(root[1]!.prompt, "2", "completed").text,
+            "CHILD-OUT",
+            "the agent task is pushed",
+          )
+        }),
+      { scriptTimeout: "1 second" },
+    )
   })
 }

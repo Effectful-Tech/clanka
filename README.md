@@ -70,15 +70,14 @@ the session picks. `--fast` applies to them as well.
 
 Once the context passes `--compaction-threshold` tokens
 (`CLANKA_COMPACTION_THRESHOLD`, default 200000), or the assumed 236k context
-window minus a 16k reserve if that is lower, clanka summarizes the oldest part
-of the history. `--no-compaction` or `CLANKA_COMPACTION=false` turns it off.
+window minus a 16k reserve if that is lower, clanka summarizes everything but
+the most recent messages. `--no-compaction` or `CLANKA_COMPACTION=false` turns
+it off.
 
 Compaction runs in the background: model calls go ahead with the full history,
 and the summary replaces the old messages before the first model call after it
-is ready. One compaction summarizes at most about 64k tokens, so a long history
-shrinks over several compactions. A compaction that fails, or whose summarizer
-sends nothing for the turn timeout, is not retried with the same input until a
-few model calls later, and the next one summarizes half as much.
+is ready. A compaction that fails, or whose summarizer sends nothing for the
+turn timeout, is not retried with the same input until a few model calls later.
 
 ## Claude Agent
 

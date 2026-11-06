@@ -1,9 +1,7 @@
 import { assert, describe, it } from "@effect/vitest"
 import * as Effect from "effect/Effect"
 import * as Option from "effect/Option"
-import * as Stream from "effect/Stream"
 import * as AiError from "effect/ai/AiError"
-import * as LanguageModel from "effect/ai/LanguageModel"
 import * as Prompt from "effect/ai/Prompt"
 import * as ResponseIdTracker from "effect/ai/ResponseIdTracker"
 import * as Compaction from "./Compaction.ts"
@@ -187,7 +185,7 @@ describe("Compaction.estimateTokens", () => {
 
 describe("Compaction.CompactionConfig", () => {
   it.effect(
-    "defaults to a 236k window, a 16k reserve, a 200k threshold and 64k chunks",
+    "defaults to a 236k window, a 16k reserve and a 200k threshold",
     () =>
       Effect.gen(function* () {
         const config = yield* Compaction.CompactionConfig
@@ -197,7 +195,6 @@ describe("Compaction.CompactionConfig", () => {
           reserveTokens: 16_000,
           thresholdTokens: 200_000,
           keepRecentTokens: 20_000,
-          summarizeChunkTokens: 64_000,
         })
         assert.deepStrictEqual(config, Compaction.defaultConfig)
       }),
@@ -567,61 +564,6 @@ describe("Compaction.split", () => {
     ])
     assert.isTrue(Option.isNone(Compaction.split(prompt, 1_000_000)))
   })
-})
-
-describe("Compaction.compact with maxSummarizeTokens", () => {
-  it.effect("summarizes the oldest messages and keeps the rest verbatim", () =>
-    Effect.gen(function* () {
-      const summarizerInputs: Array<string> = []
-      const languageModel = yield* LanguageModel.make({
-        generateText: () => Effect.succeed([]),
-        streamText: (options) => {
-          summarizerInputs.push(promptText(options.prompt))
-          return Stream.fromIterable([
-            { type: "text-start", id: "s" },
-            { type: "text-delta", id: "s", delta: "CHUNK-SUMMARY" },
-            { type: "text-end", id: "s" },
-          ])
-        },
-      })
-      const oldest = [
-        assistantCall("c1", "readFile(1)"),
-        toolResult("c1", "RESULT-ONE " + filler("one", 4_000)),
-      ]
-      const unsummarized = [
-        assistantCall("c2", "readFile(2)"),
-        toolResult("c2", "RESULT-TWO " + filler("two", 4_000)),
-      ]
-      const kept = [user("latest request")]
-      const result = yield* Compaction.compact({
-        prompt: Prompt.fromMessages([
-          system,
-          ...oldest,
-          ...unsummarized,
-          ...kept,
-        ]),
-        reason: "threshold",
-        // Only the first message fits; its result comes along with it.
-        maxSummarizeTokens: 1,
-      }).pipe(
-        Effect.provideService(LanguageModel.LanguageModel, languageModel),
-        Effect.provideService(Compaction.CompactionConfig, {
-          ...Compaction.defaultConfig,
-          keepRecentTokens: 10,
-        }),
-      )
-
-      assert.strictEqual(summarizerInputs.length, 1)
-      assert.include(summarizerInputs[0], "RESULT-ONE")
-      assert.notInclude(summarizerInputs[0], "RESULT-TWO")
-      const compacted = Option.getOrThrow(result).prompt
-      assert.deepStrictEqual(compacted.content.slice(2), [
-        ...unsummarized,
-        ...kept,
-      ])
-      assert.include(promptText(compacted), "CHUNK-SUMMARY")
-    }),
-  )
 })
 
 describe("Compaction.findPreviousSummary", () => {

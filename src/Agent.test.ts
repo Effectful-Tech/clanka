@@ -1191,6 +1191,42 @@ describe("Agent auto-compaction", () => {
       }),
   )
 
+  it.effect(
+    "summarizes everything before the kept tail in one threshold compaction",
+    () =>
+      Effect.gen(function* () {
+        // About 75k tokens before the kept tail.
+        const history = Prompt.fromMessages([
+          user("OLDEST-REQUEST " + filler("old", 100_000)),
+          user("NEWEST-SUMMARIZED " + filler("new", 200_000)),
+        ])
+        const { exit, calls } = yield* runAgentCollect({
+          history,
+          compaction: {
+            contextWindow: 50_000,
+            reserveTokens: 2_000,
+            keepRecentTokens: 1_000,
+          },
+          respond: (call) =>
+            Stream.fromIterable(
+              text(call.isSummarizer ? "WHOLE-SUMMARY" : "continued"),
+            ),
+        })
+        assert.deepStrictEqual(exit, Exit.succeed("continued"))
+        const summarizer = calls.filter((call) => call.isSummarizer)
+        assert.strictEqual(summarizer.length, 1)
+        const input = promptJson(summarizer[0]!.prompt)
+        assert.include(input, "OLDEST-REQUEST")
+        assert.include(input, "NEWEST-SUMMARIZED")
+        const next = calls.find((call) => !call.isSummarizer)!
+        const kept = assertCompactedShape(next.prompt, "WHOLE-SUMMARY")
+        assert.notInclude(
+          promptJson(Prompt.fromMessages(kept)),
+          "NEWEST-SUMMARIZED",
+        )
+      }),
+  )
+
   it.live(
     "does not retry a timed-out threshold compaction with the same input",
     () =>

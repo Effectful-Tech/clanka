@@ -890,15 +890,13 @@ ${prompt}`,
     // waits for it. `startCompaction` forks one when the threshold fires
     // and none is running; `settleCompaction` applies a finished one before
     // the next model call. A failed input is not sent again until a back-off
-    // has passed, and each failure halves what the next one summarizes, so a
-    // history that is too slow to summarize at once shrinks in smaller steps.
+    // has passed, so a summary that times out is not retried every turn.
     // Only a compaction on a `SummarizerModel` outlives the run; any other is
     // cancelled when the run ends, which does not count as a failure.
     let background = backgroundCompactions.get(prompt)
     if (background === undefined) {
       background = {
         running: undefined,
-        chunkTokens: Compaction.summarizeChunkTokens(compactionConfig),
         failed: undefined,
         failures: 0,
         calls: 0,
@@ -930,17 +928,16 @@ ${prompt}`,
         return Effect.void
       }
       const snapshot = prompt.current
-      const maxSummarizeTokens = state.chunkTokens
-      const plan = Compaction.plan(snapshot, {
-        keepRecentTokens: compactionConfig.keepRecentTokens,
-        maxSummarizeTokens,
-      })
-      if (Option.isNone(plan)) return Effect.void
+      const parts = Compaction.split(
+        snapshot,
+        compactionConfig.keepRecentTokens,
+      )
+      if (Option.isNone(parts)) return Effect.void
       const failed = state.failed
       if (
         failed !== undefined &&
         state.calls < failed.retryAt &&
-        Compaction.sameSummarizerInput(failed.plan, plan.value)
+        Compaction.sameSummarizerInput(failed.split, parts.value)
       ) {
         return Effect.void
       }
@@ -950,7 +947,7 @@ ${prompt}`,
       })
       const running: RunningCompaction = {
         snapshot,
-        plan: plan.value,
+        split: parts.value,
         outlivesRun: ownSummarizer,
         fiber: undefined,
         exit: undefined,
@@ -960,7 +957,6 @@ ${prompt}`,
         Compaction.compact({
           prompt: snapshot,
           reason: "threshold",
-          maxSummarizeTokens,
           onActivity,
         }),
       ).pipe(
@@ -990,12 +986,8 @@ ${prompt}`,
       }
       if (Exit.isFailure(exit)) {
         state.failures++
-        state.chunkTokens = Math.max(
-          minSummarizeChunkTokens,
-          Math.floor(state.chunkTokens / 2),
-        )
         state.failed = {
-          plan: running.plan,
+          split: running.split,
           retryAt: state.calls + 4 * 2 ** (state.failures - 1),
         }
         endCompactionUnchanged("threshold")
@@ -1554,13 +1546,10 @@ export const make: Effect.Effect<
   Scope.Scope | AgentExecutor.AgentExecutor
 > = makeWith({})
 
-/** The least a threshold compaction summarizes after repeated failures. */
-const minSummarizeChunkTokens = 4_000
-
 interface RunningCompaction {
   /** The history the compaction started from. */
   readonly snapshot: Prompt.Prompt
-  readonly plan: Compaction.Plan
+  readonly split: Compaction.Split
   /** Whether it runs on a `SummarizerModel`, which can outlive the run. */
   readonly outlivesRun: boolean
   fiber:
@@ -1579,11 +1568,9 @@ interface RunningCompaction {
 
 interface BackgroundCompaction {
   running: RunningCompaction | undefined
-  /** The most the next compaction summarizes. Halved after each failure. */
-  chunkTokens: number
-  /** The plan of the last failure, not sent again before `retryAt`. */
+  /** The split of the last failure, not sent again before `retryAt`. */
   failed:
-    { readonly plan: Compaction.Plan; readonly retryAt: number } | undefined
+    { readonly split: Compaction.Split; readonly retryAt: number } | undefined
   /** Failures in a row, for the back-off. */
   failures: number
   /** Model calls on this history so far. */

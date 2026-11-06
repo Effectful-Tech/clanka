@@ -43,11 +43,6 @@ import * as Image from "./Image.ts"
  *   the context window keeps every turn's input smaller.
  * - `keepRecentTokens`: size of the recent tail preserved verbatim after a
  *   compaction.
- * - `summarizeChunkTokens`: the most a threshold compaction sends to the
- *   summarizer, measured on the rendered summarizer input. Older messages
- *   are summarized first; the rest stay verbatim for a later compaction, so
- *   a long history shrinks over several smaller summaries. Unset uses the
- *   default.
  *
  * @since 1.0.0
  * @category Configuration
@@ -58,10 +53,7 @@ export interface CompactionConfigService {
   readonly reserveTokens: number
   readonly thresholdTokens: number
   readonly keepRecentTokens: number
-  readonly summarizeChunkTokens?: number | undefined
 }
-
-const defaultSummarizeChunkTokens = 64_000
 
 /**
  * @since 1.0.0
@@ -73,7 +65,6 @@ export const defaultConfig: CompactionConfigService = {
   reserveTokens: 16_000,
   thresholdTokens: 200_000,
   keepRecentTokens: 20_000,
-  summarizeChunkTokens: defaultSummarizeChunkTokens,
 }
 
 /**
@@ -320,16 +311,6 @@ export const compactionThreshold = (config: CompactionConfigService): number =>
   Math.min(config.thresholdTokens, config.contextWindow - config.reserveTokens)
 
 /**
- * The most a threshold compaction summarizes: `summarizeChunkTokens`, or the
- * default when unset.
- *
- * @since 1.0.0
- * @category Tokens
- */
-export const summarizeChunkTokens = (config: CompactionConfigService): number =>
-  config.summarizeChunkTokens ?? defaultSummarizeChunkTokens
-
-/**
  * Whether the threshold trigger fires for the next model call.
  *
  * `contextTokens` is the `inputTokens.total` from the most recent `finish`
@@ -528,6 +509,19 @@ export const split = (
     kept: messages.slice(cut),
   })
 }
+
+/**
+ * Whether two splits send the same input to the summarizer: the same
+ * previous summary and the same messages to summarize.
+ *
+ * @since 1.0.0
+ * @category Cut points
+ */
+export const sameSummarizerInput = (self: Split, that: Split): boolean =>
+  Option.getOrUndefined(self.previousSummary) ===
+    Option.getOrUndefined(that.previousSummary) &&
+  self.toSummarize.length === that.toSummarize.length &&
+  self.toSummarize.every((message, i) => message === that.toSummarize[i])
 
 /**
  * Find the text of a previous compaction summary in a Prompt, if present.
@@ -774,88 +768,6 @@ export const rewrite = (options: {
   ])
 
 // =============================================================================
-// Plan
-// =============================================================================
-
-const renderedTokens = (message: Prompt.Message): number =>
-  Math.ceil(renderMessage(message).length / 4)
-
-/**
- * What one compaction summarizes and what it keeps.
- *
- * - `toSummarize`: the oldest messages, sent to the summarizer.
- * - `unsummarized`: messages older than the kept tail that did not fit in
- *   `maxSummarizeTokens`. They follow the summary verbatim, for a later
- *   compaction.
- * - `kept`: the recent tail, as in `Split`.
- *
- * @since 1.0.0
- * @category Plan
- */
-export interface Plan {
-  readonly system: Option.Option<Prompt.SystemMessage>
-  readonly previousSummary: Option.Option<string>
-  readonly toSummarize: ReadonlyArray<Prompt.Message>
-  readonly unsummarized: ReadonlyArray<Prompt.Message>
-  readonly kept: ReadonlyArray<Prompt.Message>
-}
-
-/**
- * Plan a compaction: `split` the prompt, then limit what is summarized to
- * `maxSummarizeTokens` of rendered summarizer input, oldest first. At least
- * one message is summarized, and a tool result is never separated from its
- * call. Without `maxSummarizeTokens`, everything before the kept tail is
- * summarized.
- *
- * Returns `None` when `split` finds nothing to summarize.
- *
- * @since 1.0.0
- * @category Plan
- */
-export const plan = (
-  prompt: Prompt.Prompt,
-  options: {
-    readonly keepRecentTokens: number
-    readonly maxSummarizeTokens?: number | undefined
-  },
-): Option.Option<Plan> =>
-  Option.map(split(prompt, options.keepRecentTokens), (parts) => {
-    const messages = parts.toSummarize
-    const max = options.maxSummarizeTokens ?? Infinity
-    let end = 0
-    let tokens = 0
-    while (end < messages.length) {
-      const messageTokens = renderedTokens(messages[end]!)
-      if (end > 0 && tokens + messageTokens > max) break
-      tokens += messageTokens
-      end++
-    }
-    // A summarized call takes its results with it.
-    while (end < messages.length && messages[end]!.role === "tool") {
-      end++
-    }
-    return {
-      system: parts.system,
-      previousSummary: parts.previousSummary,
-      toSummarize: messages.slice(0, end),
-      unsummarized: messages.slice(end),
-      kept: parts.kept,
-    }
-  })
-
-/**
- * Whether two plans send the same input to the summarizer.
- *
- * @since 1.0.0
- * @category Plan
- */
-export const sameSummarizerInput = (self: Plan, that: Plan): boolean =>
-  Option.getOrUndefined(self.previousSummary) ===
-    Option.getOrUndefined(that.previousSummary) &&
-  self.toSummarize.length === that.toSummarize.length &&
-  self.toSummarize.every((message, i) => message === that.toSummarize[i])
-
-// =============================================================================
 // Compaction
 // =============================================================================
 
@@ -883,14 +795,11 @@ export interface CompactionResult {
  * Run one compaction of `prompt`.
  *
  * Returns `None` without calling the model when compaction is disabled or
- * when `plan` finds nothing to summarize. Otherwise `onStart` runs, the
+ * when `split` finds nothing to summarize. Otherwise `onStart` runs, the
  * summarizer is called with `streamText` (the Codex backend rejects
  * non-streaming requests) through `SummarizerTransform`, on the
  * `SummarizerModel` when one is provided, and the prompt is
- * rewritten to `system + summary + unsummarized + trimKept(kept)`.
- *
- * `maxSummarizeTokens` limits the summarizer input, see `plan`. Without it,
- * everything before the kept tail is summarized.
+ * rewritten to `system + summary + trimKept(kept)`.
  *
  * Fails with the summarizer's `AiError`. Callers decide whether that is fatal.
  *
@@ -906,7 +815,6 @@ export const compact: (options: {
    */
   readonly onStart?:
     ((reason: CompactionReason) => Effect.Effect<void>) | undefined
-  readonly maxSummarizeTokens?: number | undefined
   /**
    * Runs for every part the summarizer streams, so a caller can tell a slow
    * summary from a stalled one.
@@ -919,13 +827,9 @@ export const compact: (options: {
 > = Effect.fnUntraced(function* (options) {
   const config = yield* CompactionConfig
   if (!config.enabled) return Option.none()
-  const parts = plan(options.prompt, {
-    keepRecentTokens: config.keepRecentTokens,
-    maxSummarizeTokens: options.maxSummarizeTokens,
-  })
+  const parts = split(options.prompt, config.keepRecentTokens)
   if (Option.isNone(parts)) return Option.none()
-  const { system, previousSummary, toSummarize, unsummarized, kept } =
-    parts.value
+  const { system, previousSummary, toSummarize, kept } = parts.value
   const onActivity = options.onActivity
 
   if (options.onStart) {
@@ -974,7 +878,7 @@ export const compact: (options: {
   const rewritten = rewrite({
     system,
     summary,
-    kept: [...unsummarized, ...trimKept(kept, config.keepRecentTokens)],
+    kept: trimKept(kept, config.keepRecentTokens),
   })
   return Option.some({
     reason: options.reason,
@@ -985,8 +889,7 @@ export const compact: (options: {
 })
 
 /**
- * Compact before the next model call when `shouldCompact` fires, summarizing
- * at most `summarizeChunkTokens`.
+ * Compact before the next model call when `shouldCompact` fires.
  *
  * Returns `None` when compaction is disabled, not needed, or a no-op. A
  * failing summarizer is swallowed here: the caller proceeds with the
@@ -1007,11 +910,7 @@ export const compactIfNeeded: (options: {
 > = Effect.fnUntraced(function* (options) {
   const config = yield* CompactionConfig
   if (!shouldCompact({ ...options, config })) return Option.none()
-  return yield* compact({
-    ...options,
-    reason: "threshold",
-    maxSummarizeTokens: summarizeChunkTokens(config),
-  }).pipe(
+  return yield* compact({ ...options, reason: "threshold" }).pipe(
     Effect.catch((error) =>
       Effect.logWarning(
         "Compaction failed, continuing with the uncompacted prompt",

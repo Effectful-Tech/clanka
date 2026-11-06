@@ -12,17 +12,16 @@ import type * as Path from "effect/Path"
 import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
 import type * as HttpClient from "effect/http/HttpClient"
 import type {
-  BackgroundJob,
-  BashJob,
+  AgentTaskExecutor,
   CurrentDirectory,
   DirectoryChanger,
   ExcludableTool,
   ImageAttacher,
   ImageAttachment,
-  SubagentExecutor,
-  SubagentResult,
-  SubagentStatus,
+  Task,
   TaskCompleter,
+  TaskHandle,
+  TaskStatus,
 } from "./AgentTools.ts"
 import * as Image from "./Image.ts"
 import type * as FileSystem from "effect/FileSystem"
@@ -206,7 +205,7 @@ export const makeWith = Effect.fnUntraced(function* <
   Scope.Scope | AgentExecutor.AgentExecutor | LoopToolServices<LoopTools>
 > {
   const executor = yield* AgentExecutor.AgentExecutor
-  // Background bash jobs are followed here rather than in a run, since they
+  // Background bash tasks are followed here rather than in a run, since they
   // can outlive the run that started them.
   const agentScope = yield* Effect.scope
 
@@ -226,7 +225,7 @@ export const makeWith = Effect.fnUntraced(function* <
       .filter((dts) => dts !== "")
       .join("\n\n"),
     offers: (name) => capabilities.tools.includes(name),
-    jobPushes: capabilities.jobPushes,
+    taskPushes: capabilities.taskPushes,
     skillsCatalog:
       options.skills === undefined
         ? AgentSkills.renderCatalog(capabilities.skills)
@@ -242,7 +241,9 @@ export const makeWith = Effect.fnUntraced(function* <
       ? capabilities.instructions
       : Option.map(options.instructions, renderInstructions)
 
-  let agentCounter = 0
+  // Tasks belong to the agent that started them. Each agent has its own
+  // owner id, so no agent sees another's tasks on a shared executor.
+  const rootTaskOwner = crypto.randomUUID()
 
   const outputBuffer = new Map<number, Array<Output>>()
   let currentOutputAgent: number | null = null
@@ -251,7 +252,10 @@ export const makeWith = Effect.fnUntraced(function* <
   const environment = MutableRef.make(capabilities.environment)
 
   const spawn: (opts: {
+    /** Identifies the agent's output; the root agent is 0. */
     readonly agentId: number
+    /** Passed to the executor as `agentId`, so the agent owns its tasks. */
+    readonly taskOwner: string
     readonly prompt: Prompt.Prompt
     /** AGENTS.md files and skills added after the prompt. */
     readonly environmentUpdate?: string | undefined
@@ -323,16 +327,16 @@ export const makeWith = Effect.fnUntraced(function* <
     const prompt = opts.history
     const mailbox = opts.mailbox
 
-    // A job that ends is queued for the model and shown straight away, or at
-    // the start of the next run when none is running. It neither wakes a
-    // waiting run nor keeps one alive.
-    const onJob = (job: BackgroundJob) =>
-      job.await.pipe(
+    // A bash task that ends is queued for the model and shown straight
+    // away, or at the start of the next run when none is running. It
+    // neither wakes a waiting run nor keeps one alive.
+    const onTask = (task: TaskHandle) =>
+      task.await.pipe(
         Effect.flatMap((final) =>
           Effect.sync(() => {
-            // `await` only returns once the job has ended.
+            // `await` only returns once the task has ended.
             if (final.status === "running") return
-            mailbox.jobs.push({ job: final, claim: job.claim })
+            mailbox.tasks.push({ task: final, claim: task.claim })
             const event = new JobComplete({
               id: final.id,
               status: final.status,
@@ -455,7 +459,8 @@ export const makeWith = Effect.fnUntraced(function* <
       })
     const children = new Map<string, Child>()
     // Finished turns waiting to be pushed to the model.
-    const completions: Array<Turn> = []
+    const completions: Array<{ readonly child: Child; readonly turn: Turn }> =
+      []
     let wakeUp: (() => void) | undefined
     const notify = () => {
       const resume = wakeUp
@@ -468,15 +473,19 @@ export const makeWith = Effect.fnUntraced(function* <
       Array.Array.from(children.values()).filter(
         (child) => child.turn.status === "running",
       )
-    const hasUndelivered = () => completions.some((turn) => !turn.delivered)
+    const hasUndelivered = () => completions.some(({ turn }) => !turn.reported)
 
-    const finishTurn = (turn: Turn, exit: Exit.Exit<string, unknown>) =>
+    const finishTurn = (
+      child: Child,
+      turn: Turn,
+      exit: Exit.Exit<string, unknown>,
+    ) =>
       Effect.sync(() => {
         if (Exit.isSuccess(exit)) {
           turn.status = "completed"
           turn.output = exit.value
         } else if (Cause.hasInterruptsOnly(exit.cause)) {
-          turn.status = "cancelled"
+          turn.status = "stopped"
         } else {
           turn.status = "failed"
           turn.output = causeMessage(exit.cause)
@@ -484,13 +493,14 @@ export const makeWith = Effect.fnUntraced(function* <
         Queue.offerUnsafe(
           output,
           new SubagentComplete({
-            id: turn.agentId,
+            id: child.id,
             summary: turn.output ?? "",
-            status: turn.status,
+            // The output event keeps its own name for a stopped agent.
+            status: turn.status === "stopped" ? "cancelled" : turn.status,
           }),
         )
-        if (!turn.delivered) {
-          completions.push(turn)
+        if (!turn.reported) {
+          completions.push({ child, turn })
         }
         Deferred.doneUnsafe(turn.done, Effect.void)
         notify()
@@ -512,6 +522,7 @@ export const makeWith = Effect.fnUntraced(function* <
       const display = opts.display && !options.background
       const stream = spawn({
         agentId: child.id,
+        taskOwner: child.taskOwner,
         prompt: Prompt.make(options.prompt),
         environmentUpdate: options.environmentUpdate,
         system: opts.system,
@@ -564,18 +575,25 @@ export const makeWith = Effect.fnUntraced(function* <
           ),
         )
       }).pipe(
-        Effect.onExit((exit) => finishTurn(turn, exit)),
+        Effect.onExit((exit) => finishTurn(child, turn, exit)),
         provideSubagentModel,
         Effect.provideContext(runContext),
         Effect.forkIn(runScope, { startImmediately: true }),
       )
     })
 
-    // Leaves `output` out when unset, so the result stays JSON for RPC.
-    const childResult = ({ id, turn }: Child): SubagentResult =>
-      turn.output === undefined
-        ? { id: String(id), status: turn.status }
-        : { id: String(id), status: turn.status, output: turn.output }
+    const childTask = ({ id, prompt, turn }: Child): Task => ({
+      id: String(id),
+      kind: "agent",
+      status: turn.status,
+      description: prompt,
+      output: turn.output ?? "",
+    })
+    // A final status returned to the script is not pushed as well.
+    const reportChild = (child: Child): Task => {
+      if (child.turn.status !== "running") child.turn.reported = true
+      return childTask(child)
+    }
 
     const lookupChild = (id: string) =>
       Effect.suspend(() => {
@@ -583,26 +601,26 @@ export const makeWith = Effect.fnUntraced(function* <
         return child
           ? Effect.succeed(child)
           : Effect.fail(
-              `Unknown agent id ${JSON.stringify(id)}. You can only address agents you started; call listAgents() to see them.`,
+              `No task with id ${JSON.stringify(id)}. You can only address tasks you started; call listTasks() to see them.`,
             )
       })
 
-    const subagents: AgentExecutor.ExecuteSubagents = {
+    const agentTasks: AgentExecutor.ExecuteAgentTasks = {
       delegate: Effect.fnUntraced(function* ({
+        id,
         prompt,
         background,
         environment,
       }) {
-        const agentId = agentCounter++
         const child: Child = {
-          id: agentId,
+          id: Number(id),
+          taskOwner: crypto.randomUUID(),
           prompt,
           history: MutableRef.make(Prompt.empty),
           environment: MutableRef.make(environment.environment),
           mailbox: makeMailbox(),
-          turn: makeTurn(agentId, background),
+          turn: makeTurn(background),
         }
-        const id = String(child.id)
         children.set(id, child)
         const turn = child.turn
         yield* startTurn({
@@ -616,7 +634,7 @@ ${prompt}`,
           background,
         })
         if (background) {
-          return { id, status: "running" }
+          return childTask(child)
         }
         // Foreground: a failure crashes the script, as before. Interrupting
         // the script stops the agent.
@@ -630,13 +648,11 @@ ${prompt}`,
             ),
           )
         }
-        return { id, status: "completed", output: turn.output ?? "" }
+        return childTask(child)
       }),
-      waitAgents: Effect.fnUntraced(function* (ids) {
-        const targets =
-          ids === undefined
-            ? Array.Array.from(children.values())
-            : yield* Effect.forEach(ids, lookupChild)
+      taskOutput: (id) => Effect.map(lookupChild(id), reportChild),
+      waitTasks: Effect.fnUntraced(function* (ids) {
+        const targets = yield* Effect.forEach(ids, lookupChild)
         // A turn started by messageAgent while waiting is waited for too.
         while (true) {
           const running = targets.find(
@@ -645,42 +661,35 @@ ${prompt}`,
           if (!running) break
           yield* Deferred.await(running.turn.done)
         }
-        return targets.map((child) => {
-          child.turn.delivered = true
-          return childResult(child)
-        })
+        return targets.map(reportChild)
       }),
       messageAgent: Effect.fnUntraced(function* ({ id, message }) {
         const child = yield* lookupChild(id)
         if (child.turn.status === "running") {
           child.mailbox.messages.add({ message, resume: () => {} })
           child.mailbox.notify()
-          return childResult(child)
+          return childTask(child)
         }
-        child.turn = makeTurn(child.id, true)
+        child.turn = makeTurn(true)
         yield* startTurn({
           child,
           prompt: message,
           label: message,
           background: true,
         })
-        return childResult(child)
+        return childTask(child)
       }),
-      stopAgent: Effect.fnUntraced(function* (id) {
+      stopTask: Effect.fnUntraced(function* (id) {
         const child = yield* lookupChild(id)
         const turn = child.turn
-        turn.delivered = true
+        turn.reported = true
         if (turn.status === "running") {
           yield* Fiber.interrupt(turn.fiber!)
         }
-        return childResult(child)
+        return childTask(child)
       }),
-      listAgents: Effect.sync(() =>
-        Array.Array.from(children.values(), (child) => ({
-          id: String(child.id),
-          status: child.turn.status,
-          prompt: child.prompt,
-        })),
+      listTasks: Effect.sync(() =>
+        Array.Array.from(children.values(), childTask),
       ),
     }
 
@@ -688,9 +697,10 @@ ${prompt}`,
       Effect.suspend(() => {
         const running = runningChildren()
         if (running.length > 0) {
-          const ids = running.map((child) => JSON.stringify(String(child.id)))
+          const ids = running.map((child) => String(child.id))
+          const quoted = ids.map((id) => JSON.stringify(id)).join(", ")
           return Effect.fail(
-            `taskComplete was rejected: sub-agents ${ids.join(", ")} are still running. Call waitAgents() to wait for them, or stopAgent(id) to stop them, before calling taskComplete.`,
+            `taskComplete was rejected: sub-agents ${quoted} are still running. Call waitTasks(${JSON.stringify(ids)}) to wait for them, or stopTask(id) to stop them, before calling taskComplete.`,
           )
         }
         finalSummary = Option.some(summary)
@@ -846,10 +856,11 @@ ${prompt}`,
             Effect.sync(() => {
               MutableRef.set(opts.environment, environment)
             }),
-          subagents,
+          agentId: opts.taskOwner,
+          agentTasks,
           onTaskComplete,
           onImage,
-          onJob,
+          onTask,
           loopTools: scriptLoopTools,
         }),
         Stream.mkString,
@@ -937,40 +948,29 @@ ${prompt}`,
           mailbox.messages.clear()
         }
 
-        // Completion pushes from background sub-agents. These have their own
-        // queue: the steering path above cuts the model stream short.
-        if (completions.length > 0) {
-          const pushes = completions.splice(0).filter((turn) => {
-            if (turn.delivered) return false
-            turn.delivered = true
-            return true
-          })
-          if (pushes.length > 0) {
-            appendHistory(
-              Prompt.make(
-                pushes.map((turn) => ({
-                  role: "user" as const,
-                  content: `<subagent id="${turn.agentId}" status="${turn.status}">
-${Compaction.capOutput(turn.output ?? "").output}
-</subagent>`,
-                })),
-              ),
-            )
+        // Ended tasks not reported otherwise: background sub-agents of this
+        // run and bash tasks of this agent. These have their own queue: the
+        // steering path above cuts the model stream short.
+        if (completions.length > 0 || mailbox.tasks.length > 0) {
+          const pushes: Array<Task> = []
+          for (const { child, turn } of completions.splice(0)) {
+            if (turn.reported) continue
+            turn.reported = true
+            pushes.push({
+              ...childTask(child),
+              status: turn.status,
+              output: turn.output ?? "",
+            })
           }
-        }
-
-        // Background bash jobs that ended and were not reported otherwise.
-        if (mailbox.jobs.length > 0) {
-          const pushes: Array<BashJob> = []
-          for (const { job, claim } of mailbox.jobs.splice(0)) {
-            if (yield* claim) pushes.push(job)
+          for (const { task, claim } of mailbox.tasks.splice(0)) {
+            if (yield* claim) pushes.push(task)
           }
           if (pushes.length > 0) {
             appendHistory(
               Prompt.make(
-                pushes.map((job) => ({
+                pushes.map((task) => ({
                   role: "user" as const,
-                  content: jobMessage(job),
+                  content: taskMessage(task),
                 })),
               ),
             )
@@ -1302,7 +1302,8 @@ ${Compaction.capOutput(turn.output ?? "").output}
     environment,
     send: (options) =>
       spawn({
-        agentId: agentCounter++,
+        agentId: 0,
+        taskOwner: rootTaskOwner,
         prompt: Prompt.make(options.prompt),
         system: options.system,
         history,
@@ -1345,11 +1346,11 @@ interface Mailbox {
   /** Wakes the agent's run if it is waiting for activity. */
   notify: () => void
   /**
-   * Background bash jobs that ended. Each one is pushed to the model before
+   * Background bash tasks that ended. Each one is pushed to the model before
    * its next call, unless `claim` finds it was already reported.
    */
-  readonly jobs: Array<{
-    readonly job: BashJob
+  readonly tasks: Array<{
+    readonly task: Task
     readonly claim: Effect.Effect<boolean>
   }>
   /** Emits output on the agent's current run. Unset between runs. */
@@ -1361,21 +1362,24 @@ interface Mailbox {
 const makeMailbox = (): Mailbox => ({
   messages: new Set(),
   notify: () => {},
-  jobs: [],
+  tasks: [],
   emit: undefined,
   events: [],
 })
 
-const jobMessage = (job: BashJob): string => {
+const taskMessage = (task: Task): string => {
   const exitCode =
-    job.exitCode === undefined ? "" : ` exitCode="${job.exitCode}"`
-  return `<job id="${job.id}" status="${job.status}"${exitCode}>
-${Compaction.capOutput(job.output).output}
-</job>`
+    task.exitCode === undefined ? "" : ` exitCode="${task.exitCode}"`
+  return `<task id="${task.id}" kind="${task.kind}" status="${task.status}"${exitCode}>
+${Compaction.capOutput(task.output).output}
+</task>`
 }
 
 interface Child {
+  /** The task id, as a number for output events. */
   readonly id: number
+  /** The agent's own owner id for the tasks it starts. */
+  readonly taskOwner: string
   readonly prompt: string
   /** Kept for the whole run so `messageAgent` can resume the agent. */
   readonly history: MutableRef.MutableRef<Prompt.Prompt>
@@ -1387,21 +1391,22 @@ interface Child {
 }
 
 interface Turn {
-  readonly agentId: number
-  status: SubagentStatus
+  status: TaskStatus
   output: string | undefined
-  /** Whether the model has seen this result. Undelivered results are pushed. */
-  delivered: boolean
+  /**
+   * Whether the model has seen this result, through a push or a task
+   * function. Unreported results are pushed.
+   */
+  reported: boolean
   readonly done: Deferred.Deferred<void>
   fiber: Fiber.Fiber<string, AiError.AiError | RetriesExhausted> | undefined
 }
 
-const makeTurn = (agentId: number, background: boolean): Turn => ({
-  agentId,
+const makeTurn = (background: boolean): Turn => ({
   status: "running",
   output: undefined,
   // Foreground results go straight back to the script.
-  delivered: !background,
+  reported: !background,
   done: Deferred.makeUnsafe(),
   fiber: undefined,
 })
@@ -1451,14 +1456,17 @@ const isEnvironmentUpdate = (message: Prompt.Message): boolean =>
 
 /**
  * Whether a user message was added by the agent rather than typed: an
- * `<environment-update>` or a `<subagent>` result. Surfaces that replay
- * history (ACP) skip them.
+ * `<environment-update>` or a `<task>` result, or the `<subagent>` and `<job>`
+ * results of earlier versions. Surfaces that replay history (ACP) skip them.
  *
  * @since 1.0.0
  * @category Models
  */
 export const isInjectedMessage = (message: Prompt.Message): boolean =>
-  isEnvironmentUpdate(message) || startsWith(message, "<subagent ")
+  isEnvironmentUpdate(message) ||
+  startsWith(message, "<task ") ||
+  startsWith(message, "<subagent ") ||
+  startsWith(message, "<job ")
 
 const renderInstructions = (content: string) => `# Project instructions
 
@@ -1484,11 +1492,46 @@ interface PromptTools {
   readonly skillsCatalog: Option.Option<string>
   /** The MCP servers section, or `""` without servers. */
   readonly mcp: string
-  /** Whether finished background bash jobs are pushed to the model. */
-  readonly jobPushes: boolean
+  /** Whether finished background bash tasks are pushed to the model. */
+  readonly taskPushes: boolean
 }
 
 const when = (condition: boolean, text: string) => (condition ? text : "")
+
+// The task functions the executor offers, and how ended tasks reach the
+// model. Only offered functions are named.
+const taskInstructions = (tools: PromptTools): string => {
+  const bash = tools.offers("bash")
+  const delegate = tools.offers("delegate")
+  if (!bash && !delegate) return ""
+  const functions = (
+    [
+      ["taskOutput", `"taskOutput" reads one`],
+      ["waitTasks", `"waitTasks" waits for a list of them`],
+      ["stopTask", `"stopTask" stops one`],
+      ["listTasks", `"listTasks" lists yours`],
+    ] as const
+  )
+    .filter(([name]) => tools.offers(name))
+    .map(([, text]) => text)
+  const kinds =
+    bash && delegate
+      ? "Background commands and sub-agents are"
+      : bash
+        ? "Background commands are"
+        : "Sub-agents are"
+  const uses =
+    functions.length === 0
+      ? ""
+      : ` ${functions.length === 1 ? functions[0]! : `${functions.slice(0, -1).join(", ")} and ${functions.at(-1)!}`}.`
+  const pushes = tools.taskPushes
+    ? ` When a task ends, its status and output are sent to you as a \`<task id="..." kind="..." status="...">\` message, unless a task function already gave you its final status, so you do not need to poll.`
+    : bash && tools.offers("taskOutput")
+      ? ` Background commands are not sent to you when they end: check them with "taskOutput".`
+      : ""
+  return `
+- ${kinds} tasks with ids.${uses}${pushes}`
+}
 
 const generateSystemTools = (
   tools: PromptTools,
@@ -1515,29 +1558,17 @@ const generateSystemTools = (
   tools.offers("bash"),
   `
 - Avoid passing scripts into the "bash" function, and instead write javascript.
-- Pass \`background: true\` to "bash" for commands that keep running, such as dev servers or watchers. A command still running at its timeout is moved to the background instead of being stopped. Use "jobOutput" and "stopJob" with the returned job id.${when(
-    tools.jobPushes,
-    ` When a job ends, its status and output are sent to you as a \`<job id="..." status="..." exitCode="...">\` message, unless "jobOutput" or "stopJob" already gave you its final status. You do not need to poll jobs with "jobOutput" to find out when they end.`,
-  )}`,
+- Pass \`background: true\` to "bash" for commands that keep running, such as dev servers or watchers: it returns a bash task straight away. A command still running at its timeout is moved to the background as a task instead of being stopped.`,
 )}
 - Variables are not shared between executions.
 - Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.${when(
   tools.offers("delegate"),
   `
-- "delegate" runs a sub-agent and waits for it. Pass \`background: true\` to keep working while it runs: its result is sent to you later as a \`<subagent id="..." status="...">\` message.${when(
-    tools.offers("waitAgents"),
-    ` Use "waitAgents" to wait for the returned id.`,
-  )}${when(
+- "delegate" runs a sub-agent and waits for it. Pass \`background: true\` to keep working while it runs: it returns an agent task straight away, and the agent's result is sent to you when it ends.${when(
     tools.offers("messageAgent"),
-    ` Use "messageAgent" to send a message to the returned id.`,
-  )}${when(
-    tools.offers("stopAgent"),
-    ` Use "stopAgent" to stop the returned id.`,
-  )}${when(
-    tools.offers("listAgents"),
-    ` "listAgents" shows the agents you started.`,
+    ` Use "messageAgent" to send a message to a sub-agent.`,
   )}`,
-)}${when(
+)}${taskInstructions(tools)}${when(
   !conversationMode,
   `
 
@@ -1768,7 +1799,7 @@ export const layerLocal = <
         : never,
       | CurrentDirectory
       | DirectoryChanger
-      | SubagentExecutor
+      | AgentTaskExecutor
       | TaskCompleter
       | ImageAttacher
     >

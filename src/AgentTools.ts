@@ -57,129 +57,145 @@ export class TaskCompleter extends Context.Service<
 >()("clanka/AgentTools/TaskCompleter") {}
 
 /**
+ * What a task is: a background `bash` command or a sub-agent started with
+ * `delegate`.
+ *
  * @since 1.0.0
  * @category Models
  */
-export const SubagentStatus = Schema.Literals([
-  "completed",
+export const TaskKind = Schema.Literals(["bash", "agent"])
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export type TaskKind = typeof TaskKind.Type
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export const TaskStatus = Schema.Literals([
   "running",
+  "completed",
   "failed",
-  "cancelled",
+  "stopped",
 ])
 
 /**
  * @since 1.0.0
  * @category Models
  */
-export type SubagentStatus = typeof SubagentStatus.Type
+export type TaskStatus = typeof TaskStatus.Type
 
 /**
- * @since 1.0.0
- * @category Models
- */
-export const SubagentResult = Schema.Struct({
-  id: Schema.String,
-  status: SubagentStatus,
-  output: Schema.optional(Schema.String),
-})
-
-/**
- * @since 1.0.0
- * @category Models
- */
-export type SubagentResult = typeof SubagentResult.Type
-
-/**
- * @since 1.0.0
- * @category Models
- */
-export const DelegateResult = Schema.Struct({
-  ...SubagentResult.fields,
-  status: Schema.Literals(["completed", "running"]),
-})
-
-/**
- * @since 1.0.0
- * @category Models
- */
-export type DelegateResult = typeof DelegateResult.Type
-
-/**
- * @since 1.0.0
- * @category Models
- */
-export const SubagentInfo = Schema.Struct({
-  id: Schema.String,
-  status: SubagentStatus,
-  prompt: Schema.String,
-})
-
-/**
- * @since 1.0.0
- * @category Models
- */
-export type SubagentInfo = typeof SubagentInfo.Type
-
-/**
- * Manages the sub-agents of one agent. Every function only sees the agents
- * spawned by that agent.
+ * A background `bash` command or a sub-agent, as returned by the task
+ * functions. Both kinds share one id space per executor.
  *
  * @since 1.0.0
  * @category Models
  */
-export interface Subagents {
+export const Task = Schema.Struct({
+  id: Schema.String,
+  kind: TaskKind,
+  status: TaskStatus,
+  /** The bash command, or the sub-agent's prompt. */
+  description: Schema.String,
+  /** Output so far while running; the final output, or the error, once ended. */
+  output: Schema.String,
+  /** bash only: set when the command exited on its own. */
+  exitCode: Schema.optional(Schema.Number),
+})
+
+/**
+ * @since 1.0.0
+ * @category Models
+ */
+export type Task = typeof Task.Type
+
+/**
+ * The sub-agent side of the task functions, for one agent. The executor
+ * resolves bash tasks itself and hands agent tasks to these, so every
+ * function only receives ids of agents that this agent started.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export interface AgentTasks {
   /**
-   * Start a sub-agent. In the foreground it resolves once the agent has
-   * finished, and dies if the agent failed. In the background it resolves
-   * straight away with `status: "running"`.
+   * Start a sub-agent under the id the executor allocated. In the foreground
+   * it resolves once the agent has finished, and dies if the agent failed.
+   * In the background it resolves straight away with `status: "running"`.
    */
   readonly delegate: (options: {
+    readonly id: string
     readonly prompt: string
     readonly background: boolean
-  }) => Effect.Effect<DelegateResult>
+  }) => Effect.Effect<Task>
   /**
-   * Wait for the listed agents, or all of them when `ids` is undefined.
-   * Failures are returned as results, not raised.
+   * The agent's status and output so far. A final status counts as reported.
    */
-  readonly waitAgents: (
-    ids: ReadonlyArray<string> | undefined,
-  ) => Effect.Effect<ReadonlyArray<SubagentResult>, string>
+  readonly taskOutput: (id: string) => Effect.Effect<Task, string>
+  /**
+   * Wait for the listed agents to end. Failures are returned as tasks, not
+   * raised, and count as reported.
+   */
+  readonly waitTasks: (
+    ids: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlyArray<Task>, string>
   /**
    * Steer a running agent, or start a new turn on a finished one.
    */
   readonly messageAgent: (options: {
     readonly id: string
     readonly message: string
-  }) => Effect.Effect<SubagentResult, string>
+  }) => Effect.Effect<Task, string>
   /**
    * Interrupt an agent and everything it spawned.
    */
-  readonly stopAgent: (id: string) => Effect.Effect<SubagentResult, string>
-  readonly listAgents: Effect.Effect<ReadonlyArray<SubagentInfo>>
+  readonly stopTask: (id: string) => Effect.Effect<Task, string>
+  /**
+   * The agents this agent started.
+   */
+  readonly listTasks: Effect.Effect<ReadonlyArray<Task>>
 }
 
 /**
  * @since 1.0.0
  * @category Context
  */
-export class SubagentExecutor extends Context.Service<
-  SubagentExecutor,
-  Subagents
->()("clanka/AgentTools/SubagentExecutor") {}
+export class AgentTaskExecutor extends Context.Service<
+  AgentTaskExecutor,
+  AgentTasks
+>()("clanka/AgentTools/AgentTaskExecutor") {}
 
 /**
- * A `Subagents` implementation for contexts that cannot spawn agents.
+ * An `AgentTasks` implementation for contexts that cannot spawn agents.
  *
  * @since 1.0.0
  * @category Context
  */
-export const subagentsUnavailable: Subagents = {
+export const agentTasksUnavailable: AgentTasks = {
   delegate: () => Effect.die(new Error("Sub-agents are not available here")),
-  waitAgents: () => Effect.fail("Sub-agents are not available here"),
+  taskOutput: () => Effect.fail("Sub-agents are not available here"),
+  waitTasks: () => Effect.fail("Sub-agents are not available here"),
   messageAgent: () => Effect.fail("Sub-agents are not available here"),
-  stopAgent: () => Effect.fail("Sub-agents are not available here"),
-  listAgents: Effect.succeed([]),
+  stopTask: () => Effect.fail("Sub-agents are not available here"),
+  listTasks: Effect.succeed([]),
 }
+
+/**
+ * The agent running the current script. Tasks are only visible to the agent
+ * that started them; scripts without an agent share the `undefined` owner.
+ * The executor sets it from `ExecuteOptions.agentId`.
+ *
+ * @since 1.0.0
+ * @category Context
+ */
+export class TaskOwner extends Context.Reference<string | undefined>(
+  "clanka/AgentTools/TaskOwner",
+  { defaultValue: () => undefined },
+) {}
 
 /**
  * An image read by `readFile`, handed to the Agent so it can be spliced onto
@@ -204,71 +220,35 @@ export class ImageAttacher extends Context.Service<
 >()("clanka/AgentTools/ImageAttacher") {}
 
 /**
- * @since 1.0.0
- * @category Models
- */
-export const BashJobStatus = Schema.Literals([
-  "running",
-  "completed",
-  "failed",
-  "stopped",
-])
-
-/**
- * @since 1.0.0
- * @category Models
- */
-export type BashJobStatus = typeof BashJobStatus.Type
-
-/**
- * A `bash` command running in the background, as returned by `jobOutput`
- * and `stopJob`.
+ * A task that has started, handed to the `TaskWatcher`.
  *
  * @since 1.0.0
  * @category Models
  */
-export const BashJob = Schema.Struct({
-  id: Schema.String,
-  status: BashJobStatus,
-  exitCode: Schema.optional(Schema.Number),
-  output: Schema.String,
-})
-
-/**
- * @since 1.0.0
- * @category Models
- */
-export type BashJob = typeof BashJob.Type
-
-/**
- * A background `bash` job, handed to the `JobWatcher` when it starts.
- *
- * @since 1.0.0
- * @category Models
- */
-export interface BackgroundJob {
+export interface TaskHandle {
   readonly id: string
-  /** Waits for the job to end and succeeds with its final state. */
-  readonly await: Effect.Effect<BashJob>
+  readonly kind: TaskKind
+  /** Waits for the task to end and succeeds with its final state. */
+  readonly await: Effect.Effect<Task>
   /**
-   * Marks the job's final state as reported. Succeeds with `false` when it
-   * already was: by `stopJob`, by a `jobOutput` call that returned it, or by
-   * an earlier `claim`.
+   * Marks the task's final state as reported. Succeeds with `false` when it
+   * already was: by `stopTask`, `waitTasks`, a `taskOutput` call that
+   * returned it, or an earlier `claim`.
    */
   readonly claim: Effect.Effect<boolean>
 }
 
 /**
- * Receives every background `bash` job as it starts: those started with
+ * Receives every background `bash` task as it starts: those started with
  * `background: true` and those moved to the background at their timeout.
- * The executor sets it from `ExecuteOptions.onJob`.
+ * The executor sets it from `ExecuteOptions.onTask`.
  *
  * @since 1.0.0
  * @category Context
  */
-export class JobWatcher extends Context.Reference<
-  (job: BackgroundJob) => Effect.Effect<void>
->("clanka/AgentTools/JobWatcher", {
+export class TaskWatcher extends Context.Reference<
+  (task: TaskHandle) => Effect.Effect<void>
+>("clanka/AgentTools/TaskWatcher", {
   defaultValue: () => () => Effect.void,
 }) {}
 
@@ -319,7 +299,7 @@ export class CommandLimits extends Context.Reference<{
 export const makeBashTool = (timeout: Duration.Duration) =>
   Tool.make("bash", {
     description:
-      'Run a bash command and return the output. With `background: true` it returns straight away with a job id while the command keeps running. A command still running at its timeout is not stopped: it is moved to the background, and the output so far is returned with its job id. Read a job with "jobOutput" and stop it with "stopJob".',
+      'Run a bash command and return the output. With `background: true` it returns a running bash task straight away while the command keeps running. A command still running at its timeout is not stopped: it is moved to the background, and the output so far is returned with its task id. Read a task with "taskOutput" and stop it with "stopTask".',
     parameters: Schema.Struct({
       command: Schema.String,
       timeoutMs: Schema.optional(Schema.Finite).annotate({
@@ -327,12 +307,12 @@ export const makeBashTool = (timeout: Duration.Duration) =>
       }),
       background: Schema.optional(Schema.Boolean).annotate({
         documentation:
-          "Start the command in the background and return its job id without waiting",
+          "Start the command in the background and return its task without waiting",
       }),
     }).annotate({
       identifier: "command",
     }),
-    success: Schema.String,
+    success: Schema.Union([Schema.String, Task]),
     dependencies: [CurrentDirectory],
   })
 
@@ -347,7 +327,7 @@ const globNamesDirectory = (glob: string) =>
  * @category Context
  */
 export const makeContextNoop = (cwd?: string) =>
-  SubagentExecutor.context(subagentsUnavailable).pipe(
+  AgentTaskExecutor.context(agentTasksUnavailable).pipe(
     Context.add(CurrentDirectory, cwd ?? "/"),
     Context.add(DirectoryChanger, () => Effect.die("Not implemented")),
     Context.add(TaskCompleter, () => Effect.void),
@@ -401,52 +381,25 @@ export const AgentTools = Toolkit.make(
   }),
   Tool.make("delegate", {
     description:
-      'Delegate a task to another software engineer / sub-agent. By default it waits for the sub-agent and returns its output. With `background: true` it returns straight away with status "running"; the sub-agent keeps working while you take more turns, and its result is sent to you as a <subagent> message when it finishes. Keep the returned id to address the agent later.',
+      'Delegate a task to another software engineer / sub-agent. By default it waits for the sub-agent and returns its completed task with the output. With `background: true` it returns straight away with status "running"; the sub-agent keeps working while you take more turns, and its result is sent to you when it finishes. Keep the returned id to address the agent later.',
     parameters: Schema.Struct({
       prompt: Schema.String,
       background: Schema.optional(Schema.Boolean),
     }),
-    success: DelegateResult,
+    success: Task,
     failure: Schema.String,
-    dependencies: [SubagentExecutor],
-  }),
-  Tool.make("waitAgents", {
-    description:
-      'Wait until the given sub-agents have finished, or all of your sub-agents when no ids are passed. A failed agent is returned with status "failed" and its error as the output; it does not throw.',
-    parameters: Schema.UndefinedOr(Schema.Array(Schema.String)).annotate({
-      identifier: "ids",
-    }),
-    success: Schema.Array(SubagentResult),
-    failure: Schema.String,
-    dependencies: [SubagentExecutor],
+    dependencies: [AgentTaskExecutor],
   }),
   Tool.make("messageAgent", {
     description:
-      "Send a message to one of your sub-agents. A running agent receives it as steering; a finished agent starts a new turn on top of its previous conversation. Returns straight away; the result is sent to you as a <subagent> message.",
+      "Send a message to one of your sub-agents. A running agent receives it as steering; a finished agent starts a new turn on top of its previous conversation. Returns straight away; the result is sent to you when the turn ends.",
     parameters: Schema.Struct({
       id: Schema.String,
       message: Schema.String,
     }),
-    success: SubagentResult,
+    success: Task,
     failure: Schema.String,
-    dependencies: [SubagentExecutor],
-  }),
-  Tool.make("stopAgent", {
-    description:
-      "Stop one of your sub-agents and every agent it started. Returns its final status.",
-    parameters: Schema.String.annotate({
-      identifier: "id",
-    }),
-    success: SubagentResult,
-    failure: Schema.String,
-    dependencies: [SubagentExecutor],
-  }),
-  Tool.make("listAgents", {
-    description:
-      "List the sub-agents you have started in this run, with their status.",
-    parameters: Schema.Void,
-    success: Schema.Array(SubagentInfo),
-    dependencies: [SubagentExecutor],
+    dependencies: [AgentTaskExecutor],
   }),
   Tool.make("glob", {
     description: "Find files matching a glob pattern.",
@@ -466,23 +419,41 @@ export const AgentTools = Toolkit.make(
     dependencies: [CurrentDirectory],
   }),
   makeBashTool(defaultBashTimeout),
-  Tool.make("jobOutput", {
+  Tool.make("taskOutput", {
     description:
-      "Return the status and output so far of a background bash job.",
+      "Return the status and output so far of one of your tasks: a background bash command or a sub-agent.",
     parameters: Schema.String.annotate({
       identifier: "id",
     }),
-    success: BashJob,
+    success: Task,
     failure: Schema.String,
+    dependencies: [AgentTaskExecutor],
   }),
-  Tool.make("stopJob", {
+  Tool.make("waitTasks", {
     description:
-      "Stop a background bash job and return its final status and output.",
+      'Wait until the given tasks have ended and return them. A failed task is returned with status "failed" and its error as the output; it does not throw.',
+    parameters: Schema.Array(Schema.String).annotate({
+      identifier: "ids",
+    }),
+    success: Schema.Array(Task),
+    failure: Schema.String,
+    dependencies: [AgentTaskExecutor],
+  }),
+  Tool.make("stopTask", {
+    description:
+      "Stop one of your tasks, and for a sub-agent every agent it started. Returns its final status and output.",
     parameters: Schema.String.annotate({
       identifier: "id",
     }),
-    success: BashJob,
+    success: Task,
     failure: Schema.String,
+    dependencies: [AgentTaskExecutor],
+  }),
+  Tool.make("listTasks", {
+    description: "List the tasks you have started, with their status.",
+    parameters: Schema.Void,
+    success: Schema.Array(Task),
+    dependencies: [AgentTaskExecutor],
   }),
   Tool.make("applyPatch", {
     description:
@@ -623,42 +594,61 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
       return { fiber, output: output.render }
     })
 
-    const jobs = new Map<string, RunningCommand>()
-    let nextJobId = 1
-    const addJob = Effect.fnUntraced(function* (
+    // Every task started on this executor, bash and agent alike, so both
+    // kinds share one id space. Each is only visible to the agent that
+    // started it.
+    const tasks = new Map<string, TaskEntry>()
+    let nextTaskId = 1
+    const registerAgentTask = Effect.fnUntraced(function* () {
+      const id = String(nextTaskId++)
+      tasks.set(id, { kind: "agent", id, owner: yield* TaskOwner })
+      return id
+    })
+    const addBashTask = Effect.fnUntraced(function* (
+      description: string,
       command: Omit<RunningCommand, "reported">,
     ) {
-      const id = String(nextJobId++)
-      const running: RunningCommand = { ...command, reported: false }
-      jobs.set(id, running)
-      const watch = yield* JobWatcher
+      const id = String(nextTaskId++)
+      const entry: BashEntry = {
+        kind: "bash",
+        id,
+        owner: yield* TaskOwner,
+        description,
+        command: { ...command, reported: false },
+      }
+      tasks.set(id, entry)
+      const watch = yield* TaskWatcher
       yield* watch({
         id,
-        await: Fiber.await(running.fiber).pipe(
-          Effect.map(() => jobInfo(id, running)),
+        kind: "bash",
+        await: Fiber.await(entry.command.fiber).pipe(
+          Effect.map(() => bashTask(entry)),
         ),
         claim: Effect.sync(() => {
-          if (running.reported) return false
-          running.reported = true
+          if (entry.command.reported) return false
+          entry.command.reported = true
           return true
         }),
       })
-      return id
+      return entry
     })
-    const findJob = (id: string) => {
-      const running = jobs.get(id)
-      return running === undefined
-        ? Effect.fail(`No background job with id "${id}"`)
-        : Effect.succeed(running)
-    }
-
+    const findTask = Effect.fnUntraced(function* (id: string) {
+      const owner = yield* TaskOwner
+      const entry = tasks.get(id)
+      if (entry === undefined || entry.owner !== owner) {
+        return yield* Effect.fail(
+          `No task with id ${JSON.stringify(id)}. You can only address tasks you started; call listTasks() to see them.`,
+        )
+      }
+      return entry
+    })
     // A command still running at its timeout is stopped, or with
-    // `background` handed over as a job. A caller that is interrupted first
+    // `background` handed over as a bash task. A caller that is interrupted first
     // stops it either way.
     const runCommand = Effect.fnUntraced(function* (
       command: ChildProcess.Command,
       timeout: Duration.Duration | undefined,
-      onTimeout: "stop" | "background",
+      onTimeout: "stop" | { readonly background: string },
     ) {
       const running = yield* startCommand(command)
       const awaited = Fiber.await(running.fiber)
@@ -675,9 +665,9 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
             new Error(`Command timed out after ${timeoutMs}ms`),
           )
         }
-        const id = yield* addJob(running)
+        const { id } = yield* addBashTask(onTimeout.background, running)
         const output = running.output()
-        return `${output}${output === "" || output.endsWith("\n") ? "" : "\n"}[Still running after ${timeoutMs}ms, so it was moved to the background as job ${id}. ${jobUsage(id)}]`
+        return `${output}${output === "" || output.endsWith("\n") ? "" : "\n"}[Still running after ${timeoutMs}ms, so it was moved to the background as task ${id}. Use taskOutput("${id}") for its status and output, or stopTask("${id}") to stop it.]`
       }
       const exitCode = yield* exit.value
       const output = running.output()
@@ -904,30 +894,87 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           stdin: "ignore",
         })
         if (options.background === true) {
-          const id = yield* addJob(yield* startCommand(cmd))
-          return `Started background job ${id}. ${jobUsage(id)}`
+          const entry = yield* addBashTask(
+            options.command,
+            yield* startCommand(cmd),
+          )
+          return bashTask(entry)
         }
-        return yield* runCommand(cmd, Duration.millis(timeoutMs), "background")
+        return yield* runCommand(cmd, Duration.millis(timeoutMs), {
+          background: options.command,
+        })
       }, Effect.orDie),
-      jobOutput: Effect.fn("AgentTools.jobOutput")(function* (input: unknown) {
-        const id = yield* decodeJobOutput(input)
-        yield* Effect.logInfo(`Calling "jobOutput"`).pipe(
+      taskOutput: Effect.fn("AgentTools.taskOutput")(function* (
+        input: unknown,
+      ) {
+        const id = yield* decodeTaskOutput(input)
+        yield* Effect.logInfo(`Calling "taskOutput"`).pipe(
           Effect.annotateLogs({ id }),
         )
-        const running = yield* findJob(id)
-        const job = jobInfo(id, running)
-        if (job.status !== "running") running.reported = true
-        return job
+        const entry = yield* findTask(id)
+        if (entry.kind === "bash") return reportBash(entry)
+        const agentTasks = yield* AgentTaskExecutor
+        return yield* agentTasks.taskOutput(id)
       }),
-      stopJob: Effect.fn("AgentTools.stopJob")(function* (input: unknown) {
-        const id = yield* decodeStopJob(input)
-        yield* Effect.logInfo(`Calling "stopJob"`).pipe(
+      waitTasks: Effect.fn("AgentTools.waitTasks")(function* (input: unknown) {
+        const ids = yield* decodeWaitTasks(input)
+        yield* Effect.logInfo(`Calling "waitTasks"`).pipe(
+          Effect.annotateLogs({ ids }),
+        )
+        const entries = yield* Effect.forEach(ids, findTask)
+        const bashEntries = entries.filter(
+          (entry): entry is BashEntry => entry.kind === "bash",
+        )
+        const agentIds = entries.flatMap((entry) =>
+          entry.kind === "agent" ? [entry.id] : [],
+        )
+        const agentTasks = yield* AgentTaskExecutor
+        const [bashTasks, agentResults] = yield* Effect.all(
+          [
+            Effect.forEach(
+              bashEntries,
+              (entry) =>
+                Fiber.await(entry.command.fiber).pipe(
+                  Effect.map(() => reportBash(entry)),
+                ),
+              { concurrency: "unbounded" },
+            ),
+            agentIds.length === 0
+              ? Effect.succeed([])
+              : agentTasks.waitTasks(agentIds),
+          ],
+          { concurrency: "unbounded" },
+        )
+        const ended = new Map(
+          [...bashTasks, ...agentResults].map((task) => [task.id, task]),
+        )
+        return ids.map((id) => ended.get(id)!)
+      }),
+      stopTask: Effect.fn("AgentTools.stopTask")(function* (input: unknown) {
+        const id = yield* decodeStopTask(input)
+        yield* Effect.logInfo(`Calling "stopTask"`).pipe(
           Effect.annotateLogs({ id }),
         )
-        const running = yield* findJob(id)
-        yield* Fiber.interrupt(running.fiber)
-        running.reported = true
-        return jobInfo(id, running)
+        const entry = yield* findTask(id)
+        if (entry.kind === "agent") {
+          const agentTasks = yield* AgentTaskExecutor
+          return yield* agentTasks.stopTask(id)
+        }
+        yield* Fiber.interrupt(entry.command.fiber)
+        return reportBash(entry)
+      }),
+      listTasks: Effect.fn("AgentTools.listTasks")(function* () {
+        yield* Effect.logInfo(`Calling "listTasks"`)
+        const owner = yield* TaskOwner
+        const bashTasks = Array.Array.from(tasks.values()).flatMap((entry) =>
+          entry.kind === "bash" && entry.owner === owner
+            ? [bashTask(entry)]
+            : [],
+        )
+        const agentTasks = yield* AgentTaskExecutor
+        return [...bashTasks, ...(yield* agentTasks.listTasks)].toSorted(
+          (a, b) => Number(a.id) - Number(b.id),
+        )
       }),
       gh: Effect.fn("AgentTools.gh")(function* (args) {
         yield* Effect.logInfo(`Calling "gh"`).pipe(
@@ -1100,18 +1147,9 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         yield* Effect.logInfo(`Calling "delegate"`).pipe(
           Effect.annotateLogs({ background }),
         )
-        const subagents = yield* SubagentExecutor
-        return yield* subagents.delegate({ prompt, background })
-      }),
-      waitAgents: Effect.fn("AgentTools.waitAgents")(function* (
-        input: unknown,
-      ) {
-        const ids = yield* decodeWaitAgents(input)
-        yield* Effect.logInfo(`Calling "waitAgents"`).pipe(
-          Effect.annotateLogs({ ids }),
-        )
-        const subagents = yield* SubagentExecutor
-        return yield* subagents.waitAgents(ids)
+        const id = yield* registerAgentTask()
+        const agentTasks = yield* AgentTaskExecutor
+        return yield* agentTasks.delegate({ id, prompt, background })
       }),
       messageAgent: Effect.fn("AgentTools.messageAgent")(function* (
         input: unknown,
@@ -1120,21 +1158,14 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         yield* Effect.logInfo(`Calling "messageAgent"`).pipe(
           Effect.annotateLogs({ id: options.id }),
         )
-        const subagents = yield* SubagentExecutor
-        return yield* subagents.messageAgent(options)
-      }),
-      stopAgent: Effect.fn("AgentTools.stopAgent")(function* (input: unknown) {
-        const id = yield* decodeStopAgent(input)
-        yield* Effect.logInfo(`Calling "stopAgent"`).pipe(
-          Effect.annotateLogs({ id }),
-        )
-        const subagents = yield* SubagentExecutor
-        return yield* subagents.stopAgent(id)
-      }),
-      listAgents: Effect.fn("AgentTools.listAgents")(function* () {
-        yield* Effect.logInfo(`Calling "listAgents"`)
-        const subagents = yield* SubagentExecutor
-        return yield* subagents.listAgents
+        const entry = yield* findTask(options.id)
+        if (entry.kind === "bash") {
+          return yield* Effect.fail(
+            `messageAgent only addresses sub-agents, and task ${JSON.stringify(entry.id)} is a bash task. Use taskOutput or stopTask with it instead.`,
+          )
+        }
+        const agentTasks = yield* AgentTaskExecutor
+        return yield* agentTasks.messageAgent(options)
       }),
       taskComplete: Effect.fn("AgentTools.taskComplete")(function* (
         message: unknown,
@@ -1191,26 +1222,21 @@ const decodeDelegate = decodeParams(
   AgentTools.tools.delegate.parametersSchema,
   'delegate requires an options object, for example: delegate({ prompt: "..." }) or delegate({ prompt: "...", background: true }).',
 )
-const decodeWaitAgents = decodeParams(
-  AgentTools.tools.waitAgents.parametersSchema,
-  'waitAgents takes an optional array of agent ids, for example: waitAgents(["3", "4"]).',
-)
 const decodeMessageAgent = decodeParams(
   AgentTools.tools.messageAgent.parametersSchema,
   'messageAgent requires an options object, for example: messageAgent({ id: "3", message: "..." }).',
 )
-const decodeStopAgent = decodeParams(
-  AgentTools.tools.stopAgent.parametersSchema,
-  'stopAgent requires an agent id, for example: stopAgent("3").',
+const decodeTaskOutput = decodeParams(
+  AgentTools.tools.taskOutput.parametersSchema,
+  'taskOutput requires a task id, for example: taskOutput("1").',
 )
-
-const decodeJobOutput = decodeParams(
-  AgentTools.tools.jobOutput.parametersSchema,
-  'jobOutput requires a job id, for example: jobOutput("1").',
+const decodeWaitTasks = decodeParams(
+  AgentTools.tools.waitTasks.parametersSchema,
+  'waitTasks requires an array of task ids, for example: waitTasks(["3", "4"]).',
 )
-const decodeStopJob = decodeParams(
-  AgentTools.tools.stopJob.parametersSchema,
-  'stopJob requires a job id, for example: stopJob("1").',
+const decodeStopTask = decodeParams(
+  AgentTools.tools.stopTask.parametersSchema,
+  'stopTask requires a task id, for example: stopTask("1").',
 )
 
 interface RunningCommand {
@@ -1226,27 +1252,54 @@ interface RunningCommand {
   reported: boolean
 }
 
-const jobUsage = (id: string) =>
-  `Use jobOutput("${id}") for its status and output, or stopJob("${id}") to stop it.`
+interface BashEntry {
+  readonly kind: "bash"
+  readonly id: string
+  readonly owner: string | undefined
+  readonly description: string
+  readonly command: RunningCommand
+}
 
-const jobInfo = (id: string, running: RunningCommand): BashJob => {
-  const exit = running.fiber.pollUnsafe()
-  const output = running.output()
-  if (exit === undefined) return { id, status: "running", output }
+/** The executor only records who owns an agent task; the agent tracks it. */
+interface AgentEntry {
+  readonly kind: "agent"
+  readonly id: string
+  readonly owner: string | undefined
+}
+
+type TaskEntry = BashEntry | AgentEntry
+
+// A bash task's final state, once returned to the script, is not pushed.
+const reportBash = (entry: BashEntry): Task => {
+  const task = bashTask(entry)
+  if (task.status !== "running") entry.command.reported = true
+  return task
+}
+
+const bashTask = ({ id, description, command }: BashEntry): Task => {
+  const exit = command.fiber.pollUnsafe()
+  const output = command.output()
+  if (exit === undefined) {
+    return { id, kind: "bash", status: "running", description, output }
+  }
   if (Exit.isSuccess(exit)) {
     return {
       id,
+      kind: "bash",
       status: exit.value === 0 ? "completed" : "failed",
-      exitCode: exit.value,
+      description,
       output,
+      exitCode: exit.value,
     }
   }
   if (Cause.hasInterruptsOnly(exit.cause)) {
-    return { id, status: "stopped", output }
+    return { id, kind: "bash", status: "stopped", description, output }
   }
   return {
     id,
+    kind: "bash",
     status: "failed",
+    description,
     output: `${output}${output === "" ? "" : "\n"}${Cause.pretty(exit.cause)}`,
   }
 }

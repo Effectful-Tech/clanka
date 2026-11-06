@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as FileSystem from "effect/FileSystem"
 import * as FetchHttpClient from "effect/http/FetchHttpClient"
+import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
 import * as Duration from "effect/Duration"
 import * as Exit from "effect/Exit"
@@ -785,11 +786,12 @@ describe("Agent auto-compaction", () => {
   )
 
   it.live(
-    "times out a stalled threshold summarizer and continues with the original prompt",
+    "times out a stalled threshold summarizer and keeps the original prompt",
     () =>
       Effect.gen(function* () {
         let interrupted = false
-        const result = yield* runAgentCollect({
+        let agentCalls = 0
+        const { exit, calls, outputs } = yield* runAgentCollect({
           history: fatHistory,
           turnTimeout: Duration.millis(100),
           compaction: {
@@ -797,8 +799,13 @@ describe("Agent auto-compaction", () => {
             reserveTokens: 2_000,
             keepRecentTokens: 9_000,
           },
-          respond: (call, index) => {
-            if (index === 0) {
+          // The script outlasts the timeout, so the summary has timed out
+          // by the next model call.
+          executor: makeExecutor(() =>
+            Stream.fromEffect(Effect.as(Effect.sleep("300 millis"), "ok")),
+          ),
+          respond: (call) => {
+            if (call.isSummarizer) {
               assertSummarizerCall(call)
               return Stream.fromEffect(Effect.never).pipe(
                 Stream.ensuring(
@@ -808,22 +815,18 @@ describe("Agent auto-compaction", () => {
                 ),
               )
             }
-            assert.isFalse(call.isSummarizer)
             assert.include(promptJson(call.prompt), "SENTINEL-ONE")
             assert.isTrue(
               Option.isNone(Compaction.findPreviousSummary(call.prompt)),
             )
-            return Stream.fromIterable(text("continued after timeout"))
+            return agentCalls++ === 0
+              ? Stream.fromIterable([toolCall("call-1", "console.log('ok')")])
+              : Stream.fromIterable(text("continued after timeout"))
           },
-        }).pipe(Effect.timeoutOption("2 seconds"))
-        assert.isTrue(
-          Option.isSome(result),
-          "threshold summarization must not hang the turn",
-        )
-        const { exit, calls, outputs } = Option.getOrThrow(result)
+        }).pipe(Effect.timeout("2 seconds"))
         assert.deepStrictEqual(exit, Exit.succeed("continued after timeout"))
         assert.isTrue(interrupted)
-        assert.strictEqual(calls.length, 2)
+        assert.strictEqual(calls.filter((call) => call.isSummarizer).length, 1)
         const ended = outputsOfTag(outputs, "CompactionEnded")
         assert.strictEqual(ended.length, 1)
         assert.strictEqual(ended[0]!.tokensAfter, ended[0]!.tokensBefore)
@@ -1130,6 +1133,112 @@ describe("Agent auto-compaction", () => {
       assert.strictEqual(ended[0]!.reason, "threshold")
       assert.strictEqual(ended[0]!.tokensAfter, ended[0]!.tokensBefore)
     }),
+  )
+
+  it.live(
+    "starts the first model call without waiting for threshold compaction",
+    () =>
+      Effect.gen(function* () {
+        // The summary can only finish after the first model call has started,
+        // so a turn that waits for it before calling the model never starts.
+        const firstCallStarted = yield* Deferred.make<void>()
+        const summarized = yield* Deferred.make<void>()
+        let agentCalls = 0
+        const result = yield* runAgentCollect({
+          history: fatHistory,
+          turnTimeout: Duration.minutes(1),
+          compaction: {
+            contextWindow: 12_000,
+            reserveTokens: 2_000,
+            keepRecentTokens: 9_000,
+          },
+          // The next model call starts after the summary is ready.
+          executor: makeExecutor(() =>
+            Stream.fromEffect(Deferred.await(summarized).pipe(Effect.as("ok"))),
+          ),
+          respond: (call) => {
+            if (call.isSummarizer) {
+              return Stream.fromEffect(Deferred.await(firstCallStarted)).pipe(
+                Stream.flatMap(() =>
+                  Stream.fromIterable(text("BACKGROUND-SUMMARY")),
+                ),
+                Stream.ensuring(Deferred.done(summarized, Exit.void)),
+              )
+            }
+            switch (agentCalls++) {
+              case 0:
+                Deferred.doneUnsafe(firstCallStarted, Exit.void)
+                assert.include(promptJson(call.prompt), "SENTINEL-ONE")
+                return Stream.fromIterable([
+                  toolCall("call-1", "console.log('ok')"),
+                ])
+              case 1:
+                assertCompactedShape(call.prompt, "BACKGROUND-SUMMARY")
+                return Stream.fromIterable(text("answered"))
+              default:
+                return Stream.die(`unexpected model call #${agentCalls}`)
+            }
+          },
+        }).pipe(Effect.timeoutOption("2 seconds"))
+        assert.isTrue(
+          Option.isSome(result),
+          "the first model call must not wait for the summary",
+        )
+        assert.deepStrictEqual(
+          Option.getOrThrow(result).exit,
+          Exit.succeed("answered"),
+        )
+      }),
+  )
+
+  it.live(
+    "does not retry a timed-out threshold compaction with the same input",
+    () =>
+      Effect.gen(function* () {
+        let agentCalls = 0
+        const result = yield* runAgentCollect({
+          history: fatHistory,
+          turnTimeout: Duration.millis(100),
+          compaction: smallWindow,
+          // Each script outlasts the timeout, so a compaction that runs
+          // alongside the turn has timed out by the next model call.
+          executor: makeExecutor(() =>
+            Stream.fromEffect(Effect.as(Effect.sleep("300 millis"), "ok")),
+          ),
+          respond: (call) => {
+            if (call.isSummarizer) return Stream.fromEffect(Effect.never)
+            switch (agentCalls++) {
+              case 0:
+                return Stream.fromIterable([
+                  toolCall("call-1", "console.log('one')"),
+                  finish(17_000),
+                ])
+              case 1:
+                return Stream.fromIterable([
+                  toolCall("call-2", "console.log('two')"),
+                  finish(17_500),
+                ])
+              case 2:
+                return Stream.fromIterable([
+                  ...text("done"),
+                  finish(18_000, "stop"),
+                ])
+              default:
+                return Stream.die(`unexpected model call #${agentCalls}`)
+            }
+          },
+        }).pipe(Effect.timeout("5 seconds"))
+        assert.deepStrictEqual(result.exit, Exit.succeed("done"))
+        const inputs = result.calls
+          .filter((call) => call.isSummarizer)
+          .map((call) => promptJson(call.prompt))
+        assert.isAtLeast(inputs.length, 1, "compaction was attempted")
+        assert.strictEqual(
+          new Set(inputs).size,
+          inputs.length,
+          "a timed-out summary must not be retried with the same input",
+        )
+      }),
   )
 })
 

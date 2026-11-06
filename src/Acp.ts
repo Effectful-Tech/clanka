@@ -905,6 +905,20 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
               `Retrying after error: ${part.error.message}\n`,
             ),
           })
+        case "CompactionStarted":
+          return update(session.id, {
+            sessionUpdate: "agent_thought_chunk",
+            content: textContent(`Compacting context (${part.reason})...\n`),
+          })
+        case "CompactionEnded":
+          return update(session.id, {
+            sessionUpdate: "agent_thought_chunk",
+            content: textContent(
+              part.tokensAfter < part.tokensBefore
+                ? `Context compacted (${part.reason}): ~${part.tokensBefore} tokens to ~${part.tokensAfter}\n`
+                : `Context not compacted (${part.reason}), continuing with ~${part.tokensBefore} tokens\n`,
+            ),
+          })
         case "SessionRestarted":
           return update(session.id, {
             sessionUpdate: "agent_thought_chunk",

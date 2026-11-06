@@ -251,6 +251,13 @@ export const makeWith = Effect.fnUntraced(function* <
   const history = MutableRef.make(Prompt.empty)
   const environment = MutableRef.make(capabilities.environment)
 
+  // Threshold compactions run next to the model calls of the history they
+  // compact, and can outlive the run that started them.
+  const backgroundCompactions = new WeakMap<
+    MutableRef.MutableRef<Prompt.Prompt>,
+    BackgroundCompaction
+  >()
+
   const spawn: (opts: {
     /** Identifies the agent's output; the root agent is 0. */
     readonly agentId: number
@@ -292,6 +299,7 @@ export const makeWith = Effect.fnUntraced(function* <
     const conversationMode = yield* ConversationMode
     const turnTimeout = yield* TurnTimeout
     const maxRetries = yield* MaxRetries
+    const compactionConfig = yield* Compaction.CompactionConfig
     let finalSummary = Option.none<string>()
     // `inputTokens.total` from the most recent finish part; undefined until
     // the first response and after every rewrite of the history.
@@ -847,6 +855,183 @@ ${prompt}`,
         ),
       )
 
+    // A compaction times out once the summarizer has sent nothing for
+    // `turnTimeout`, like a model call, so a long summary that is still
+    // streaming can finish.
+    const withIdleTimeout = <A, E, R>(
+      run: (onActivity: () => void) => Effect.Effect<A, E, R>,
+    ) =>
+      Effect.suspend(() => {
+        let expires = clock.currentTimeMillisUnsafe() + turnTimeoutMs
+        const onActivity = () => {
+          expires = clock.currentTimeMillisUnsafe() + turnTimeoutMs
+        }
+        const timeout = Effect.gen(function* () {
+          while (true) {
+            const remaining = expires - clock.currentTimeMillisUnsafe()
+            if (remaining <= 0) {
+              return yield* new Cause.TimeoutError(
+                `The summarizer sent nothing for ${Duration.format(turnTimeout)}`,
+              )
+            }
+            yield* Effect.sleep(remaining)
+          }
+        })
+        return Effect.raceFirst(run(onActivity), timeout)
+      })
+
+    // Threshold compaction runs in the background, so a model call never
+    // waits for it. `startCompaction` forks one when the threshold fires
+    // and none is running; `settleCompaction` applies a finished one before
+    // the next model call. A failed input is not sent again until a back-off
+    // has passed, and each failure halves what the next one summarizes, so a
+    // history that is too slow to summarize at once shrinks in smaller steps.
+    let background = backgroundCompactions.get(prompt)
+    if (background === undefined) {
+      background = {
+        running: undefined,
+        chunkTokens: Compaction.summarizeChunkTokens(compactionConfig),
+        failed: undefined,
+        failures: 0,
+        calls: 0,
+      }
+      backgroundCompactions.set(prompt, background)
+    }
+    const state = background
+    const endCompactionUnchanged = (reason: Compaction.CompactionReason) => {
+      const tokens = Compaction.estimateTokens(prompt.current)
+      maybeSend({
+        agentId,
+        part: new CompactionEnded({
+          reason,
+          tokensBefore: tokens,
+          tokensAfter: tokens,
+        }),
+      })
+    }
+    const startCompaction = Effect.suspend(() => {
+      state.calls++
+      if (
+        state.running !== undefined ||
+        !Compaction.shouldCompact({
+          prompt: prompt.current,
+          contextTokens: lastContextTokens,
+          config: compactionConfig,
+        })
+      ) {
+        return Effect.void
+      }
+      const snapshot = prompt.current
+      const maxSummarizeTokens = state.chunkTokens
+      const plan = Compaction.plan(snapshot, {
+        keepRecentTokens: compactionConfig.keepRecentTokens,
+        maxSummarizeTokens,
+      })
+      if (Option.isNone(plan)) return Effect.void
+      const failed = state.failed
+      if (
+        failed !== undefined &&
+        state.calls < failed.retryAt &&
+        Compaction.sameSummarizerInput(failed.plan, plan.value)
+      ) {
+        return Effect.void
+      }
+      maybeSend({
+        agentId,
+        part: new CompactionStarted({ reason: "threshold" }),
+      })
+      const running: RunningCompaction = {
+        snapshot,
+        plan: plan.value,
+        fiber: undefined,
+        exit: undefined,
+      }
+      state.running = running
+      return withIdleTimeout((onActivity) =>
+        Compaction.compact({
+          prompt: snapshot,
+          reason: "threshold",
+          maxSummarizeTokens,
+          onActivity,
+        }),
+      ).pipe(
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            running.exit = exit
+          }),
+        ),
+        Effect.forkIn(agentScope, { startImmediately: true }),
+        Effect.map((fiber) => {
+          running.fiber = fiber
+        }),
+      )
+    })
+    const settleCompaction = Effect.suspend(() => {
+      const running = state.running
+      if (running?.exit === undefined) return Effect.void
+      state.running = undefined
+      const exit = running.exit
+      if (Exit.isFailure(exit)) {
+        state.failures++
+        state.chunkTokens = Math.max(
+          minSummarizeChunkTokens,
+          Math.floor(state.chunkTokens / 2),
+        )
+        state.failed = {
+          plan: running.plan,
+          retryAt: state.calls + 4 * 2 ** (state.failures - 1),
+        }
+        endCompactionUnchanged("threshold")
+        return Effect.logWarning(
+          "Compaction failed, continuing with the uncompacted prompt",
+          Cause.squash(exit.cause),
+        )
+      }
+      state.failures = 0
+      state.failed = undefined
+      // The history may have grown since the compaction started. Anything
+      // else, such as another rewrite, makes the result stale.
+      const next = Option.flatMap(exit.value, (result) =>
+        rebaseCompaction(running.snapshot, prompt.current, result.prompt),
+      )
+      if (Option.isNone(next)) {
+        endCompactionUnchanged("threshold")
+        return Effect.void
+      }
+      return Effect.map(renderEnvironment({ reset: true }), (refresh) => {
+        const tokensBefore = Compaction.estimateTokens(prompt.current)
+        // The refresh sends the kept updates again, so they are dropped
+        // here to appear once.
+        replaceHistory(
+          Prompt.fromMessages(
+            next.value.content.filter(
+              (message) => !isEnvironmentUpdate(message),
+            ),
+          ),
+        )
+        maybeSend({
+          agentId,
+          part: new CompactionEnded({
+            reason: "threshold",
+            tokensBefore,
+            tokensAfter: Compaction.estimateTokens(next.value),
+          }),
+        })
+        applyEnvironmentUpdate(refresh)
+      })
+    })
+    // The overflow path compacts everything at once, so a threshold
+    // compaction in flight is no longer needed.
+    const cancelCompaction = Effect.suspend(() => {
+      const running = state.running
+      if (running === undefined) return Effect.void
+      state.running = undefined
+      endCompactionUnchanged("threshold")
+      return running.fiber === undefined
+        ? Effect.void
+        : Fiber.interrupt(running.fiber)
+    })
+
     // Script execution
     const executeScript = Effect.fnUntraced(function* (script: string) {
       yield* toolLatchAcquire
@@ -982,22 +1167,11 @@ ${prompt}`,
           }
         }
 
-        // Threshold compaction before the next model call
-        yield* compactWithEvents(
-          "threshold",
-          Compaction.compactIfNeeded({
-            prompt: prompt.current,
-            contextTokens: lastContextTokens,
-            onStart: onCompactionStart,
-          }).pipe(Effect.timeout(turnTimeout)),
-        ).pipe(
-          Effect.catchTag("TimeoutError", (error) =>
-            Effect.logWarning(
-              "Compaction timed out, continuing with the uncompacted prompt",
-              error,
-            ),
-          ),
-        )
+        // Threshold compaction, next to the model call. One that finished
+        // straight away is applied before the call too.
+        yield* settleCompaction
+        yield* startCompaction
+        yield* settleCompaction
 
         // Per attempt: the parts received, and what they reported.
         // oxlint-disable-next-line typescript/no-explicit-any
@@ -1235,14 +1409,17 @@ ${prompt}`,
             (err) =>
               Effect.gen(function* () {
                 discardAttempt()
+                yield* cancelCompaction
                 const compacted = yield* compactWithEvents(
                   "overflow",
-                  Compaction.compact({
-                    prompt: prompt.current,
-                    reason: "overflow",
-                    onStart: onCompactionStart,
-                  }).pipe(
-                    Effect.timeout(turnTimeout),
+                  withIdleTimeout((onActivity) =>
+                    Compaction.compact({
+                      prompt: prompt.current,
+                      reason: "overflow",
+                      onStart: onCompactionStart,
+                      onActivity,
+                    }),
+                  ).pipe(
                     Effect.retry({
                       while: (error) => error._tag === "TimeoutError",
                       times: 1,
@@ -1342,6 +1519,67 @@ export const make: Effect.Effect<
   never,
   Scope.Scope | AgentExecutor.AgentExecutor
 > = makeWith({})
+
+/** The least a threshold compaction summarizes after repeated failures. */
+const minSummarizeChunkTokens = 4_000
+
+interface RunningCompaction {
+  /** The history the compaction started from. */
+  readonly snapshot: Prompt.Prompt
+  readonly plan: Compaction.Plan
+  fiber:
+    | Fiber.Fiber<
+        Option.Option<Compaction.CompactionResult>,
+        AiError.AiError | Cause.TimeoutError
+      >
+    | undefined
+  exit:
+    | Exit.Exit<
+        Option.Option<Compaction.CompactionResult>,
+        AiError.AiError | Cause.TimeoutError
+      >
+    | undefined
+}
+
+interface BackgroundCompaction {
+  running: RunningCompaction | undefined
+  /** The most the next compaction summarizes. Halved after each failure. */
+  chunkTokens: number
+  /** The plan of the last failure, not sent again before `retryAt`. */
+  failed:
+    { readonly plan: Compaction.Plan; readonly retryAt: number } | undefined
+  /** Failures in a row, for the back-off. */
+  failures: number
+  /** Model calls on this history so far. */
+  calls: number
+}
+
+/**
+ * Apply a compaction of `snapshot` to `current`: the system message of
+ * `current`, the compacted messages, then whatever was appended since the
+ * snapshot. `None` when `current` does not start with the snapshot.
+ */
+const rebaseCompaction = (
+  snapshot: Prompt.Prompt,
+  current: Prompt.Prompt,
+  compacted: Prompt.Prompt,
+): Option.Option<Prompt.Prompt> => {
+  const before = snapshot.content.filter((message) => message.role !== "system")
+  const now = current.content.filter((message) => message.role !== "system")
+  if (
+    now.length < before.length ||
+    before.some((message, i) => message !== now[i])
+  ) {
+    return Option.none()
+  }
+  return Option.some(
+    Prompt.fromMessages([
+      ...current.content.filter((message) => message.role === "system"),
+      ...compacted.content.filter((message) => message.role !== "system"),
+      ...now.slice(before.length),
+    ]),
+  )
+}
 
 interface Mailbox {
   readonly messages: Set<{

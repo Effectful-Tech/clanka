@@ -1,5 +1,11 @@
 # clanka
 
+## 0.22.2
+
+### Patch Changes
+
+- [#288](https://github.com/Effectful-Tech/clanka/pull/288) [`f542ecf`](https://github.com/Effectful-Tech/clanka/commit/f542ecf7291fab5db1f4b9a7aa02de6e95148d8b) Thanks [@tim-smart](https://github.com/tim-smart)! - Raise the default compaction threshold from 160k to 200k tokens, so long sessions compact less often
+
 ## 0.22.1
 
 ### Patch Changes

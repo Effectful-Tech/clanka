@@ -221,8 +221,9 @@ export const BashJobStatus = Schema.Literals([
 export type BashJobStatus = typeof BashJobStatus.Type
 
 /**
- * A `bash` command running in the background, as returned by `jobOutput`
- * and `stopJob`.
+ * A `bash` command and its state: the task that `bash`, `jobOutput`,
+ * `waitJob` and `stopJob` return. `exitCode` is set once the command has
+ * exited; a non-zero exit is `failed` rather than a rejection.
  *
  * @since 1.0.0
  * @category Models
@@ -260,7 +261,8 @@ export interface BackgroundJob {
 
 /**
  * Receives every background `bash` job as it starts: those started with
- * `background: true` and those moved to the background at their timeout.
+ * `background: true` and those moved to the background at their timeout. A
+ * command that `bash` returns finished is never handed over.
  * The executor sets it from `ExecuteOptions.onJob`.
  *
  * @since 1.0.0
@@ -319,7 +321,7 @@ export class CommandLimits extends Context.Reference<{
 export const makeBashTool = (timeout: Duration.Duration) =>
   Tool.make("bash", {
     description:
-      'Run a bash command and return the output. With `background: true` it returns straight away with a job id while the command keeps running. A command still running at its timeout is not stopped: it is moved to the background, and the output so far is returned with its job id. Read a job with "jobOutput" and stop it with "stopJob".',
+      'Run a bash command and return a task with its job id, status, exit code and output. It does not reject when the command fails: a non-zero exit returns status "failed" with its exitCode, so check the status. With `background: true` it returns straight away with status "running" while the command keeps going. A command still running at its timeout is not stopped: it is moved to the background and returned as "running" with the output so far. Wait for a job with "waitJob", read it with "jobOutput" and stop it with "stopJob".',
     parameters: Schema.Struct({
       command: Schema.String,
       timeoutMs: Schema.optional(Schema.Finite).annotate({
@@ -327,12 +329,12 @@ export const makeBashTool = (timeout: Duration.Duration) =>
       }),
       background: Schema.optional(Schema.Boolean).annotate({
         documentation:
-          "Start the command in the background and return its job id without waiting",
+          'Start the command in the background and return it as "running" without waiting',
       }),
     }).annotate({
       identifier: "command",
     }),
-    success: Schema.String,
+    success: BashJob,
     dependencies: [CurrentDirectory],
   })
 
@@ -471,6 +473,19 @@ export const AgentTools = Toolkit.make(
       "Return the status and output so far of a background bash job.",
     parameters: Schema.String.annotate({
       identifier: "id",
+    }),
+    success: BashJob,
+    failure: Schema.String,
+  }),
+  Tool.make("waitJob", {
+    description:
+      'Wait for a bash job to end and return its task. When the timeout passes first, the task is returned as "running" and the command keeps going.',
+    parameters: Schema.Struct({
+      id: Schema.String,
+      timeoutMs: Schema.optional(Schema.Finite).annotate({
+        documentation:
+          "How long to wait in ms (default and max: the bash timeout)",
+      }),
     }),
     success: BashJob,
     failure: Schema.String,
@@ -623,14 +638,20 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
       return { fiber, output: output.render }
     })
 
+    // Every `bash` command is a job, so it can be addressed by id. Only
+    // the ones still running when `bash` returns go to the `JobWatcher`.
     const jobs = new Map<string, RunningCommand>()
     let nextJobId = 1
-    const addJob = Effect.fnUntraced(function* (
-      command: Omit<RunningCommand, "reported">,
-    ) {
+    const addJob = (command: Omit<RunningCommand, "reported">) => {
       const id = String(nextJobId++)
       const running: RunningCommand = { ...command, reported: false }
       jobs.set(id, running)
+      return { id, running }
+    }
+    const watchJob = Effect.fnUntraced(function* (
+      id: string,
+      running: RunningCommand,
+    ) {
       const watch = yield* JobWatcher
       yield* watch({
         id,
@@ -643,7 +664,6 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           return true
         }),
       })
-      return id
     })
     const findJob = (id: string) => {
       const running = jobs.get(id)
@@ -651,41 +671,25 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         ? Effect.fail(`No background job with id "${id}"`)
         : Effect.succeed(running)
     }
-
-    // A command still running at its timeout is stopped, or with
-    // `background` handed over as a job. A caller that is interrupted first
-    // stops it either way.
-    const runCommand = Effect.fnUntraced(function* (
-      command: ChildProcess.Command,
+    // The final state of a job the model has been given is not pushed.
+    const reportJob = (id: string, running: RunningCommand) => {
+      const job = jobInfo(id, running)
+      if (job.status !== "running") running.reported = true
+      return job
+    }
+    // Waits up to `timeout` for a command to exit. A caller that is
+    // interrupted first stops the command.
+    const awaitCommand = (
+      running: RunningCommand | Omit<RunningCommand, "reported">,
       timeout: Duration.Duration | undefined,
-      onTimeout: "stop" | "background",
-    ) {
-      const running = yield* startCommand(command)
+    ) => {
       const awaited = Fiber.await(running.fiber)
-      const exit = yield* (
+      return (
         timeout === undefined
           ? Effect.asSome(awaited)
           : Effect.timeoutOption(awaited, timeout)
       ).pipe(Effect.onInterrupt(() => Fiber.interrupt(running.fiber)))
-      if (Option.isNone(exit)) {
-        const timeoutMs = Duration.toMillis(timeout!)
-        if (onTimeout === "stop") {
-          yield* Fiber.interrupt(running.fiber)
-          return yield* Effect.die(
-            new Error(`Command timed out after ${timeoutMs}ms`),
-          )
-        }
-        const id = yield* addJob(running)
-        const output = running.output()
-        return `${output}${output === "" || output.endsWith("\n") ? "" : "\n"}[Still running after ${timeoutMs}ms, so it was moved to the background as job ${id}. ${jobUsage(id)}]`
-      }
-      const exitCode = yield* exit.value
-      const output = running.output()
-      if (exitCode === 0) return output
-      return yield* Effect.die(
-        new Error(`Command failed with exit code ${exitCode}: ${output}`),
-      )
-    })
+    }
 
     /**
      * Image branch of `readFile`: the bytes go to the `ImageAttacher` for
@@ -889,8 +893,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         )
       }),
       bash: Effect.fn("AgentTools.bash")(function* (options) {
-        const limits = yield* CommandLimits
-        const maxMs = Duration.toMillis(limits.timeout ?? defaultBashTimeout)
+        const maxMs = bashTimeoutMs(yield* CommandLimits)
         const timeoutMs = Math.min(options.timeoutMs ?? maxMs, maxMs)
         yield* Effect.logInfo(`Calling "bash"`).pipe(
           Effect.annotateLogs({
@@ -903,21 +906,32 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           cwd,
           stdin: "ignore",
         })
-        if (options.background === true) {
-          const id = yield* addJob(yield* startCommand(cmd))
-          return `Started background job ${id}. ${jobUsage(id)}`
+        const { id, running } = addJob(yield* startCommand(cmd))
+        if (options.background !== true) {
+          const exit = yield* awaitCommand(running, Duration.millis(timeoutMs))
+          if (Option.isSome(exit)) return reportJob(id, running)
         }
-        return yield* runCommand(cmd, Duration.millis(timeoutMs), "background")
+        yield* watchJob(id, running)
+        return reportJob(id, running)
       }, Effect.orDie),
       jobOutput: Effect.fn("AgentTools.jobOutput")(function* (input: unknown) {
         const id = yield* decodeJobOutput(input)
         yield* Effect.logInfo(`Calling "jobOutput"`).pipe(
           Effect.annotateLogs({ id }),
         )
-        const running = yield* findJob(id)
-        const job = jobInfo(id, running)
-        if (job.status !== "running") running.reported = true
-        return job
+        return reportJob(id, yield* findJob(id))
+      }),
+      waitJob: Effect.fn("AgentTools.waitJob")(function* (input: unknown) {
+        const options = yield* decodeWaitJob(input)
+        const maxMs = bashTimeoutMs(yield* CommandLimits)
+        const timeoutMs = Math.min(options.timeoutMs ?? maxMs, maxMs)
+        yield* Effect.logInfo(`Calling "waitJob"`).pipe(
+          Effect.annotateLogs({ id: options.id, timeoutMs }),
+        )
+        const running = yield* findJob(options.id)
+        // Ending the wait leaves the job running.
+        yield* Effect.timeoutOption(Fiber.await(running.fiber), timeoutMs)
+        return reportJob(options.id, running)
       }),
       stopJob: Effect.fn("AgentTools.stopJob")(function* (input: unknown) {
         const id = yield* decodeStopJob(input)
@@ -939,7 +953,22 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           stdin: "ignore",
         })
         const { timeout } = yield* CommandLimits
-        return yield* runCommand(cmd, timeout, "stop")
+        const running = yield* startCommand(cmd)
+        const exit = yield* awaitCommand(running, timeout)
+        if (Option.isNone(exit)) {
+          yield* Fiber.interrupt(running.fiber)
+          return yield* Effect.die(
+            new Error(
+              `Command timed out after ${Duration.toMillis(timeout!)}ms`,
+            ),
+          )
+        }
+        const exitCode = yield* exit.value
+        const output = running.output()
+        if (exitCode === 0) return output
+        return yield* Effect.die(
+          new Error(`Command failed with exit code ${exitCode}: ${output}`),
+        )
       }, Effect.orDie),
       webSearch: Effect.fn("AgentTools.webSearch")(function* (options) {
         yield* Effect.logInfo(`Calling "webSearch"`).pipe(
@@ -1208,6 +1237,14 @@ const decodeJobOutput = decodeParams(
   AgentTools.tools.jobOutput.parametersSchema,
   'jobOutput requires a job id, for example: jobOutput("1").',
 )
+/** The caller's `bash` timeout, which also bounds `waitJob`. */
+const bashTimeoutMs = (limits: typeof CommandLimits.Service) =>
+  Duration.toMillis(limits.timeout ?? defaultBashTimeout)
+
+const decodeWaitJob = decodeParams(
+  AgentTools.tools.waitJob.parametersSchema,
+  'waitJob requires an options object, for example: waitJob({ id: "1" }) or waitJob({ id: "1", timeoutMs: 60000 }).',
+)
 const decodeStopJob = decodeParams(
   AgentTools.tools.stopJob.parametersSchema,
   'stopJob requires a job id, for example: stopJob("1").',
@@ -1225,9 +1262,6 @@ interface RunningCommand {
    */
   reported: boolean
 }
-
-const jobUsage = (id: string) =>
-  `Use jobOutput("${id}") for its status and output, or stopJob("${id}") to stop it.`
 
 const jobInfo = (id: string, running: RunningCommand): BashJob => {
   const exit = running.fiber.pollUnsafe()

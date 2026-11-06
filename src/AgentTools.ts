@@ -97,7 +97,9 @@ export type TaskStatus = typeof TaskStatus.Type
  * @category Models
  */
 export const Task = Schema.Struct({
-  id: Schema.String,
+  id: Schema.String.annotate({
+    documentation: "The task id, which can be managed with the task tools.",
+  }),
   kind: TaskKind,
   status: TaskStatus,
   /** The bash command, or the sub-agent's prompt. */
@@ -305,16 +307,14 @@ export class CommandLimits extends Context.Reference<{
  */
 export const makeBashTool = (timeout: Duration.Duration) =>
   Tool.make("bash", {
-    description:
-      'Run a bash command and return its task: id, status, exit code and output. A command that fails before it is returned rejects with its exit code and output. With `background: true` it returns straight away with status "running" while the command keeps going. A command still running at its timeout is not stopped: it is moved to the background and returned as "running" with the output so far. Address the task by its id with the task functions; a background task that fails is reported with status "failed" and its exitCode.',
+    description: "Run a bash command and return a task.",
     parameters: Schema.Struct({
       command: Schema.String,
       timeoutMs: Schema.optional(Schema.Finite).annotate({
-        documentation: `How long to wait in ms before moving the command to the background (default and max: ${Duration.toMillis(timeout)})`,
+        documentation: `How long to wait in ms before moving the task to the background (default and max: ${Duration.toMillis(timeout)})`,
       }),
       background: Schema.optional(Schema.Boolean).annotate({
-        documentation:
-          'Start the command in the background and return it as "running" without waiting',
+        documentation: "Start the command in the background.",
       }),
     }).annotate({
       identifier: "command",
@@ -348,14 +348,14 @@ export const makeContextNoop = (cwd?: string) =>
 export const AgentTools = Toolkit.make(
   Tool.make("changeDirectory", {
     description:
-      "Change the executor's working directory to an existing directory and return its absolute path. Relative paths resolve from the current directory without shell expansion. Await this before dependent tools. The change persists across your scripts. A sub-agent starts in your directory at the time it is created, and its changes do not affect yours. AGENTS.md files and skills that apply to the new directory are sent to you after the script ends. The semantic-search index root stays fixed.",
+      "Change the executor's working directory to an existing directory and return its absolute path. The change persists across your scripts.",
     parameters: Schema.String.annotate({ identifier: "directory" }),
     success: Schema.String,
     dependencies: [DirectoryChanger],
   }),
   Tool.make("readFile", {
     description:
-      "Read a file and optionally filter the lines to return. Returns null if the file doesn't exist. For png/jpeg/gif/webp files the image itself is attached to your next turn and a short marker is returned instead of the bytes; line ranges are not allowed on images.",
+      "Read a file and optionally filter the lines to return. Returns null if the file doesn't exist. For png/jpeg/gif/webp files the image itself is attached to your next turn.",
     parameters: Schema.Struct({
       path: Schema.String,
       startLine: Schema.optional(Schema.Number),
@@ -388,7 +388,7 @@ export const AgentTools = Toolkit.make(
   }),
   Tool.make("delegate", {
     description:
-      'Delegate a task to another software engineer / sub-agent. By default it waits for the sub-agent and returns its completed task with the output. With `background: true` it returns straight away with status "running"; the sub-agent keeps working while you take more turns, and its result is sent to you when it finishes. Keep the returned id to address the agent later.',
+      "Delegate a task to another software engineer / sub-agent. With `background: true` the sub-agent works in the background, and its result is sent to you when it finishes.",
     parameters: Schema.Struct({
       prompt: Schema.String,
       background: Schema.optional(Schema.Boolean),
@@ -398,8 +398,7 @@ export const AgentTools = Toolkit.make(
     dependencies: [AgentTaskExecutor],
   }),
   Tool.make("messageAgent", {
-    description:
-      "Send a message to one of your sub-agents. A running agent receives it as steering; a finished agent starts a new turn on top of its previous conversation. Returns straight away; the result is sent to you when the turn ends.",
+    description: "Send a message to one of your sub-agents.",
     parameters: Schema.Struct({
       id: Schema.String,
       message: Schema.String,
@@ -438,7 +437,7 @@ export const AgentTools = Toolkit.make(
   }),
   Tool.make("waitTasks", {
     description:
-      'Wait until the given tasks have ended and return them, in the order given. Tasks still running when the timeout passes are returned as "running" and keep going. A failed task is returned with status "failed" and its error as the output; it does not throw.',
+      "Wait until the given tasks have ended and return them, in the order given.",
     parameters: Schema.Struct({
       ids: Schema.Array(Schema.String),
       timeoutMs: Schema.optional(Schema.Finite).annotate({
@@ -451,8 +450,7 @@ export const AgentTools = Toolkit.make(
     dependencies: [AgentTaskExecutor],
   }),
   Tool.make("stopTask", {
-    description:
-      "Stop one of your tasks, and for a sub-agent every agent it started. Returns its final status and output.",
+    description: "Stop one of your tasks.",
     parameters: Schema.String.annotate({
       identifier: "id",
     }),

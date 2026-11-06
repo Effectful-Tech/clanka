@@ -400,6 +400,7 @@ export const makeWith = Effect.fnUntraced(function* <
     if (typeof opts.system === "string") {
       system += `\n${opts.system}\n`
     }
+    console.log("system:", system)
 
     function maybeSend(options: {
       readonly agentId: number
@@ -1564,8 +1565,7 @@ const generateSystemTools = (
 )}${when(
   tools.offers("bash"),
   `
-- Avoid passing scripts into the "bash" function, and instead write javascript.
-- "bash" returns a task with the command's output, and rejects when a command that has not been moved to the background fails. Pass \`background: true\` for commands that keep running, such as dev servers or watchers: the task is returned straight away as "running". A command still running at its timeout is moved to the background and returned as "running" instead of being stopped. A background task that fails is reported with status "failed" and its \`exitCode\`.`,
+- Avoid passing scripts into the "bash" function, and instead write javascript.`,
 )}
 - Variables are not shared between executions.
 - Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.${when(

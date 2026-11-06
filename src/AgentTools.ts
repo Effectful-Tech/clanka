@@ -157,7 +157,7 @@ export interface AgentTasks {
   readonly messageAgent: (options: {
     readonly id: string
     readonly message: string
-  }) => Effect.Effect<Task, string>
+  }) => Effect.Effect<void, string>
   /**
    * Interrupt an agent and everything it spawned.
    */
@@ -314,7 +314,8 @@ export const makeBashTool = (timeout: Duration.Duration) =>
         documentation: `How long to wait in ms before moving the task to the background (default and max: ${Duration.toMillis(timeout)})`,
       }),
       background: Schema.optional(Schema.Boolean).annotate({
-        documentation: "Start the command in the background.",
+        documentation:
+          "Start the command in the background. Defaults to false which always returns 'completed' tasks.",
       }),
     }).annotate({
       identifier: "command",
@@ -403,7 +404,6 @@ export const AgentTools = Toolkit.make(
       id: Schema.String,
       message: Schema.String,
     }),
-    success: Task,
     failure: Schema.String,
     dependencies: [AgentTaskExecutor],
   }),

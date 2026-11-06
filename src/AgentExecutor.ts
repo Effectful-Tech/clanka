@@ -996,7 +996,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                           timeoutMs,
                         }),
                       messageAgent: (options) =>
-                        request<Task>({
+                        request<void>({
                           _tag: "MessageAgent",
                           ...options,
                         }),

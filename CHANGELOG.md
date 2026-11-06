@@ -1,5 +1,11 @@
 # clanka
 
+## 0.22.1
+
+### Patch Changes
+
+- [#286](https://github.com/Effectful-Tech/clanka/pull/286) [`82499e0`](https://github.com/Effectful-Tech/clanka/commit/82499e06aecdfa841207005f0415b51542afa4e3) Thanks [@effect-bot](https://github.com/effect-bot)! - Preserve the trailing newline and line endings when `readFile` returns a whole file without line numbers
+
 ## 0.22.0
 
 ### Minor Changes

@@ -1240,6 +1240,145 @@ describe("Agent auto-compaction", () => {
         )
       }),
   )
+
+  it.live(
+    "does not finish a summary on the model of a send that has ended",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const firstSendDone = yield* Deferred.make<void>()
+          const agentPrompts: Array<Prompt.Prompt> = []
+          // Built for each send, like the ACP model. Its client stops
+          // working once the send that built it has ended.
+          const modelLayer = Layer.mergeAll(
+            Layer.effect(
+              LanguageModel.LanguageModel,
+              Effect.gen(function* () {
+                let closed = false
+                yield* Effect.addFinalizer(() =>
+                  Effect.sync(() => {
+                    closed = true
+                  }),
+                )
+                return yield* LanguageModel.make({
+                  generateText: () => Effect.succeed([]),
+                  streamText: (options) => {
+                    if (options.tools.length > 0) {
+                      agentPrompts.push(options.prompt)
+                      return Stream.fromIterable(text("answered"))
+                    }
+                    return Stream.fromEffect(
+                      Deferred.await(firstSendDone),
+                    ).pipe(
+                      Stream.flatMap(() =>
+                        closed
+                          ? Stream.fail(providerError)
+                          : Stream.fromIterable(text("SECOND-SEND-SUMMARY")),
+                      ),
+                    )
+                  },
+                })
+              }),
+            ),
+            Layer.succeed(Model.ProviderName, "test-provider"),
+            Layer.succeed(Model.ModelName, "test-model"),
+          )
+          const agent = yield* Agent.make.pipe(
+            Effect.provideService(AgentExecutor.AgentExecutor, makeExecutor()),
+          )
+          MutableRef.set(agent.history, fatHistory)
+          const send = (prompt: string) =>
+            agent.send({ prompt }).pipe(
+              Effect.flatMap((stream) =>
+                stream.pipe(
+                  Stream.runDrain,
+                  Effect.as(""),
+                  Effect.catchTag("AgentFinished", (finished) =>
+                    Effect.succeed(finished.summary),
+                  ),
+                ),
+              ),
+              Effect.provide(
+                Layer.mergeAll(
+                  modelLayer,
+                  Agent.ConversationMode.layer(true),
+                  Compaction.CompactionConfig.layer({
+                    contextWindow: 12_000,
+                    reserveTokens: 2_000,
+                    keepRecentTokens: 9_000,
+                  }),
+                ),
+              ),
+            )
+
+          assert.strictEqual(yield* send("first"), "answered")
+          // The summary is still in flight when the first send ends.
+          yield* Deferred.done(firstSendDone, Exit.void)
+          assert.strictEqual(yield* send("second"), "answered")
+
+          assert.strictEqual(agentPrompts.length, 2)
+          assertCompactedShape(agentPrompts[1]!, "SECOND-SEND-SUMMARY")
+        }),
+      ).pipe(Effect.timeout("2 seconds")),
+  )
+
+  it.live(
+    "keeps a finished background summary when the next call overflows",
+    () =>
+      Effect.gen(function* () {
+        const callStarted = yield* Deferred.make<void>()
+        const summarized = yield* Deferred.make<void>()
+        const summarizerInputs: Array<string> = []
+        let agentCalls = 0
+        const { exit, calls } = yield* runAgentCollect({
+          history: fatHistory,
+          compaction: {
+            contextWindow: 12_000,
+            reserveTokens: 2_000,
+            keepRecentTokens: 9_000,
+          },
+          respond: (call) => {
+            if (call.isSummarizer) {
+              summarizerInputs.push(promptJson(call.prompt))
+              if (summarizerInputs.length > 1) {
+                return Stream.fromIterable(text("OVERFLOW-SUMMARY"))
+              }
+              return Stream.fromEffect(Deferred.await(callStarted)).pipe(
+                Stream.flatMap(() =>
+                  Stream.fromIterable(text("BACKGROUND-SUMMARY")),
+                ),
+                Stream.ensuring(Deferred.done(summarized, Exit.void)),
+              )
+            }
+            switch (agentCalls++) {
+              case 0:
+                // Overflows once the background summary has finished.
+                Deferred.doneUnsafe(callStarted, Exit.void)
+                return Stream.fromEffect(Deferred.await(summarized)).pipe(
+                  Stream.flatMap(() => Stream.fail(contextLengthError)),
+                )
+              case 1:
+                return Stream.fromIterable(text("recovered"))
+              default:
+                return Stream.die(`unexpected model call #${agentCalls}`)
+            }
+          },
+        }).pipe(Effect.timeout("2 seconds"))
+
+        assert.deepStrictEqual(exit, Exit.succeed("recovered"))
+        for (const input of summarizerInputs.slice(1)) {
+          assert.include(
+            input,
+            "BACKGROUND-SUMMARY",
+            "the overflow compaction must start from the finished summary",
+          )
+        }
+        const last = calls.findLast((call) => !call.isSummarizer)!
+        assert.isTrue(
+          Option.isSome(Compaction.findPreviousSummary(last.prompt)),
+        )
+      }),
+  )
 })
 
 describe("Agent overflow compaction", () => {

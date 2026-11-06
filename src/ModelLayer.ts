@@ -98,8 +98,9 @@ const languageModel = (
  * `auxiliary` models.
  *
  * Sub-agents run on `auxiliary.subagent`, or on this model when it is not
- * set. The compaction summarizer runs on `auxiliary.summarizer`, or on the
- * model of the agent that compacts when it is not set.
+ * set. The compaction summarizer runs on `auxiliary.summarizer`, or on its
+ * own copy of this model when it is not set. Each summary builds its model,
+ * so a summary still running when a prompt ends keeps a working client.
  *
  * @since 1.0.0
  * @category Layers
@@ -120,9 +121,11 @@ export const make = (
     Agent.layerSubagentModel(
       auxiliary?.subagent === undefined ? main : fromSpec(auxiliary.subagent),
     ),
-    auxiliary?.summarizer === undefined
-      ? Layer.empty
-      : Compaction.layerSummarizerModel(fromSpec(auxiliary.summarizer)),
+    Compaction.layerSummarizerModel(
+      auxiliary?.summarizer === undefined
+        ? main
+        : fromSpec(auxiliary.summarizer),
+    ),
   )
 }
 

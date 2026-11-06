@@ -300,6 +300,12 @@ export const makeWith = Effect.fnUntraced(function* <
     const turnTimeout = yield* TurnTimeout
     const maxRetries = yield* MaxRetries
     const compactionConfig = yield* Compaction.CompactionConfig
+    // A summarizer on its own `SummarizerModel` builds its model per call. On
+    // this run's model it must not outlive the run, which may close the
+    // model when it ends.
+    const ownSummarizer = Option.isSome(
+      yield* Effect.serviceOption(Compaction.SummarizerModel),
+    )
     let finalSummary = Option.none<string>()
     // `inputTokens.total` from the most recent finish part; undefined until
     // the first response and after every rewrite of the history.
@@ -886,6 +892,8 @@ ${prompt}`,
     // the next model call. A failed input is not sent again until a back-off
     // has passed, and each failure halves what the next one summarizes, so a
     // history that is too slow to summarize at once shrinks in smaller steps.
+    // Only a compaction on a `SummarizerModel` outlives the run; any other is
+    // cancelled when the run ends, which does not count as a failure.
     let background = backgroundCompactions.get(prompt)
     if (background === undefined) {
       background = {
@@ -943,6 +951,7 @@ ${prompt}`,
       const running: RunningCompaction = {
         snapshot,
         plan: plan.value,
+        outlivesRun: ownSummarizer,
         fiber: undefined,
         exit: undefined,
       }
@@ -960,17 +969,25 @@ ${prompt}`,
             running.exit = exit
           }),
         ),
-        Effect.forkIn(agentScope, { startImmediately: true }),
+        Effect.forkIn(ownSummarizer ? agentScope : runScope, {
+          startImmediately: true,
+        }),
         Effect.map((fiber) => {
           running.fiber = fiber
         }),
       )
     })
-    const settleCompaction = Effect.suspend(() => {
+    // Succeeds with whether the history was compacted.
+    const settleCompaction = Effect.suspend((): Effect.Effect<boolean> => {
       const running = state.running
-      if (running?.exit === undefined) return Effect.void
+      if (running?.exit === undefined) return Effect.succeed(false)
       state.running = undefined
       const exit = running.exit
+      // Cancelled with the run that started it, not a failure.
+      if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
+        endCompactionUnchanged("threshold")
+        return Effect.succeed(false)
+      }
       if (Exit.isFailure(exit)) {
         state.failures++
         state.chunkTokens = Math.max(
@@ -982,9 +999,12 @@ ${prompt}`,
           retryAt: state.calls + 4 * 2 ** (state.failures - 1),
         }
         endCompactionUnchanged("threshold")
-        return Effect.logWarning(
-          "Compaction failed, continuing with the uncompacted prompt",
-          Cause.squash(exit.cause),
+        return Effect.as(
+          Effect.logWarning(
+            "Compaction failed, continuing with the uncompacted prompt",
+            Cause.squash(exit.cause),
+          ),
+          false,
         )
       }
       state.failures = 0
@@ -996,7 +1016,7 @@ ${prompt}`,
       )
       if (Option.isNone(next)) {
         endCompactionUnchanged("threshold")
-        return Effect.void
+        return Effect.succeed(false)
       }
       return Effect.map(renderEnvironment({ reset: true }), (refresh) => {
         const tokensBefore = Compaction.estimateTokens(prompt.current)
@@ -1018,19 +1038,26 @@ ${prompt}`,
           }),
         })
         applyEnvironmentUpdate(refresh)
+        return true
       })
     })
-    // The overflow path compacts everything at once, so a threshold
-    // compaction in flight is no longer needed.
-    const cancelCompaction = Effect.suspend(() => {
-      const running = state.running
-      if (running === undefined) return Effect.void
-      state.running = undefined
-      endCompactionUnchanged("threshold")
-      return running.fiber === undefined
-        ? Effect.void
-        : Fiber.interrupt(running.fiber)
-    })
+    // Cancels the compaction in flight, or with `runOnly` only one that
+    // cannot outlive this run.
+    const cancelCompaction = (options?: { readonly runOnly?: boolean }) =>
+      Effect.suspend(() => {
+        const running = state.running
+        if (
+          running === undefined ||
+          (options?.runOnly === true && running.outlivesRun)
+        ) {
+          return Effect.void
+        }
+        state.running = undefined
+        endCompactionUnchanged("threshold")
+        return running.fiber === undefined
+          ? Effect.void
+          : Fiber.interrupt(running.fiber)
+      })
 
     // Script execution
     const executeScript = Effect.fnUntraced(function* (script: string) {
@@ -1115,6 +1142,10 @@ ${prompt}`,
     yield* Effect.gen(function* () {
       while (true) {
         if (Option.isSome(finalSummary)) {
+          // Before the output closes, so the progress event is closed too.
+          // A finished summary is applied rather than lost.
+          yield* settleCompaction
+          yield* cancelCompaction({ runOnly: true })
           mailbox.emit = undefined
           yield* Queue.fail(
             output,
@@ -1409,7 +1440,10 @@ ${prompt}`,
             (err) =>
               Effect.gen(function* () {
                 discardAttempt()
-                yield* cancelCompaction
+                // A finished threshold summary is kept, and the overflow
+                // compaction starts from it. One still running is cancelled.
+                const settled = yield* settleCompaction
+                yield* cancelCompaction()
                 const compacted = yield* compactWithEvents(
                   "overflow",
                   withIdleTimeout((onActivity) =>
@@ -1427,7 +1461,7 @@ ${prompt}`,
                     Effect.catchTag("TimeoutError", Effect.die),
                   ),
                 )
-                return Option.isSome(compacted)
+                return settled || Option.isSome(compacted)
                   ? yield* attemptWithImageFallback
                   : yield* err
               }),
@@ -1527,6 +1561,8 @@ interface RunningCompaction {
   /** The history the compaction started from. */
   readonly snapshot: Prompt.Prompt
   readonly plan: Compaction.Plan
+  /** Whether it runs on a `SummarizerModel`, which can outlive the run. */
+  readonly outlivesRun: boolean
   fiber:
     | Fiber.Fiber<
         Option.Option<Compaction.CompactionResult>,

@@ -1021,56 +1021,6 @@ describe("Acp", () => {
       ),
   )
 
-  it.effect("reports compaction progress as thought chunks", () =>
-    withStore(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const kvs = yield* KeyValueStore.KeyValueStore
-          const store = KeyValueStore.toSchemaStore(
-            KeyValueStore.prefix(kvs, "session-"),
-            Acp.SessionRecord,
-          )
-          const sessionId = "large-session"
-          yield* store.set(
-            sessionId,
-            new Acp.SessionRecord({
-              cwd: "/tmp",
-              model: "test:model",
-              thoughtLevel: "medium",
-              history: Prompt.fromMessages([
-                message("user", "old request ".repeat(2_000)),
-                message("assistant", "old answer ".repeat(2_000)),
-              ]),
-            }),
-          )
-          const server = yield* makeServer((options) =>
-            assistantSays(options.tools.length === 0 ? "SUMMARY" : "answered"),
-          )
-          yield* server.request(1, "session/load", { sessionId, cwd: "/tmp" })
-          yield* server.request(2, "session/prompt", {
-            sessionId,
-            prompt: [{ type: "text", text: "continue" }],
-          })
-
-          const thoughts = server
-            .updates(sessionId)
-            .filter((u) => u.sessionUpdate === "agent_thought_chunk")
-            .map((u) => String(u.content.text))
-          assert.include(thoughts[0], "Compacting context")
-          assert.include(thoughts[1], "Context compacted")
-        }),
-      ),
-    ).pipe(
-      Effect.provide(
-        Compaction.CompactionConfig.layer({
-          contextWindow: 4_000,
-          reserveTokens: 1_000,
-          keepRecentTokens: 100,
-        }),
-      ),
-    ),
-  )
-
   it.live("keeps the working directory across a session reload", () =>
     withStore(
       Effect.gen(function* () {

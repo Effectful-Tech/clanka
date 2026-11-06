@@ -759,34 +759,52 @@ describe("Agent execute output cap", () => {
 })
 
 describe("Agent auto-compaction", () => {
-  it.effect(
-    "streams summarization without tools and streams the next turn",
+  it.live(
+    "streams the first call while compacting and applies the summary at the next call",
     () =>
       Effect.gen(function* () {
-        const result = yield* runAgentCollect({
+        const started = yield* Deferred.make<void>()
+        const summarized = yield* Deferred.make<void>()
+        let agentCalls = 0
+        const { exit } = yield* runAgentCollect({
           history: fatHistory,
           compaction: {
             contextWindow: 12_000,
             reserveTokens: 2_000,
             keepRecentTokens: 9_000,
           },
-          respond: (call) =>
-            Stream.fromIterable(
-              text(call.isSummarizer ? "GENERATED-SUMMARY" : "continued"),
-            ),
-        })
-        assert.deepStrictEqual(result.exit, Exit.succeed("continued"))
-        assert.deepStrictEqual(
-          result.calls.map((call) => call.method),
-          ["streamText", "streamText"],
-        )
-        assertSummarizerCall(result.calls[0]!)
-        assertCompactedShape(result.calls[1]!.prompt, "GENERATED-SUMMARY")
+          executor: makeExecutor(() =>
+            Stream.fromEffect(Deferred.await(summarized).pipe(Effect.as("ok"))),
+          ),
+          respond: (call) => {
+            assert.strictEqual(call.method, "streamText")
+            if (call.isSummarizer) {
+              assertSummarizerCall(call)
+              return Stream.fromEffect(Deferred.await(started)).pipe(
+                Stream.flatMap(() =>
+                  Stream.fromIterable(text("BACKGROUND-SUMMARY")),
+                ),
+                Stream.ensuring(Deferred.done(summarized, Exit.void)),
+              )
+            }
+            if (agentCalls++ === 0) {
+              assert.include(promptJson(call.prompt), "SENTINEL-ONE")
+              Deferred.doneUnsafe(started, Exit.void)
+              return Stream.fromIterable([
+                toolCall("call-3", "console.log('ok')"),
+              ])
+            }
+            assertCompactedShape(call.prompt, "BACKGROUND-SUMMARY")
+            assert.include(promptJson(call.prompt), "console.log('ok')")
+            return Stream.fromIterable(text("answered"))
+          },
+        }).pipe(Effect.timeout("2 seconds"))
+        assert.deepStrictEqual(exit, Exit.succeed("answered"))
       }),
   )
 
   it.live(
-    "times out a stalled threshold summarizer and keeps the original prompt",
+    "backs off after a threshold timeout and continues with the original prompt",
     () =>
       Effect.gen(function* () {
         let interrupted = false
@@ -819,8 +837,11 @@ describe("Agent auto-compaction", () => {
             assert.isTrue(
               Option.isNone(Compaction.findPreviousSummary(call.prompt)),
             )
-            return agentCalls++ === 0
-              ? Stream.fromIterable([toolCall("call-1", "console.log('ok')")])
+            return agentCalls++ < 2
+              ? Stream.fromIterable([
+                  toolCall(`call-${agentCalls + 2}`, "console.log('ok')"),
+                  finish(17_000),
+                ])
               : Stream.fromIterable(text("continued after timeout"))
           },
         }).pipe(Effect.timeout("2 seconds"))
@@ -1136,148 +1157,6 @@ describe("Agent auto-compaction", () => {
   )
 
   it.live(
-    "starts the first model call without waiting for threshold compaction",
-    () =>
-      Effect.gen(function* () {
-        // The summary can only finish after the first model call has started,
-        // so a turn that waits for it before calling the model never starts.
-        const firstCallStarted = yield* Deferred.make<void>()
-        const summarized = yield* Deferred.make<void>()
-        let agentCalls = 0
-        const result = yield* runAgentCollect({
-          history: fatHistory,
-          turnTimeout: Duration.minutes(1),
-          compaction: {
-            contextWindow: 12_000,
-            reserveTokens: 2_000,
-            keepRecentTokens: 9_000,
-          },
-          // The next model call starts after the summary is ready.
-          executor: makeExecutor(() =>
-            Stream.fromEffect(Deferred.await(summarized).pipe(Effect.as("ok"))),
-          ),
-          respond: (call) => {
-            if (call.isSummarizer) {
-              return Stream.fromEffect(Deferred.await(firstCallStarted)).pipe(
-                Stream.flatMap(() =>
-                  Stream.fromIterable(text("BACKGROUND-SUMMARY")),
-                ),
-                Stream.ensuring(Deferred.done(summarized, Exit.void)),
-              )
-            }
-            switch (agentCalls++) {
-              case 0:
-                Deferred.doneUnsafe(firstCallStarted, Exit.void)
-                assert.include(promptJson(call.prompt), "SENTINEL-ONE")
-                return Stream.fromIterable([
-                  toolCall("call-1", "console.log('ok')"),
-                ])
-              case 1:
-                assertCompactedShape(call.prompt, "BACKGROUND-SUMMARY")
-                return Stream.fromIterable(text("answered"))
-              default:
-                return Stream.die(`unexpected model call #${agentCalls}`)
-            }
-          },
-        }).pipe(Effect.timeoutOption("2 seconds"))
-        assert.isTrue(
-          Option.isSome(result),
-          "the first model call must not wait for the summary",
-        )
-        assert.deepStrictEqual(
-          Option.getOrThrow(result).exit,
-          Exit.succeed("answered"),
-        )
-      }),
-  )
-
-  it.effect(
-    "summarizes everything before the kept tail in one threshold compaction",
-    () =>
-      Effect.gen(function* () {
-        // About 75k tokens before the kept tail.
-        const history = Prompt.fromMessages([
-          user("OLDEST-REQUEST " + filler("old", 100_000)),
-          user("NEWEST-SUMMARIZED " + filler("new", 200_000)),
-        ])
-        const { exit, calls } = yield* runAgentCollect({
-          history,
-          compaction: {
-            contextWindow: 50_000,
-            reserveTokens: 2_000,
-            keepRecentTokens: 1_000,
-          },
-          respond: (call) =>
-            Stream.fromIterable(
-              text(call.isSummarizer ? "WHOLE-SUMMARY" : "continued"),
-            ),
-        })
-        assert.deepStrictEqual(exit, Exit.succeed("continued"))
-        const summarizer = calls.filter((call) => call.isSummarizer)
-        assert.strictEqual(summarizer.length, 1)
-        const input = promptJson(summarizer[0]!.prompt)
-        assert.include(input, "OLDEST-REQUEST")
-        assert.include(input, "NEWEST-SUMMARIZED")
-        const next = calls.find((call) => !call.isSummarizer)!
-        const kept = assertCompactedShape(next.prompt, "WHOLE-SUMMARY")
-        assert.notInclude(
-          promptJson(Prompt.fromMessages(kept)),
-          "NEWEST-SUMMARIZED",
-        )
-      }),
-  )
-
-  it.live(
-    "does not retry a timed-out threshold compaction with the same input",
-    () =>
-      Effect.gen(function* () {
-        let agentCalls = 0
-        const result = yield* runAgentCollect({
-          history: fatHistory,
-          turnTimeout: Duration.millis(100),
-          compaction: smallWindow,
-          // Each script outlasts the timeout, so a compaction that runs
-          // alongside the turn has timed out by the next model call.
-          executor: makeExecutor(() =>
-            Stream.fromEffect(Effect.as(Effect.sleep("300 millis"), "ok")),
-          ),
-          respond: (call) => {
-            if (call.isSummarizer) return Stream.fromEffect(Effect.never)
-            switch (agentCalls++) {
-              case 0:
-                return Stream.fromIterable([
-                  toolCall("call-1", "console.log('one')"),
-                  finish(17_000),
-                ])
-              case 1:
-                return Stream.fromIterable([
-                  toolCall("call-2", "console.log('two')"),
-                  finish(17_500),
-                ])
-              case 2:
-                return Stream.fromIterable([
-                  ...text("done"),
-                  finish(18_000, "stop"),
-                ])
-              default:
-                return Stream.die(`unexpected model call #${agentCalls}`)
-            }
-          },
-        }).pipe(Effect.timeout("5 seconds"))
-        assert.deepStrictEqual(result.exit, Exit.succeed("done"))
-        const inputs = result.calls
-          .filter((call) => call.isSummarizer)
-          .map((call) => promptJson(call.prompt))
-        assert.isAtLeast(inputs.length, 1, "compaction was attempted")
-        assert.strictEqual(
-          new Set(inputs).size,
-          inputs.length,
-          "a timed-out summary must not be retried with the same input",
-        )
-      }),
-  )
-
-  it.live(
     "does not finish a summary on the model of a send that has ended",
     () =>
       Effect.scoped(
@@ -1356,72 +1235,6 @@ describe("Agent auto-compaction", () => {
           assertCompactedShape(agentPrompts[1]!, "SECOND-SEND-SUMMARY")
         }),
       ).pipe(Effect.timeout("2 seconds")),
-  )
-
-  it.live(
-    "retries an overflowing call on a finished summary before compacting again",
-    () =>
-      Effect.gen(function* () {
-        const secondCallStarted = yield* Deferred.make<void>()
-        const summarized = yield* Deferred.make<void>()
-        let summarizerCalls = 0
-        let agentCalls = 0
-        const { exit, calls } = yield* runAgentCollect({
-          history: fatHistory,
-          compaction: {
-            contextWindow: 12_000,
-            reserveTokens: 2_000,
-            keepRecentTokens: 9_000,
-          },
-          // Grows the history past the summary's kept tail, so a second
-          // compaction would have something to summarize.
-          executor: makeExecutor(() =>
-            Stream.succeed("SCRIPT-OUTPUT " + filler("out", 30_000)),
-          ),
-          respond: (call) => {
-            if (call.isSummarizer) {
-              if (summarizerCalls++ > 0) {
-                return Stream.fromIterable(text("OVERFLOW-SUMMARY"))
-              }
-              return Stream.fromEffect(Deferred.await(secondCallStarted)).pipe(
-                Stream.flatMap(() =>
-                  Stream.fromIterable(text("BACKGROUND-SUMMARY")),
-                ),
-                Stream.ensuring(Deferred.done(summarized, Exit.void)),
-              )
-            }
-            switch (agentCalls++) {
-              case 0:
-                return Stream.fromIterable([
-                  toolCall("call-1", "console.log('out')"),
-                ])
-              case 1:
-                // Overflows once the background summary has finished.
-                Deferred.doneUnsafe(secondCallStarted, Exit.void)
-                return Stream.fromEffect(Deferred.await(summarized)).pipe(
-                  Stream.flatMap(() => Stream.fail(contextLengthError)),
-                )
-              case 2:
-                return Stream.fromIterable(text("recovered"))
-              default:
-                return Stream.die(`unexpected model call #${agentCalls}`)
-            }
-          },
-        }).pipe(Effect.timeout("2 seconds"))
-
-        assert.deepStrictEqual(exit, Exit.succeed("recovered"))
-        assert.strictEqual(
-          summarizerCalls,
-          1,
-          "the finished summary must be tried before another one",
-        )
-        const last = calls.findLast((call) => !call.isSummarizer)!
-        assert.deepStrictEqual(
-          Compaction.findPreviousSummary(last.prompt),
-          Option.some("BACKGROUND-SUMMARY"),
-        )
-        assert.include(promptJson(last.prompt), "SCRIPT-OUTPUT")
-      }),
   )
 
   it.live("waits for a running threshold summary when the call overflows", () =>

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.22.4
+
+### Patch Changes
+
+- [`68ca25f`](https://github.com/Effectful-Tech/clanka/commit/68ca25f33a68ae3ab0bd4de5f7b128f5e3d5c365) Thanks [@tim-smart](https://github.com/tim-smart)! - remove console.log
+
 ## 0.22.3
 
 ### Patch Changes

@@ -1,4 +1,4 @@
-import { assert, it } from "@effect/vitest"
+import { assert, describe, it } from "@effect/vitest"
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as Effect from "effect/Effect"
@@ -26,14 +26,15 @@ import type { Output } from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
 
 // =============================================================================
-// Background sub-agents: lifetime and completion delivery.
+// Agent tasks: lifetime and completion delivery.
 //
 // These drive the real Agent loop and a real executor, so the model only
-// talks to the script API: `delegate({ prompt, background })`, `waitAgents`,
-// `messageAgent` and `stopAgent`. One scripted LanguageModel serves every
-// agent; calls are routed by the task marker in each agent's first user
-// message. Agent IDs come from the shared counter: the root run is "0" and
-// the first sub-agent is "1".
+// talks to the script API: `delegate({ prompt, background })`, `waitTasks`,
+// `messageAgent`, `stopTask`, `listTasks` and `taskOutput`. One scripted
+// LanguageModel serves every agent; calls are routed by the task marker in
+// each agent's first user message. Task IDs come from the executor's counter,
+// shared by bash and agent tasks. Each test gets its own executor, so the
+// first task is "1".
 //
 // Sub-agents always finish with `taskComplete`: with the local executor they
 // currently run outside the parent's ConversationMode, so a text-only turn
@@ -185,10 +186,10 @@ const messageJsons = (prompt: Prompt.Prompt): Array<string> =>
 const findPush = (
   prompt: Prompt.Prompt,
   id: string,
-  status: "completed" | "failed" | "cancelled",
+  status: "completed" | "failed" | "stopped",
 ): { readonly index: number; readonly text: string } => {
   const pattern = new RegExp(
-    `<subagent id="${id}" status="${status}">[\\s\\S]*</subagent>`,
+    `<task id="${id}" kind="agent" status="${status}">[\\s\\S]*</task>`,
   )
   const index = prompt.content.findIndex(
     (message) => message.role === "user" && pattern.test(messageText(message)),
@@ -203,11 +204,11 @@ const pushTexts = (prompt: Prompt.Prompt): Array<string> =>
   prompt.content.flatMap((message) => {
     if (message.role !== "user") return []
     const text = messageText(message)
-    return text.includes("<subagent id=") ? [text] : []
+    return text.includes("<task id=") ? [text] : []
   })
 
 const hasAnyPush = (prompt: Prompt.Prompt, id: string): boolean =>
-  pushTexts(prompt).some((push) => push.includes(`<subagent id="${id}"`))
+  pushTexts(prompt).some((push) => push.includes(`<task id="${id}"`))
 
 const waitFor = (condition: () => boolean) =>
   Effect.gen(function* () {
@@ -261,578 +262,656 @@ const executors = [
 // --- tests -------------------------------------------------------------------
 
 for (const [executorName, executorLayer] of executors) {
-  it.layer(executorLayer, { excludeTestServices: true })(
-    `background sub-agents (${executorName} executor)`,
-    (it) => {
-      it.effect(
-        "an idle conversation turn waits for a running child, then gets its capped output",
-        () =>
-          Effect.gen(function* () {
-            const childRelease = Latch.makeUnsafe(false)
-            const childOutput =
-              "CHILD-HEAD " + "x".repeat(40_000) + " CHILD-TAIL"
-            const { exit, calls } = yield* runAgent({
-              conversationMode: true,
-              respond: (call) => {
-                if (call.role === "child") {
-                  // Finishes only after the parent's idle turn is over, so
-                  // the parent has to block on the completion push.
-                  return Stream.fromEffect(
-                    childRelease.await.pipe(
-                      Effect.andThen(Effect.sleep("50 millis")),
-                    ),
-                  ).pipe(Stream.flatMap(() => complete(childOutput)))
-                }
-                switch (call.index) {
-                  case 0:
-                    return Stream.make(spawnBackground("TASK-CHILD"))
-                  case 1:
-                    return Stream.fromIterable(
-                      text("waiting for the child"),
-                    ).pipe(
-                      Stream.ensuring(
-                        Effect.sync(() => childRelease.openUnsafe()),
-                      ),
-                    )
-                  case 2:
-                    return Stream.fromIterable(text("all done"))
-                  default:
-                    return unexpected(call)
-                }
-              },
-            })
+  // A fresh executor per test keeps task ids predictable.
+  const test = (
+    name: string,
+    self: () => Effect.Effect<void, unknown, AgentExecutor.AgentExecutor>,
+  ) => it.live(name, () => self().pipe(Effect.provide(executorLayer)))
 
-            assert.deepStrictEqual(exit, Exit.succeed("all done"))
-            const root = calls.filter((call) => call.role === "root")
-            assert.strictEqual(root.length, 3)
+  describe(`agent tasks (${executorName} executor)`, () => {
+    test("an idle conversation turn waits for a running child, then gets its capped output", () =>
+      Effect.gen(function* () {
+        const childRelease = Latch.makeUnsafe(false)
+        const childOutput = "CHILD-HEAD " + "x".repeat(40_000) + " CHILD-TAIL"
+        const { exit, calls } = yield* runAgent({
+          conversationMode: true,
+          respond: (call) => {
+            if (call.role === "child") {
+              // Finishes only after the parent's idle turn is over, so
+              // the parent has to block on the completion push.
+              return Stream.fromEffect(
+                childRelease.await.pipe(
+                  Effect.andThen(Effect.sleep("50 millis")),
+                ),
+              ).pipe(Stream.flatMap(() => complete(childOutput)))
+            }
+            switch (call.index) {
+              case 0:
+                return Stream.make(spawnBackground("TASK-CHILD"))
+              case 1:
+                return Stream.fromIterable(text("waiting for the child")).pipe(
+                  Stream.ensuring(Effect.sync(() => childRelease.openUnsafe())),
+                )
+              case 2:
+                return Stream.fromIterable(text("all done"))
+              default:
+                return unexpected(call)
+            }
+          },
+        })
 
-            const started = lastToolResult(root[1]!.prompt)
-            assert.include(started, '"id":"1"')
-            assert.include(started, '"status":"running"')
-            assert.notInclude(started, '"output"', "no output while running")
+        assert.deepStrictEqual(exit, Exit.succeed("all done"))
+        const root = calls.filter((call) => call.role === "root")
+        assert.strictEqual(root.length, 3)
 
-            const push = findPush(root[2]!.prompt, "1", "completed")
-            assert.notStrictEqual(push.index, -1, "completion push delivered")
-            assert.include(push.text, "CHILD-HEAD")
-            assert.include(push.text, "CHILD-TAIL")
-            assert.isAtMost(
-              push.text.length,
-              Compaction.executeOutputCapChars + 1_000,
-              "push output goes through capOutput",
-            )
-          }),
-      )
+        const started = lastToolResult(root[1]!.prompt)
+        assert.include(started, '"id":"1"')
+        assert.include(started, '"kind":"agent"')
+        assert.include(started, '"status":"running"')
+        assert.include(started, '"description":"TASK-CHILD"')
 
-      it.effect(
-        "a completion push does not cut off the parent's in-progress response",
-        () =>
-          Effect.gen(function* () {
-            const childRelease = Latch.makeUnsafe(false)
-            const completionDelivered = Latch.makeUnsafe(false)
-            const { exit, calls } = yield* runAgent({
-              conversationMode: true,
-              onOutput: (output) =>
-                Effect.sync(() => {
-                  if (output._tag === "SubagentComplete" && output.id === 1) {
-                    assert.strictEqual(output.status, "completed")
-                    assert.strictEqual(output.summary, "CHILD-RESULT")
-                    completionDelivered.openUnsafe()
-                  }
-                }),
-              respond: (call) => {
-                if (call.role === "child") {
-                  return Stream.fromEffect(childRelease.await).pipe(
+        const push = findPush(root[2]!.prompt, "1", "completed")
+        assert.notStrictEqual(push.index, -1, "completion push delivered")
+        assert.include(push.text, "CHILD-HEAD")
+        assert.include(push.text, "CHILD-TAIL")
+        assert.isAtMost(
+          push.text.length,
+          Compaction.executeOutputCapChars + 1_000,
+          "push output goes through capOutput",
+        )
+      }))
+
+    test("a completion push does not cut off the parent's in-progress response", () =>
+      Effect.gen(function* () {
+        const childRelease = Latch.makeUnsafe(false)
+        const completionDelivered = Latch.makeUnsafe(false)
+        const { exit, calls } = yield* runAgent({
+          conversationMode: true,
+          onOutput: (output) =>
+            Effect.sync(() => {
+              if (output._tag === "SubagentComplete" && output.id === 1) {
+                assert.strictEqual(output.status, "completed")
+                assert.strictEqual(output.summary, "CHILD-RESULT")
+                completionDelivered.openUnsafe()
+              }
+            }),
+          respond: (call) => {
+            if (call.role === "child") {
+              return Stream.fromEffect(childRelease.await).pipe(
+                Stream.flatMap(() => complete("CHILD-RESULT")),
+              )
+            }
+            switch (call.index) {
+              case 0:
+                return Stream.make(spawnBackground("TASK-CHILD"))
+              case 1:
+                // The child completes between two text blocks of one
+                // response. The whole response must still be recorded.
+                return Stream.fromIterable(text("PART-ONE", "t1")).pipe(
+                  Stream.concat(
+                    Stream.fromEffect(
+                      Effect.gen(function* () {
+                        childRelease.openUnsafe()
+                        // Unlike the child model stream ending, this event
+                        // means cleanup finished and the push was queued.
+                        yield* completionDelivered.await
+                      }),
+                    ).pipe(Stream.drain),
+                  ),
+                  Stream.concat(
+                    Stream.fromIterable([
+                      ...text("PART-TWO", "t2"),
+                      toolCall("after", 'console.log("AFTER-SCRIPT-RAN")'),
+                    ]),
+                  ),
+                )
+              default:
+                return Stream.fromIterable(text("done"))
+            }
+          },
+        })
+
+        assert.deepStrictEqual(exit, Exit.succeed("done"))
+        const root = calls.filter((call) => call.role === "root")
+        const delivery = root.find(
+          (call) => findPush(call.prompt, "1", "completed").index !== -1,
+        )
+        assert.isDefined(delivery, "completion push reached the model")
+        const prompt = delivery!.prompt
+        const assistantIndex = prompt.content.findIndex(
+          (message) =>
+            message.role === "assistant" &&
+            messageText(message).includes("PART-ONE"),
+        )
+        assert.notStrictEqual(assistantIndex, -1)
+        assert.include(
+          messageText(prompt.content[assistantIndex]!),
+          "PART-TWO",
+          "the response continued past the first text-end",
+        )
+        assert.include(
+          lastToolResult(prompt),
+          "AFTER-SCRIPT-RAN",
+          "the tool call after the push still ran",
+        )
+        const push = findPush(prompt, "1", "completed")
+        assert.include(push.text, "CHILD-RESULT")
+        assert.isAbove(
+          push.index,
+          assistantIndex,
+          "the push is injected after the response, not into it",
+        )
+      }))
+
+    test("a failed background child is pushed as failed and the parent keeps going", () =>
+      Effect.gen(function* () {
+        const childRelease = Latch.makeUnsafe(false)
+        const { exit, calls } = yield* runAgent({
+          conversationMode: true,
+          respond: (call) => {
+            if (call.role === "child") {
+              return Stream.fromEffect(childRelease.await).pipe(
+                Stream.flatMap(() => Stream.fail(invalidRequest)),
+              )
+            }
+            switch (call.index) {
+              case 0:
+                return Stream.make(spawnBackground("TASK-CHILD"))
+              case 1:
+                return Stream.fromIterable(text("waiting")).pipe(
+                  Stream.ensuring(Effect.sync(() => childRelease.openUnsafe())),
+                )
+              case 2:
+                return Stream.fromIterable(text("recovered"))
+              default:
+                return unexpected(call)
+            }
+          },
+        })
+
+        assert.deepStrictEqual(exit, Exit.succeed("recovered"))
+        const root = calls.filter((call) => call.role === "root")
+        const push = findPush(root[2]!.prompt, "1", "failed")
+        assert.notStrictEqual(push.index, -1, "failure push delivered")
+        assert.include(push.text, "rejected")
+      }))
+
+    test("taskComplete fails while a child is running and leaves it running", () =>
+      Effect.gen(function* () {
+        const childRelease = Latch.makeUnsafe(false)
+        const { exit, calls, history } = yield* runAgent({
+          conversationMode: false,
+          respond: (call) => {
+            if (call.role === "child") {
+              return call.index === 0
+                ? Stream.fromEffect(childRelease.await).pipe(
                     Stream.flatMap(() => complete("CHILD-RESULT")),
                   )
-                }
-                switch (call.index) {
-                  case 0:
-                    return Stream.make(spawnBackground("TASK-CHILD"))
-                  case 1:
-                    // The child completes between two text blocks of one
-                    // response. The whole response must still be recorded.
-                    return Stream.fromIterable(text("PART-ONE", "t1")).pipe(
-                      Stream.concat(
-                        Stream.fromEffect(
-                          Effect.gen(function* () {
-                            childRelease.openUnsafe()
-                            // Unlike the child model stream ending, this event
-                            // means cleanup finished and the push was queued.
-                            yield* completionDelivered.await
-                          }),
-                        ).pipe(Stream.drain),
-                      ),
-                      Stream.concat(
-                        Stream.fromIterable([
-                          ...text("PART-TWO", "t2"),
-                          toolCall("after", 'console.log("AFTER-SCRIPT-RAN")'),
-                        ]),
-                      ),
-                    )
-                  default:
-                    return Stream.fromIterable(text("done"))
-                }
-              },
-            })
-
-            assert.deepStrictEqual(exit, Exit.succeed("done"))
-            const root = calls.filter((call) => call.role === "root")
-            const delivery = root.find(
-              (call) => findPush(call.prompt, "1", "completed").index !== -1,
-            )
-            assert.isDefined(delivery, "completion push reached the model")
-            const prompt = delivery!.prompt
-            const assistantIndex = prompt.content.findIndex(
-              (message) =>
-                message.role === "assistant" &&
-                messageText(message).includes("PART-ONE"),
-            )
-            assert.notStrictEqual(assistantIndex, -1)
-            assert.include(
-              messageText(prompt.content[assistantIndex]!),
-              "PART-TWO",
-              "the response continued past the first text-end",
-            )
-            assert.include(
-              lastToolResult(prompt),
-              "AFTER-SCRIPT-RAN",
-              "the tool call after the push still ran",
-            )
-            const push = findPush(prompt, "1", "completed")
-            assert.include(push.text, "CHILD-RESULT")
-            assert.isAbove(
-              push.index,
-              assistantIndex,
-              "the push is injected after the response, not into it",
-            )
-          }),
-      )
-
-      it.effect(
-        "a failed background child is pushed as failed and the parent keeps going",
-        () =>
-          Effect.gen(function* () {
-            const childRelease = Latch.makeUnsafe(false)
-            const { exit, calls } = yield* runAgent({
-              conversationMode: true,
-              respond: (call) => {
-                if (call.role === "child") {
-                  return Stream.fromEffect(childRelease.await).pipe(
-                    Stream.flatMap(() => Stream.fail(invalidRequest)),
-                  )
-                }
-                switch (call.index) {
-                  case 0:
-                    return Stream.make(spawnBackground("TASK-CHILD"))
-                  case 1:
-                    return Stream.fromIterable(text("waiting")).pipe(
-                      Stream.ensuring(
-                        Effect.sync(() => childRelease.openUnsafe()),
-                      ),
-                    )
-                  case 2:
-                    return Stream.fromIterable(text("recovered"))
-                  default:
-                    return unexpected(call)
-                }
-              },
-            })
-
-            assert.deepStrictEqual(exit, Exit.succeed("recovered"))
-            const root = calls.filter((call) => call.role === "root")
-            const push = findPush(root[2]!.prompt, "1", "failed")
-            assert.notStrictEqual(push.index, -1, "failure push delivered")
-            assert.include(push.text, "rejected")
-          }),
-      )
-
-      it.effect(
-        "taskComplete fails while a child is running and leaves it running",
-        () =>
-          Effect.gen(function* () {
-            const childRelease = Latch.makeUnsafe(false)
-            const { exit, calls, history } = yield* runAgent({
-              conversationMode: false,
-              respond: (call) => {
-                if (call.role === "child") {
-                  return call.index === 0
-                    ? Stream.fromEffect(childRelease.await).pipe(
-                        Stream.flatMap(() => complete("CHILD-RESULT")),
-                      )
-                    : unexpected(call)
-                }
-                switch (call.index) {
-                  case 0:
-                    return Stream.make(
-                      toolCall(
-                        "too-early",
-                        `await delegate({ prompt: "TASK-CHILD", background: true })
+                : unexpected(call)
+            }
+            switch (call.index) {
+              case 0:
+                return Stream.make(
+                  toolCall(
+                    "too-early",
+                    `await delegate({ prompt: "TASK-CHILD", background: true })
 try {
   await taskComplete("too early")
   console.log("ACCEPTED")
 } catch (error) {
   console.log("REJECTED: " + String(error))
 }`,
-                      ),
-                    )
-                  case 1: {
-                    const rejected = lastToolResult(call.prompt)
-                    assert.include(rejected, "REJECTED")
-                    assert.notInclude(rejected, "ACCEPTED")
-                    assert.match(rejected, /\b1\b/, "lists the running child")
-                    assert.include(rejected, "waitAgents")
-                    assert.include(rejected, "stopAgent")
-                    childRelease.openUnsafe()
-                    return Stream.make(
-                      toolCall(
-                        "wait",
-                        `const results = await waitAgents()
+                  ),
+                )
+              case 1: {
+                const rejected = lastToolResult(call.prompt)
+                assert.include(rejected, "REJECTED")
+                assert.notInclude(rejected, "ACCEPTED")
+                assert.include(
+                  rejected,
+                  'waitTasks(["1"])',
+                  "quotes the call that waits for the running child",
+                )
+                assert.include(rejected, "stopTask")
+                childRelease.openUnsafe()
+                return Stream.make(
+                  toolCall(
+                    "wait",
+                    `const results = await waitTasks(["1"])
 console.log(JSON.stringify(results))
 await taskComplete("done")`,
-                      ),
-                    )
-                  }
-                  default:
-                    return unexpected(call)
-                }
-              },
-            })
+                  ),
+                )
+              }
+              default:
+                return unexpected(call)
+            }
+          },
+        })
 
-            assert.deepStrictEqual(exit, Exit.succeed("done"))
-            assert.strictEqual(
-              calls.filter((call) => call.role === "root").length,
-              2,
-            )
-            const waited = lastToolResult(history)
-            assert.include(waited, '"id":"1"')
-            assert.include(
-              waited,
-              '"status":"completed"',
-              "the child was not cancelled by the refused taskComplete",
-            )
-            assert.include(waited, "CHILD-RESULT")
-          }),
-      )
+        assert.deepStrictEqual(exit, Exit.succeed("done"))
+        assert.strictEqual(
+          calls.filter((call) => call.role === "root").length,
+          2,
+        )
+        const waited = lastToolResult(history)
+        assert.include(waited, '"id":"1"')
+        assert.include(
+          waited,
+          '"status":"completed"',
+          "the child was not cancelled by the refused taskComplete",
+        )
+        assert.include(waited, "CHILD-RESULT")
+      }))
 
-      it.effect("background children do not outlive the parent run", () =>
-        Effect.gen(function* () {
-          const childStarted = Latch.makeUnsafe(false)
-          let childInterrupted = false
-          let interruptedBeforeTeardown = false
-          const { exit } = yield* runAgent({
-            conversationMode: true,
-            respond: (call) => {
-              if (call.role === "child") {
+    test("background children do not outlive the parent run", () =>
+      Effect.gen(function* () {
+        const childStarted = Latch.makeUnsafe(false)
+        let childInterrupted = false
+        let interruptedBeforeTeardown = false
+        const { exit } = yield* runAgent({
+          conversationMode: true,
+          respond: (call) => {
+            if (call.role === "child") {
+              return Stream.fromEffect(
+                Effect.sync(() => childStarted.openUnsafe()).pipe(
+                  Effect.andThen(Effect.never),
+                ),
+              ).pipe(
+                Stream.ensuring(
+                  Effect.sync(() => {
+                    childInterrupted = true
+                  }),
+                ),
+              )
+            }
+            switch (call.index) {
+              case 0:
+                return Stream.make(spawnBackground("TASK-CHILD"))
+              case 1:
+                // The parent run fails while its child is still running.
+                return Stream.fromEffect(childStarted.await).pipe(
+                  Stream.flatMap(() => Stream.fail(invalidRequest)),
+                )
+              default:
+                return unexpected(call)
+            }
+          },
+          afterExit: waitFor(() => childInterrupted).pipe(
+            Effect.map((interrupted) => {
+              interruptedBeforeTeardown = interrupted
+            }),
+          ),
+        })
+
+        assert.isTrue(Exit.isFailure(exit), "the parent run fails")
+        assert.isTrue(
+          interruptedBeforeTeardown,
+          "the child is interrupted when the run ends",
+        )
+      }))
+
+    test("stopTask stops the agent and everything under it", () =>
+      Effect.gen(function* () {
+        const grandchildStarted = Latch.makeUnsafe(false)
+        const childBlocked = Latch.makeUnsafe(false)
+        let childInterrupted = false
+        let grandchildInterrupted = false
+        let interruptedBeforeNextTurn = false
+        const { exit, calls } = yield* runAgent({
+          conversationMode: true,
+          respond: (call) => {
+            switch (call.role) {
+              case "grandchild":
                 return Stream.fromEffect(
-                  Effect.sync(() => childStarted.openUnsafe()).pipe(
+                  Effect.sync(() => grandchildStarted.openUnsafe()).pipe(
                     Effect.andThen(Effect.never),
                   ),
                 ).pipe(
                   Stream.ensuring(
                     Effect.sync(() => {
-                      childInterrupted = true
+                      grandchildInterrupted = true
                     }),
                   ),
                 )
-              }
+              case "child":
+                return call.index === 0
+                  ? Stream.make(spawnBackground("TASK-GRANDCHILD"))
+                  : Stream.fromEffect(
+                      Effect.sync(() => childBlocked.openUnsafe()).pipe(
+                        Effect.andThen(Effect.never),
+                      ),
+                    ).pipe(
+                      Stream.ensuring(
+                        Effect.sync(() => {
+                          childInterrupted = true
+                        }),
+                      ),
+                    )
+              case "root":
+                switch (call.index) {
+                  case 0:
+                    return Stream.make(spawnBackground("TASK-CHILD"))
+                  case 1:
+                    return Stream.fromEffect(grandchildStarted.await).pipe(
+                      Stream.tap(() => childBlocked.await),
+                      Stream.as(
+                        toolCall(
+                          "stop",
+                          `const result = await stopTask("1")
+console.log(JSON.stringify(result))`,
+                        ),
+                      ),
+                    )
+                  default:
+                    if (call.index === 2) {
+                      interruptedBeforeNextTurn =
+                        childInterrupted && grandchildInterrupted
+                    }
+                    return Stream.fromIterable(text("stopped"))
+                }
+            }
+          },
+        })
+
+        assert.deepStrictEqual(exit, Exit.succeed("stopped"))
+        const root = calls.filter((call) => call.role === "root")
+        const stopped = lastToolResult(root[2]!.prompt)
+        assert.include(stopped, '"id":"1"')
+        assert.include(stopped, '"status":"stopped"')
+        assert.isTrue(
+          interruptedBeforeNextTurn,
+          "stopTask interrupts the child and its grandchild before returning",
+        )
+      }))
+
+    test("messageAgent resumes a finished child on top of its history", () =>
+      Effect.gen(function* () {
+        let messageCall: number | undefined
+        let resumedPrompt: Prompt.Prompt | undefined
+        const { exit, calls } = yield* runAgent({
+          conversationMode: true,
+          respond: (call) => {
+            if (call.role === "child") {
               switch (call.index) {
                 case 0:
-                  return Stream.make(spawnBackground("TASK-CHILD"))
+                  return complete("FIRST-ANSWER")
                 case 1:
-                  // The parent run fails while its child is still running.
-                  return Stream.fromEffect(childStarted.await).pipe(
-                    Stream.flatMap(() => Stream.fail(invalidRequest)),
-                  )
+                  resumedPrompt = call.prompt
+                  return complete("SECOND-ANSWER")
                 default:
                   return unexpected(call)
               }
-            },
-            afterExit: waitFor(() => childInterrupted).pipe(
-              Effect.map((interrupted) => {
-                interruptedBeforeTeardown = interrupted
-              }),
-            ),
-          })
-
-          assert.isTrue(Exit.isFailure(exit), "the parent run fails")
-          assert.isTrue(
-            interruptedBeforeTeardown,
-            "the child is interrupted when the run ends",
-          )
-        }),
-      )
-
-      it.effect("stopAgent cancels the agent and everything under it", () =>
-        Effect.gen(function* () {
-          const grandchildStarted = Latch.makeUnsafe(false)
-          const childBlocked = Latch.makeUnsafe(false)
-          let childInterrupted = false
-          let grandchildInterrupted = false
-          let interruptedBeforeNextTurn = false
-          const { exit, calls } = yield* runAgent({
-            conversationMode: true,
-            respond: (call) => {
-              switch (call.role) {
-                case "grandchild":
-                  return Stream.fromEffect(
-                    Effect.sync(() => grandchildStarted.openUnsafe()).pipe(
-                      Effect.andThen(Effect.never),
-                    ),
-                  ).pipe(
-                    Stream.ensuring(
-                      Effect.sync(() => {
-                        grandchildInterrupted = true
-                      }),
-                    ),
-                  )
-                case "child":
-                  return call.index === 0
-                    ? Stream.make(spawnBackground("TASK-GRANDCHILD"))
-                    : Stream.fromEffect(
-                        Effect.sync(() => childBlocked.openUnsafe()).pipe(
-                          Effect.andThen(Effect.never),
-                        ),
-                      ).pipe(
-                        Stream.ensuring(
-                          Effect.sync(() => {
-                            childInterrupted = true
-                          }),
-                        ),
-                      )
-                case "root":
-                  switch (call.index) {
-                    case 0:
-                      return Stream.make(spawnBackground("TASK-CHILD"))
-                    case 1:
-                      return Stream.fromEffect(grandchildStarted.await).pipe(
-                        Stream.tap(() => childBlocked.await),
-                        Stream.as(
-                          toolCall(
-                            "stop",
-                            `const result = await stopAgent("1")
+            }
+            // Decide from what has been delivered, not from call order:
+            // pushes may land before or after an idle turn.
+            const pushes = pushTexts(call.prompt)
+            if (call.index === 0) {
+              return Stream.make(spawnBackground("TASK-CHILD"))
+            }
+            if (pushes.some((push) => push.includes("SECOND-ANSWER"))) {
+              return Stream.fromIterable(text("resumed"))
+            }
+            if (
+              messageCall === undefined &&
+              pushes.some((push) => push.includes("FIRST-ANSWER"))
+            ) {
+              messageCall = call.index
+              return Stream.make(
+                toolCall(
+                  "message",
+                  `const result = await messageAgent({ id: "1", message: "FOLLOW-UP" })
 console.log(JSON.stringify(result))`,
-                          ),
-                        ),
-                      )
-                    default:
-                      if (call.index === 2) {
-                        interruptedBeforeNextTurn =
-                          childInterrupted && grandchildInterrupted
-                      }
-                      return Stream.fromIterable(text("stopped"))
-                  }
-              }
-            },
-          })
-
-          assert.deepStrictEqual(exit, Exit.succeed("stopped"))
-          const root = calls.filter((call) => call.role === "root")
-          const stopped = lastToolResult(root[2]!.prompt)
-          assert.include(stopped, '"id":"1"')
-          assert.include(stopped, '"status":"cancelled"')
-          assert.isTrue(
-            interruptedBeforeNextTurn,
-            "stopAgent interrupts the child and its grandchild before returning",
-          )
-        }),
-      )
-
-      it.effect(
-        "messageAgent resumes a finished child on top of its history",
-        () =>
-          Effect.gen(function* () {
-            let messageCall: number | undefined
-            let resumedPrompt: Prompt.Prompt | undefined
-            const { exit, calls } = yield* runAgent({
-              conversationMode: true,
-              respond: (call) => {
-                if (call.role === "child") {
-                  switch (call.index) {
-                    case 0:
-                      return complete("FIRST-ANSWER")
-                    case 1:
-                      resumedPrompt = call.prompt
-                      return complete("SECOND-ANSWER")
-                    default:
-                      return unexpected(call)
-                  }
-                }
-                // Decide from what has been delivered, not from call order:
-                // pushes may land before or after an idle turn.
-                const pushes = pushTexts(call.prompt)
-                if (call.index === 0) {
-                  return Stream.make(spawnBackground("TASK-CHILD"))
-                }
-                if (pushes.some((push) => push.includes("SECOND-ANSWER"))) {
-                  return Stream.fromIterable(text("resumed"))
-                }
-                if (
-                  messageCall === undefined &&
-                  pushes.some((push) => push.includes("FIRST-ANSWER"))
-                ) {
-                  messageCall = call.index
-                  return Stream.make(
-                    toolCall(
-                      "message",
-                      `const result = await messageAgent({ id: "1", message: "FOLLOW-UP" })
-console.log(JSON.stringify(result))`,
-                    ),
-                  )
-                }
-                return Stream.fromIterable(text("waiting"))
-              },
-            })
-
-            assert.deepStrictEqual(exit, Exit.succeed("resumed"))
-            assert.isDefined(messageCall, "the first answer was pushed")
-            const root = calls.filter((call) => call.role === "root")
-            const messaged = lastToolResult(root[messageCall! + 1]!.prompt)
-            assert.include(messaged, '"id":"1"')
-            assert.include(
-              messaged,
-              '"status":"running"',
-              "messageAgent returns without waiting for the new turn",
-            )
-
-            assert.isDefined(resumedPrompt, "the finished child was resumed")
-            const resumed = messageJsons(resumedPrompt!)
-            const task = resumed.findIndex((m) => m.includes("TASK-CHILD"))
-            const first = resumed.findIndex((m) => m.includes("FIRST-ANSWER"))
-            const followUp = resumed.findIndex((m) => m.includes("FOLLOW-UP"))
-            assert.notStrictEqual(task, -1, "original task kept")
-            assert.isAbove(first, task, "first answer kept")
-            assert.isAbove(followUp, first, "message appended after history")
-          }),
-      )
-
-      it.effect(
-        "pushes go to the agent that spawned the child, at every level",
-        () =>
-          Effect.gen(function* () {
-            const { exit, calls } = yield* runAgent({
-              conversationMode: true,
-              respond: (call) => {
-                switch (call.role) {
-                  case "grandchild":
-                    return complete("GRAND-RESULT")
-                  case "child":
-                    if (
-                      findPush(call.prompt, "2", "completed").text.includes(
-                        "GRAND-RESULT",
-                      )
-                    ) {
-                      return complete("CHILD-DONE")
-                    }
-                    // Keep taking turns until the push is drained into the
-                    // child's own prompt.
-                    return call.index === 0
-                      ? Stream.make(spawnBackground("TASK-GRANDCHILD"))
-                      : Stream.fromEffect(Effect.sleep("20 millis")).pipe(
-                          Stream.flatMap(() =>
-                            Stream.fromIterable(text("child waiting")),
-                          ),
-                        )
-                  case "root":
-                    switch (call.index) {
-                      case 0:
-                        // Foreground: blocks until the child is done.
-                        return Stream.make(
-                          toolCall(
-                            "foreground",
-                            `const result = await delegate({ prompt: "TASK-CHILD" })
-console.log(JSON.stringify(result))`,
-                          ),
-                        )
-                      case 1:
-                        return Stream.fromIterable(text("root done"))
-                      default:
-                        return unexpected(call)
-                    }
-                }
-              },
-            })
-
-            assert.deepStrictEqual(exit, Exit.succeed("root done"))
-            const root = calls.filter((call) => call.role === "root")
-            assert.strictEqual(root.length, 2)
-            const foreground = lastToolResult(root[1]!.prompt)
-            assert.include(foreground, '"id":"1"')
-            assert.include(foreground, '"status":"completed"')
-            assert.include(foreground, "CHILD-DONE")
-            for (const call of root) {
-              assert.isFalse(
-                hasAnyPush(call.prompt, "2"),
-                "the grandchild's push never reaches the root",
+                ),
               )
             }
-          }),
-      )
+            return Stream.fromIterable(text("waiting"))
+          },
+        })
 
-      it.effect(
-        "each agent keeps its own working directory, starting from its parent's",
-        () =>
-          Effect.gen(function* () {
-            // Both children change directory before either prints it, so a
-            // shared directory shows up as the wrong path.
-            const bothChanged = Latch.makeUnsafe(false)
-            let changed = 0
-            const { exit, calls } = yield* runAgent({
-              conversationMode: true,
-              respond: (call) => {
-                if (call.role === "child") {
-                  const name = firstUserText(call.prompt).includes("ONE")
-                    ? "one"
-                    : "two"
-                  if (toolResultTexts(call.prompt).length === 0) {
-                    return Stream.make(
-                      toolCall(
-                        `cd-${name}`,
-                        `await changeDirectory("${name}")`,
+        assert.deepStrictEqual(exit, Exit.succeed("resumed"))
+        assert.isDefined(messageCall, "the first answer was pushed")
+        const root = calls.filter((call) => call.role === "root")
+        const messaged = lastToolResult(root[messageCall! + 1]!.prompt)
+        assert.include(messaged, '"id":"1"')
+        assert.include(
+          messaged,
+          '"status":"running"',
+          "messageAgent returns without waiting for the new turn",
+        )
+
+        assert.isDefined(resumedPrompt, "the finished child was resumed")
+        const resumed = messageJsons(resumedPrompt!)
+        const task = resumed.findIndex((m) => m.includes("TASK-CHILD"))
+        const first = resumed.findIndex((m) => m.includes("FIRST-ANSWER"))
+        const followUp = resumed.findIndex((m) => m.includes("FOLLOW-UP"))
+        assert.notStrictEqual(task, -1, "original task kept")
+        assert.isAbove(first, task, "first answer kept")
+        assert.isAbove(followUp, first, "message appended after history")
+      }))
+
+    test("pushes go to the agent that spawned the child, at every level", () =>
+      Effect.gen(function* () {
+        const { exit, calls } = yield* runAgent({
+          conversationMode: true,
+          respond: (call) => {
+            switch (call.role) {
+              case "grandchild":
+                return complete("GRAND-RESULT")
+              case "child":
+                if (
+                  findPush(call.prompt, "2", "completed").text.includes(
+                    "GRAND-RESULT",
+                  )
+                ) {
+                  return complete("CHILD-DONE")
+                }
+                // Keep taking turns until the push is drained into the
+                // child's own prompt.
+                return call.index === 0
+                  ? Stream.make(spawnBackground("TASK-GRANDCHILD"))
+                  : Stream.fromEffect(Effect.sleep("20 millis")).pipe(
+                      Stream.flatMap(() =>
+                        Stream.fromIterable(text("child waiting")),
                       ),
                     )
-                  }
-                  if (++changed === 2) bothChanged.openUnsafe()
-                  return Stream.fromEffect(bothChanged.await).pipe(
-                    Stream.flatMap(() =>
-                      Stream.make(
-                        toolCall(
-                          `pwd-${name}`,
-                          `const pwd = await bash({ command: "pwd" })
-await taskComplete("${name.toUpperCase()}:" + pwd.trim())`,
-                        ),
-                      ),
-                    ),
-                  )
-                }
+              case "root":
                 switch (call.index) {
                   case 0:
+                    // Foreground: blocks until the child is done.
                     return Stream.make(
                       toolCall(
-                        "spawn",
-                        `await bash({ command: "mkdir -p a/one a/two" })
-await changeDirectory("a")
-await delegate({ prompt: "TASK-CHILD-ONE", background: true })
-await delegate({ prompt: "TASK-CHILD-TWO", background: true })
-console.log(JSON.stringify(await waitAgents()))
-console.log("ROOT:" + (await bash({ command: "pwd" })).trim())`,
+                        "foreground",
+                        `const result = await delegate({ prompt: "TASK-CHILD" })
+console.log(JSON.stringify(result))`,
                       ),
                     )
                   case 1:
-                    return Stream.fromIterable(text("done"))
+                    return Stream.fromIterable(text("root done"))
                   default:
                     return unexpected(call)
                 }
-              },
-            })
+            }
+          },
+        })
 
-            assert.deepStrictEqual(exit, Exit.succeed("done"))
-            const root = calls.filter((call) => call.role === "root")
-            const result = lastToolResult(root[1]!.prompt)
-            assert.match(result, /ONE:[^"\s]*\/a\/one"/)
-            assert.match(result, /TWO:[^"\s]*\/a\/two"/)
-            assert.match(result, /ROOT:\S*\/a$/m)
-          }),
-      )
-    },
-  )
+        assert.deepStrictEqual(exit, Exit.succeed("root done"))
+        const root = calls.filter((call) => call.role === "root")
+        assert.strictEqual(root.length, 2)
+        const foreground = lastToolResult(root[1]!.prompt)
+        assert.include(foreground, '"id":"1"')
+        assert.include(foreground, '"status":"completed"')
+        assert.include(foreground, "CHILD-DONE")
+        for (const call of root) {
+          assert.isFalse(
+            hasAnyPush(call.prompt, "2"),
+            "the grandchild's push never reaches the root",
+          )
+        }
+      }))
+
+    test("each agent keeps its own working directory, starting from its parent's", () =>
+      Effect.gen(function* () {
+        // Both children change directory before either prints it, so a
+        // shared directory shows up as the wrong path.
+        const bothChanged = Latch.makeUnsafe(false)
+        let changed = 0
+        const { exit, calls } = yield* runAgent({
+          conversationMode: true,
+          respond: (call) => {
+            if (call.role === "child") {
+              const name = firstUserText(call.prompt).includes("ONE")
+                ? "one"
+                : "two"
+              if (toolResultTexts(call.prompt).length === 0) {
+                return Stream.make(
+                  toolCall(`cd-${name}`, `await changeDirectory("${name}")`),
+                )
+              }
+              if (++changed === 2) bothChanged.openUnsafe()
+              return Stream.fromEffect(bothChanged.await).pipe(
+                Stream.flatMap(() =>
+                  Stream.make(
+                    toolCall(
+                      `pwd-${name}`,
+                      `const pwd = await bash({ command: "pwd" })
+await taskComplete("${name.toUpperCase()}:" + pwd.trim())`,
+                    ),
+                  ),
+                ),
+              )
+            }
+            switch (call.index) {
+              case 0:
+                return Stream.make(
+                  toolCall(
+                    "spawn",
+                    `await bash({ command: "mkdir -p a/one a/two" })
+await changeDirectory("a")
+const one = await delegate({ prompt: "TASK-CHILD-ONE", background: true })
+const two = await delegate({ prompt: "TASK-CHILD-TWO", background: true })
+console.log(JSON.stringify(await waitTasks([one.id, two.id])))
+console.log("ROOT:" + (await bash({ command: "pwd" })).trim())`,
+                  ),
+                )
+              case 1:
+                return Stream.fromIterable(text("done"))
+              default:
+                return unexpected(call)
+            }
+          },
+        })
+
+        assert.deepStrictEqual(exit, Exit.succeed("done"))
+        const root = calls.filter((call) => call.role === "root")
+        const result = lastToolResult(root[1]!.prompt)
+        assert.match(result, /ONE:[^"\s]*\/a\/one"/)
+        assert.match(result, /TWO:[^"\s]*\/a\/two"/)
+        assert.match(result, /ROOT:\S*\/a$/m)
+      }))
+
+    test("waitTasks waits for bash and agent tasks alike, and what it returns is not pushed", () =>
+      Effect.gen(function* () {
+        const { exit, calls } = yield* runAgent({
+          conversationMode: true,
+          respond: (call) => {
+            if (call.role === "child") return complete("CHILD-OUT")
+            switch (call.index) {
+              case 0:
+                return Stream.make(
+                  toolCall(
+                    "mixed",
+                    `const bashTask = await bash({ command: "echo BASH-OUT", background: true })
+const agentTask = await delegate({ prompt: "TASK-CHILD", background: true })
+const ended = await waitTasks([bashTask.id, agentTask.id])
+console.log(JSON.stringify(ended.map(({ kind, status, output }) => ({ kind, status, output: output.trim() }))))`,
+                  ),
+                )
+              case 1:
+                return Stream.fromIterable(text("done"))
+              default:
+                return unexpected(call)
+            }
+          },
+        })
+
+        assert.deepStrictEqual(exit, Exit.succeed("done"))
+        const root = calls.filter((call) => call.role === "root")
+        assert.strictEqual(root.length, 2, "no late push wakes the run")
+        assert.include(
+          lastToolResult(root[1]!.prompt),
+          JSON.stringify([
+            { kind: "bash", status: "completed", output: "BASH-OUT" },
+            { kind: "agent", status: "completed", output: "CHILD-OUT" },
+          ]),
+        )
+        assert.deepStrictEqual(
+          pushTexts(root[1]!.prompt),
+          [],
+          "results returned by waitTasks are not pushed again",
+        )
+      }))
+
+    test("an agent only sees and addresses its own tasks", () =>
+      Effect.gen(function* () {
+        const { exit, calls } = yield* runAgent({
+          conversationMode: true,
+          respond: (call) => {
+            if (call.role === "child") {
+              // The parent's bash task id, passed in the task prompt.
+              const bashId = /BASH-ID:(\w+)/.exec(
+                firstUserText(call.prompt),
+              )![1]
+              return Stream.make(
+                toolCall(
+                  "peek",
+                  `const seen = (await listTasks()).map((task) => task.id)
+const attempts = []
+for (const attempt of [() => taskOutput("${bashId}"), () => stopTask("${bashId}")]) {
+  try {
+    await attempt()
+    attempts.push("allowed")
+  } catch {
+    attempts.push("rejected")
+  }
+}
+await taskComplete(JSON.stringify({ seen, attempts }))`,
+                ),
+              )
+            }
+            switch (call.index) {
+              case 0:
+                return Stream.make(
+                  toolCall(
+                    "spawn",
+                    `const server = await bash({ command: "sleep 30", background: true })
+const child = await delegate({ prompt: "TASK-CHILD BASH-ID:" + server.id })
+console.log("CHILD:" + child.output)
+const mine = await listTasks()
+console.log("ROOT:" + JSON.stringify(mine.map((task) => task.kind + ":" + task.status).sort()))`,
+                  ),
+                )
+              case 1:
+                return Stream.fromIterable(text("done"))
+              default:
+                return unexpected(call)
+            }
+          },
+        })
+
+        assert.deepStrictEqual(exit, Exit.succeed("done"))
+        const root = calls.filter((call) => call.role === "root")
+        const result = lastToolResult(root[1]!.prompt)
+        assert.include(
+          result,
+          'CHILD:{"seen":[],"attempts":["rejected","rejected"]}',
+          "the child neither lists nor addresses its parent's bash task",
+        )
+        assert.include(
+          result,
+          'ROOT:["agent:completed","bash:running"]',
+          "the parent lists both of its tasks, and its bash task still runs",
+        )
+      }))
+  })
 }

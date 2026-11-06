@@ -270,9 +270,10 @@ describe("Agent images", () => {
 
   it.effect("does not copy image bytes into a delegate prompt", () =>
     Effect.gen(function* () {
-      const executor = makeExecutor(({ subagents, environment }) =>
+      const executor = makeExecutor(({ agentTasks, environment }) =>
         Stream.fromEffect(
-          subagents.delegate({
+          agentTasks.delegate({
+            id: "1",
             prompt: "child task: describe the layout",
             background: false,
             environment: new AgentExecutor.EnvironmentUpdate({
@@ -281,7 +282,7 @@ describe("Agent images", () => {
             }),
           }),
         ).pipe(
-          Stream.map((result) => result.output ?? ""),
+          Stream.map((task) => task.output),
           Stream.orDie,
         ),
       )

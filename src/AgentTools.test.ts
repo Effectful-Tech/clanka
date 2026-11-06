@@ -7,7 +7,7 @@ import * as Layer from "effect/Layer"
 import * as Path from "effect/Path"
 import * as Stream from "effect/Stream"
 import * as AgentExecutor from "./AgentExecutor.ts"
-import { subagentsUnavailable } from "./AgentTools.ts"
+import { agentTasksUnavailable } from "./AgentTools.ts"
 
 const match = "ignored-directory-regression-match"
 
@@ -133,7 +133,7 @@ describe("writeFile", () => {
               'await writeFile({ path: "data.bin", content: new Uint8Array([0, 255, 128]) })',
             onImage: () => Effect.void,
             onTaskComplete: () => Effect.void,
-            subagents: subagentsUnavailable,
+            agentTasks: agentTasksUnavailable,
           })
           .pipe(Stream.runDrain)
         const bytes = yield* fs.readFile(path.join(environment.cwd, "data.bin"))

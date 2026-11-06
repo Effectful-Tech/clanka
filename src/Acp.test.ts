@@ -536,13 +536,16 @@ describe("Acp", () => {
         Effect.gen(function* () {
           const server = yield* makeServer(runsScript("bash()"), {
             ...executor,
-            execute: ({ onJob }) =>
+            execute: ({ onTask }) =>
               Stream.fromEffect(
-                onJob!({
+                onTask!({
                   id: "7",
+                  kind: "bash",
                   await: Effect.succeed({
                     id: "7",
+                    kind: "bash",
                     status: "failed",
+                    description: "make",
                     exitCode: 3,
                     output: "boom\n",
                   }),
@@ -591,14 +594,17 @@ describe("Acp", () => {
           const ended = yield* Deferred.make<void>()
           const server = yield* makeServer(runsScript("bash()"), {
             ...executor,
-            execute: ({ onJob }) =>
+            execute: ({ onTask }) =>
               Stream.fromEffect(
-                onJob!({
+                onTask!({
                   id: "7",
+                  kind: "bash",
                   await: Deferred.await(ended).pipe(
                     Effect.as({
                       id: "7",
+                      kind: "bash" as const,
                       status: "completed" as const,
+                      description: "make",
                       exitCode: 0,
                       output: "built\n",
                     }),
@@ -660,9 +666,10 @@ describe("Acp", () => {
                 : assistantSays(summary),
             {
               ...executor,
-              execute: ({ subagents, environment }) =>
+              execute: ({ agentTasks, environment }) =>
                 Stream.fromEffect(
-                  subagents.delegate({
+                  agentTasks.delegate({
+                    id: "1",
                     prompt,
                     background: false,
                     environment: new AgentExecutor.EnvironmentUpdate({
@@ -671,7 +678,7 @@ describe("Acp", () => {
                     }),
                   }),
                 ).pipe(
-                  Stream.map((result) => result.output ?? ""),
+                  Stream.map((task) => task.output),
                   Stream.orDie,
                 ),
             },
@@ -752,11 +759,12 @@ describe("Acp", () => {
                 ...executor,
                 // The first script starts a background child; the second
                 // resumes it once its first result has been delivered.
-                execute: ({ subagents, environment }) =>
+                execute: ({ agentTasks, environment }) =>
                   Stream.fromEffect(
                     executions++ === 0
-                      ? subagents
+                      ? agentTasks
                           .delegate({
+                            id: "1",
                             prompt: "TASK-CHILD",
                             background: true,
                             environment: new AgentExecutor.EnvironmentUpdate({
@@ -770,7 +778,7 @@ describe("Acp", () => {
                               return "started"
                             }),
                           )
-                      : subagents
+                      : agentTasks
                           .messageAgent({ id: childId!, message: "FOLLOW-UP" })
                           .pipe(Effect.as("resumed")),
                   ).pipe(Stream.orDie),
@@ -1086,7 +1094,20 @@ await changeDirectory("sub")`),
                   ),
                   message(
                     "user",
+                    '<task id="2" kind="agent" status="completed">\nCHILD-RESULT\n</task>',
+                  ),
+                  message(
+                    "user",
+                    '<task id="3" kind="bash" status="completed" exitCode="0">\nBUILT\n</task>',
+                  ),
+                  // Stored by versions before tasks.
+                  message(
+                    "user",
                     '<subagent id="1" status="completed">\nCHILD-RESULT\n</subagent>',
+                  ),
+                  message(
+                    "user",
+                    '<job id="1" status="completed" exitCode="0">\nBUILT\n</job>',
                   ),
                   message("assistant", "Reply"),
                 ]),

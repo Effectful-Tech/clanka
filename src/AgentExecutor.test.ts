@@ -21,7 +21,16 @@ import * as NodeFs from "node:fs"
 import * as NodeOs from "node:os"
 import * as NodePath from "node:path"
 import * as AgentExecutor from "./AgentExecutor.ts"
-import { subagentsUnavailable } from "./AgentTools.ts"
+import { agentTasksUnavailable, type Task } from "./AgentTools.ts"
+
+// The task a stub `delegate` resolves with once its agent has finished.
+const completedAgent = (id: string, prompt: string, output: string): Task => ({
+  id,
+  kind: "agent",
+  status: "completed",
+  description: prompt,
+  output,
+})
 
 const withRpc = <A, E, R>(
   f: (
@@ -81,18 +90,14 @@ describe("RPC subagent executor", () => {
                   'console.log("first:" + (await delegate({ prompt: "first" })).output)',
                 onTaskComplete: () => Effect.void,
                 onImage: () => Effect.void,
-                subagents: {
-                  ...subagentsUnavailable,
-                  delegate: ({ prompt }) =>
+                agentTasks: {
+                  ...agentTasksUnavailable,
+                  delegate: ({ id, prompt }) =>
                     Effect.gen(function* () {
                       assert.strictEqual(prompt, "first")
                       yield* Deferred.succeed(firstStarted, undefined)
                       yield* Deferred.await(secondStarted)
-                      return {
-                        id: "1",
-                        status: "completed" as const,
-                        output: "first-output",
-                      }
+                      return completedAgent(id, prompt, "first-output")
                     }),
                 },
               })
@@ -105,18 +110,14 @@ describe("RPC subagent executor", () => {
                   'console.log("second:" + (await delegate({ prompt: "second" })).output)',
                 onTaskComplete: () => Effect.void,
                 onImage: () => Effect.void,
-                subagents: {
-                  ...subagentsUnavailable,
-                  delegate: ({ prompt }) =>
+                agentTasks: {
+                  ...agentTasksUnavailable,
+                  delegate: ({ id, prompt }) =>
                     Effect.gen(function* () {
                       assert.strictEqual(prompt, "second")
                       yield* Deferred.succeed(secondStarted, undefined)
                       yield* Deferred.await(firstStarted)
-                      return {
-                        id: "2",
-                        status: "completed" as const,
-                        output: "second-output",
-                      }
+                      return completedAgent(id, prompt, "second-output")
                     }),
                 },
               })
@@ -144,9 +145,9 @@ describe("RPC subagent executor", () => {
                 'console.log("parent:" + (await delegate({ prompt: "outer" })).output)',
               onTaskComplete: () => Effect.void,
               onImage: () => Effect.void,
-              subagents: {
-                ...subagentsUnavailable,
-                delegate: ({ prompt }) =>
+              agentTasks: {
+                ...agentTasksUnavailable,
+                delegate: ({ id, prompt }) =>
                   Effect.gen(function* () {
                     assert.strictEqual(prompt, "outer")
                     const childOutput = yield* executor
@@ -157,16 +158,16 @@ describe("RPC subagent executor", () => {
                           'console.log("child:" + (await delegate({ prompt: "inner" })).output)',
                         onTaskComplete: () => Effect.void,
                         onImage: () => Effect.void,
-                        subagents: {
-                          ...subagentsUnavailable,
-                          delegate: ({ prompt: innerPrompt }) =>
+                        agentTasks: {
+                          ...agentTasksUnavailable,
+                          delegate: ({ id: innerId, prompt: innerPrompt }) =>
                             Effect.sync(() => {
                               assert.strictEqual(innerPrompt, "inner")
-                              return {
-                                id: "2",
-                                status: "completed" as const,
-                                output: "inner-output",
-                              }
+                              return completedAgent(
+                                innerId,
+                                innerPrompt,
+                                "inner-output",
+                              )
                             }),
                         },
                       })
@@ -174,11 +175,11 @@ describe("RPC subagent executor", () => {
                     assert.isTrue(
                       childOutput.join("").endsWith("child:inner-output\n"),
                     )
-                    return {
-                      id: "1",
-                      status: "completed" as const,
-                      output: childOutput.join("").trim().split("\n").at(-1)!,
-                    }
+                    return completedAgent(
+                      id,
+                      prompt,
+                      childOutput.join("").trim().split("\n").at(-1)!,
+                    )
                   }),
               },
             })
@@ -216,11 +217,11 @@ describe("RPC executeUnsafe", () => {
           NodePath.join(environment.cwd, "x.txt"),
           "hello",
         )
-        const agents = yield* executor.executeUnsafe({
-          tool: "listAgents",
+        const tasks = yield* executor.executeUnsafe({
+          tool: "listTasks",
           params: undefined,
         })
-        assert.deepStrictEqual(agents, [])
+        assert.deepStrictEqual(tasks, [])
         const content = yield* executor.executeUnsafe({
           tool: "readFile",
           params: { path: "x.txt", startLine: undefined, lineNumbers: false },
@@ -350,7 +351,7 @@ const runScript = (script: string) =>
         onEnvironment: () => Effect.void,
         script,
         onTaskComplete: () => Effect.void,
-        subagents: subagentsUnavailable,
+        agentTasks: agentTasksUnavailable,
         onImage: () => Effect.void,
       })
       .pipe(Stream.mkString)
@@ -459,7 +460,7 @@ console.log({ name: "my-project", version: "1.0.0", scripts: { check: "oxlint -c
 for (const [mode, executorLayer] of Object.entries(executorModes)) {
   describe(`${mode} executor environment`, () => {
     // A cancelled script keeps the directory it changed to, as an ACP
-    // `session/cancel` or a `stopAgent` continues the same agent afterwards.
+    // `session/cancel` or a `stopTask` continues the same agent afterwards.
     it.live("returns the environment when the caller interrupts", () =>
       Effect.gen(function* () {
         const executor = yield* AgentExecutor.AgentExecutor
@@ -477,7 +478,7 @@ await sleep(60000)`,
                 updates.push(update)
               }),
             onTaskComplete: () => Effect.void,
-            subagents: subagentsUnavailable,
+            agentTasks: agentTasksUnavailable,
             onImage: () => Effect.void,
           })
           .pipe(
@@ -524,7 +525,7 @@ await sleep(60000)`,
                   updates.push(update)
                 }),
               onTaskComplete: () => Effect.void,
-              subagents: subagentsUnavailable,
+              agentTasks: agentTasksUnavailable,
               onImage: () => Effect.void,
             })
             .pipe(
@@ -562,13 +563,19 @@ await sleep(60000)`,
         const executor = yield* AgentExecutor.AgentExecutor
         const { environment } = yield* executor.capabilities
         const output = yield* runScript(`
-const result = await bash({
+const task = await bash({
   command: ${JSON.stringify(gatedCommand(environment.cwd))},
   background: true,
 })
-console.log("RETURNED:", result)`)
-        assert.include(output, "RETURNED:")
-        assert.match(output, /background/i)
+console.log("RETURNED:", JSON.stringify(task))`)
+        const task = JSON.parse(output.split("RETURNED:")[1]!)
+        assert.deepStrictEqual(task, {
+          id: "1",
+          kind: "bash",
+          status: "running",
+          description: gatedCommand(environment.cwd),
+          output: "",
+        })
         assert.strictEqual(
           yield* waitForLog(environment.cwd, started),
           "start\n",
@@ -592,13 +599,14 @@ try {
     command: ${JSON.stringify(gatedCommand(environment.cwd))},
     timeoutMs: 60000,
   })
-  console.log("RETURNED:", result)
+  console.log("RETURNED:", typeof result, result)
 } catch (error) {
   console.log("REJECTED:", String(error))
 }`)
-        assert.include(output, "RETURNED:")
+        assert.include(output, "RETURNED: string")
         assert.notInclude(output, "REJECTED:")
         assert.match(output, /background/i)
+        assert.match(output, /\b1\b/, "names the task id")
         assert.strictEqual(
           yield* waitForLog(environment.cwd, started),
           "start\n",
@@ -615,51 +623,70 @@ try {
       ),
     )
 
-    it.live("reports background jobs through jobOutput", () =>
+    it.live("reports background bash tasks through taskOutput", () =>
       Effect.gen(function* () {
         const executor = yield* AgentExecutor.AgentExecutor
         const { environment } = yield* executor.capabilities
         const output = yield* runScript(`
+const show = ({ id, kind, status, exitCode, output }) =>
+  JSON.stringify({ id, kind, status, exitCode, output })
 const done = async (id) => {
-  let job = await jobOutput(id)
-  while (job.status === "running") {
+  let task = await taskOutput(id)
+  while (task.status === "running") {
     await sleep(20)
-    job = await jobOutput(id)
+    task = await taskOutput(id)
   }
-  return job
+  return task
 }
 await bash({ command: ${JSON.stringify(gatedCommand(environment.cwd))}, background: true })
 await bash({ command: "echo out && exit 3", background: true })
-console.log("RUNNING:", JSON.stringify(await jobOutput("1")))
+console.log("RUNNING:", show(await taskOutput("1")))
 await writeFile({ path: "gate", content: "" })
-console.log("COMPLETED:", JSON.stringify(await done("1")))
-console.log("FAILED:", JSON.stringify(await done("2")))`)
-        assert.include(output, 'RUNNING: {"id":"1","status":"running"')
+console.log("COMPLETED:", show(await done("1")))
+console.log("FAILED:", show(await done("2")))`)
         assert.include(
           output,
-          'COMPLETED: {"id":"1","status":"completed","exitCode":0,"output":""}',
+          'RUNNING: {"id":"1","kind":"bash","status":"running","output":""}',
         )
         assert.include(
           output,
-          'FAILED: {"id":"2","status":"failed","exitCode":3,"output":"out\\n"}',
+          'COMPLETED: {"id":"1","kind":"bash","status":"completed","exitCode":0,"output":""}',
+        )
+        assert.include(
+          output,
+          'FAILED: {"id":"2","kind":"bash","status":"failed","exitCode":3,"output":"out\\n"}',
         )
       }).pipe(Effect.timeout("5 seconds"), Effect.provide(executorLayer({}))),
     )
 
-    it.live("stops a background job with stopJob", () =>
+    it.live("stops a background bash task with stopTask", () =>
       Effect.gen(function* () {
         const executor = yield* AgentExecutor.AgentExecutor
         const { environment } = yield* executor.capabilities
         const output = yield* runScript(`
+const show = ({ id, kind, status }) => JSON.stringify({ id, kind, status })
 await bash({ command: ${JSON.stringify(gatedCommand(environment.cwd))}, background: true })
-console.log("STOPPED:", JSON.stringify(await stopJob("1")))
 try {
-  await stopJob("99")
+  await messageAgent({ id: "1", message: "hello" })
+} catch (error) {
+  console.log("MESSAGE-REJECTED:", String(error))
+}
+console.log("STOPPED:", show(await stopTask("1")))
+try {
+  await stopTask("99")
 } catch (error) {
   console.log("REJECTED:", String(error))
 }`)
-        assert.include(output, 'STOPPED: {"id":"1","status":"stopped"')
-        assert.match(output, /REJECTED:.*No background job with id "99"/)
+        assert.match(
+          output,
+          /MESSAGE-REJECTED:.*\bbash\b/,
+          "messageAgent only addresses agent tasks",
+        )
+        assert.include(
+          output,
+          'STOPPED: {"id":"1","kind":"bash","status":"stopped"}',
+        )
+        assert.match(output, /REJECTED:.*No task with id "99".*listTasks\(\)/)
         openGate(environment.cwd)
         yield* Effect.sleep("500 millis")
         assert.notInclude(
@@ -698,7 +725,7 @@ try {
 
     // The log sits outside the executor's directory, which is removed with
     // the executor.
-    it.live("stops background jobs when the executor shuts down", () =>
+    it.live("stops background bash tasks when the executor shuts down", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const directory = yield* fs.makeTempDirectoryScoped()
@@ -762,7 +789,7 @@ try {
             onEnvironment: () => Effect.void,
             onTaskComplete: () => Effect.void,
             onImage: () => Effect.void,
-            subagents: subagentsUnavailable,
+            agentTasks: agentTasksUnavailable,
             script: `
 console.log("before")
 await sleep(10000)
@@ -841,8 +868,8 @@ console.log("MAIN" + "_DONE")`)
 delegate({ prompt: "never finishes" })
 sleep(100).then(() => console.constructor.constructor("return process")().exit(7))`,
               onTaskComplete: () => Effect.void,
-              subagents: {
-                ...subagentsUnavailable,
+              agentTasks: {
+                ...agentTasksUnavailable,
                 delegate: () => Effect.never,
               },
               onImage: () => Effect.void,

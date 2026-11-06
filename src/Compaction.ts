@@ -63,7 +63,7 @@ export const defaultConfig: CompactionConfigService = {
   enabled: true,
   contextWindow: 236_000,
   reserveTokens: 16_000,
-  thresholdTokens: 160_000,
+  thresholdTokens: 200_000,
   keepRecentTokens: 20_000,
 }
 

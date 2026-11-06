@@ -651,17 +651,20 @@ ${prompt}`,
         return childTask(child)
       }),
       taskOutput: (id) => Effect.map(lookupChild(id), reportChild),
-      waitTasks: Effect.fnUntraced(function* (ids) {
+      waitTasks: Effect.fnUntraced(function* (ids, { timeoutMs }) {
         const targets = yield* Effect.forEach(ids, lookupChild)
         // A turn started by messageAgent while waiting is waited for too.
-        while (true) {
-          const running = targets.find(
-            (child) => child.turn.status === "running",
-          )
-          if (!running) break
-          yield* Deferred.await(running.turn.done)
-        }
-        // Reported together, once every agent in the batch has ended.
+        // Agents still running at the deadline keep going.
+        yield* Effect.gen(function* () {
+          while (true) {
+            const running = targets.find(
+              (child) => child.turn.status === "running",
+            )
+            if (!running) break
+            yield* Deferred.await(running.turn.done)
+          }
+        }).pipe(Effect.timeoutOption(timeoutMs))
+        // Reported together: only the agents that ended count as reported.
         return targets.map(reportChild)
       }),
       messageAgent: Effect.fnUntraced(function* ({ id, message }) {
@@ -701,7 +704,7 @@ ${prompt}`,
           const ids = running.map((child) => String(child.id))
           const quoted = ids.map((id) => JSON.stringify(id)).join(", ")
           return Effect.fail(
-            `taskComplete was rejected: sub-agents ${quoted} are still running. Call waitTasks(${JSON.stringify(ids)}) to wait for them, or stopTask(id) to stop them, before calling taskComplete.`,
+            `taskComplete was rejected: sub-agents ${quoted} are still running. Call waitTasks({ ids: ${JSON.stringify(ids)} }) to wait for them, or stopTask(id) to stop them, before calling taskComplete.`,
           )
         }
         finalSummary = Option.some(summary)
@@ -1508,7 +1511,10 @@ const taskInstructions = (tools: PromptTools): string => {
   const functions = (
     [
       ["taskOutput", `"taskOutput" reads one`],
-      ["waitTasks", `"waitTasks" waits for a list of them`],
+      [
+        "waitTasks",
+        `"waitTasks" waits for a list of them and returns any still running at its timeout as "running"`,
+      ],
       ["stopTask", `"stopTask" stops one`],
       ["listTasks", `"listTasks" lists yours`],
     ] as const
@@ -1559,7 +1565,7 @@ const generateSystemTools = (
   tools.offers("bash"),
   `
 - Avoid passing scripts into the "bash" function, and instead write javascript.
-- Pass \`background: true\` to "bash" for commands that keep running, such as dev servers or watchers: it returns a bash task straight away. A command still running at its timeout is moved to the background as a task instead of being stopped.`,
+- "bash" returns a task with the command's output, and rejects when a command that has not been moved to the background fails. Pass \`background: true\` for commands that keep running, such as dev servers or watchers: the task is returned straight away as "running". A command still running at its timeout is moved to the background and returned as "running" instead of being stopped. A background task that fails is reported with status "failed" and its \`exitCode\`.`,
 )}
 - Variables are not shared between executions.
 - Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.${when(

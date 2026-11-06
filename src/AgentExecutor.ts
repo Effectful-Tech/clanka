@@ -989,10 +989,11 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                         ),
                       taskOutput: (id) =>
                         request<Task>({ _tag: "TaskOutput", id }),
-                      waitTasks: (ids) =>
+                      waitTasks: (ids, { timeoutMs }) =>
                         request<ReadonlyArray<Task>>({
                           _tag: "WaitTasks",
                           ids,
+                          timeoutMs,
                         }),
                       messageAgent: (options) =>
                         request<Task>({
@@ -1099,7 +1100,7 @@ export const AgentRequest = Schema.TaggedUnion({
     environment: EnvironmentUpdate,
   },
   TaskOutput: { id: Schema.String },
-  WaitTasks: { ids: Schema.Array(Schema.String) },
+  WaitTasks: { ids: Schema.Array(Schema.String), timeoutMs: Schema.Finite },
   MessageAgent: { id: Schema.String, message: Schema.String },
   StopTask: { id: Schema.String },
   ListTasks: {},
@@ -1294,7 +1295,7 @@ const handleRequest = (
     case "TaskOutput":
       return opts.agentTasks.taskOutput(request.id)
     case "WaitTasks":
-      return opts.agentTasks.waitTasks(request.ids)
+      return opts.agentTasks.waitTasks(request.ids, request)
     case "MessageAgent":
       return opts.agentTasks.messageAgent(request)
     case "StopTask":

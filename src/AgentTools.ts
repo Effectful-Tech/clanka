@@ -7,6 +7,7 @@ import * as ExaSearch from "./ExaSearch.ts"
 import * as WebToMarkdown from "./WebToMarkdown.ts"
 import type * as HttpClient from "effect/http/HttpClient"
 import type * as PlatformError from "effect/PlatformError"
+import * as Clock from "effect/Clock"
 import * as Context from "effect/Context"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
@@ -137,13 +138,16 @@ export interface AgentTasks {
    */
   readonly taskOutput: (id: string) => Effect.Effect<Task, string>
   /**
-   * Wait for the listed agents to end, then report them all at once.
-   * Failures are returned as tasks, not raised. The executor calls it once
-   * per batch, after any bash tasks in the batch have ended, so nothing is
-   * reported while the batch is still waiting.
+   * Wait up to `timeoutMs` for the listed agents to end, then report the
+   * ones that ended all at once. Agents still running at the deadline are
+   * returned as running and keep going. Failures are returned as tasks, not
+   * raised. The executor calls it once per batch, after waiting for any bash
+   * tasks in the batch, with the time left, so nothing is reported while the
+   * batch is still waiting.
    */
   readonly waitTasks: (
     ids: ReadonlyArray<string>,
+    options: { readonly timeoutMs: number },
   ) => Effect.Effect<ReadonlyArray<Task>, string>
   /**
    * Steer a running agent, or start a new turn on a finished one.
@@ -242,7 +246,8 @@ export interface TaskHandle {
 
 /**
  * Receives every background `bash` task as it starts: those started with
- * `background: true` and those moved to the background at their timeout.
+ * `background: true` and those moved to the background at their timeout. A
+ * command that `bash` returns finished is never handed over.
  * The executor sets it from `ExecuteOptions.onTask`.
  *
  * @since 1.0.0
@@ -301,7 +306,7 @@ export class CommandLimits extends Context.Reference<{
 export const makeBashTool = (timeout: Duration.Duration) =>
   Tool.make("bash", {
     description:
-      'Run a bash command and return the output. With `background: true` it returns a running bash task straight away while the command keeps running. A command still running at its timeout is not stopped: it is moved to the background, and the output so far is returned with its task id. Read a task with "taskOutput" and stop it with "stopTask".',
+      'Run a bash command and return its task: id, status, exit code and output. A command that fails before it is returned rejects with its exit code and output. With `background: true` it returns straight away with status "running" while the command keeps going. A command still running at its timeout is not stopped: it is moved to the background and returned as "running" with the output so far. Address the task by its id with the task functions; a background task that fails is reported with status "failed" and its exitCode.',
     parameters: Schema.Struct({
       command: Schema.String,
       timeoutMs: Schema.optional(Schema.Finite).annotate({
@@ -309,12 +314,12 @@ export const makeBashTool = (timeout: Duration.Duration) =>
       }),
       background: Schema.optional(Schema.Boolean).annotate({
         documentation:
-          "Start the command in the background and return its task without waiting",
+          'Start the command in the background and return it as "running" without waiting',
       }),
     }).annotate({
       identifier: "command",
     }),
-    success: Schema.Union([Schema.String, Task]),
+    success: Task,
     dependencies: [CurrentDirectory],
   })
 
@@ -433,9 +438,13 @@ export const AgentTools = Toolkit.make(
   }),
   Tool.make("waitTasks", {
     description:
-      'Wait until the given tasks have ended and return them. A failed task is returned with status "failed" and its error as the output; it does not throw.',
-    parameters: Schema.Array(Schema.String).annotate({
-      identifier: "ids",
+      'Wait until the given tasks have ended and return them, in the order given. Tasks still running when the timeout passes are returned as "running" and keep going. A failed task is returned with status "failed" and its error as the output; it does not throw.',
+    parameters: Schema.Struct({
+      ids: Schema.Array(Schema.String),
+      timeoutMs: Schema.optional(Schema.Finite).annotate({
+        documentation:
+          "How long to wait in ms (default and max: the bash command timeout)",
+      }),
     }),
     success: Schema.Array(Task),
     failure: Schema.String,
@@ -606,22 +615,27 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
       tasks.set(id, { kind: "agent", id, owner: yield* TaskOwner })
       return id
     })
+    // Every `bash` command is a task, so any of them can be addressed by
+    // id. Only the ones still running when `bash` returns go to the
+    // `TaskWatcher`.
     const addBashTask = Effect.fnUntraced(function* (
       description: string,
       command: Omit<RunningCommand, "reported">,
     ) {
-      const id = String(nextTaskId++)
       const entry: BashEntry = {
         kind: "bash",
-        id,
+        id: String(nextTaskId++),
         owner: yield* TaskOwner,
         description,
         command: { ...command, reported: false },
       }
-      tasks.set(id, entry)
+      tasks.set(entry.id, entry)
+      return entry
+    })
+    const watchBashTask = Effect.fnUntraced(function* (entry: BashEntry) {
       const watch = yield* TaskWatcher
       yield* watch({
-        id,
+        id: entry.id,
         kind: "bash",
         await: Fiber.await(entry.command.fiber).pipe(
           Effect.map(() => bashTask(entry)),
@@ -632,7 +646,6 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           return true
         }),
       })
-      return entry
     })
     const findTask = Effect.fnUntraced(function* (id: string) {
       const owner = yield* TaskOwner
@@ -644,41 +657,6 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
       }
       return entry
     })
-    // A command still running at its timeout is stopped, or with
-    // `background` handed over as a bash task. A caller that is interrupted first
-    // stops it either way.
-    const runCommand = Effect.fnUntraced(function* (
-      command: ChildProcess.Command,
-      timeout: Duration.Duration | undefined,
-      onTimeout: "stop" | { readonly background: string },
-    ) {
-      const running = yield* startCommand(command)
-      const awaited = Fiber.await(running.fiber)
-      const exit = yield* (
-        timeout === undefined
-          ? Effect.asSome(awaited)
-          : Effect.timeoutOption(awaited, timeout)
-      ).pipe(Effect.onInterrupt(() => Fiber.interrupt(running.fiber)))
-      if (Option.isNone(exit)) {
-        const timeoutMs = Duration.toMillis(timeout!)
-        if (onTimeout === "stop") {
-          yield* Fiber.interrupt(running.fiber)
-          return yield* Effect.die(
-            new Error(`Command timed out after ${timeoutMs}ms`),
-          )
-        }
-        const { id } = yield* addBashTask(onTimeout.background, running)
-        const output = running.output()
-        return `${output}${output === "" || output.endsWith("\n") ? "" : "\n"}[Still running after ${timeoutMs}ms, so it was moved to the background as task ${id}. Use taskOutput("${id}") for its status and output, or stopTask("${id}") to stop it.]`
-      }
-      const exitCode = yield* exit.value
-      const output = running.output()
-      if (exitCode === 0) return output
-      return yield* Effect.die(
-        new Error(`Command failed with exit code ${exitCode}: ${output}`),
-      )
-    })
-
     /**
      * Image branch of `readFile`: the bytes go to the `ImageAttacher` for
      * the next model turn and the script only sees a marker.
@@ -881,8 +859,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         )
       }),
       bash: Effect.fn("AgentTools.bash")(function* (options) {
-        const limits = yield* CommandLimits
-        const maxMs = Duration.toMillis(limits.timeout ?? defaultBashTimeout)
+        const maxMs = bashTimeoutMs(yield* CommandLimits)
         const timeoutMs = Math.min(options.timeoutMs ?? maxMs, maxMs)
         yield* Effect.logInfo(`Calling "bash"`).pipe(
           Effect.annotateLogs({
@@ -895,16 +872,33 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           cwd,
           stdin: "ignore",
         })
-        if (options.background === true) {
-          const entry = yield* addBashTask(
-            options.command,
-            yield* startCommand(cmd),
+        const entry = yield* addBashTask(
+          options.command,
+          yield* startCommand(cmd),
+        )
+        if (options.background !== true) {
+          const exit = yield* awaitCommand(
+            entry.command,
+            Duration.millis(timeoutMs),
           )
-          return bashTask(entry)
+          if (Option.isSome(exit)) {
+            // A finished command is reported here, so it is never pushed.
+            const exitCode = yield* exit.value
+            const task = reportBash(entry)
+            if (exitCode === 0) return task
+            return yield* Effect.die(
+              new Error(
+                `Command failed with exit code ${exitCode}: ${task.output}`,
+              ),
+            )
+          }
         }
-        return yield* runCommand(cmd, Duration.millis(timeoutMs), {
-          background: options.command,
-        })
+        // Snapshot the task before yielding to the watcher: the command can
+        // finish while it is being handed over, and its final state must
+        // reach the model only once. A finished task is never handed over.
+        const task = reportBash(entry)
+        if (task.status === "running") yield* watchBashTask(entry)
+        return task
       }, Effect.orDie),
       taskOutput: Effect.fn("AgentTools.taskOutput")(function* (
         input: unknown,
@@ -919,9 +913,11 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         return yield* agentTasks.taskOutput(id)
       }),
       waitTasks: Effect.fn("AgentTools.waitTasks")(function* (input: unknown) {
-        const ids = yield* decodeWaitTasks(input)
+        const { ids, timeoutMs: requestedMs } = yield* decodeWaitTasks(input)
+        const maxMs = bashTimeoutMs(yield* CommandLimits)
+        const timeoutMs = Math.min(requestedMs ?? maxMs, maxMs)
         yield* Effect.logInfo(`Calling "waitTasks"`).pipe(
-          Effect.annotateLogs({ ids }),
+          Effect.annotateLogs({ ids, timeoutMs }),
         )
         const entries = yield* Effect.forEach(ids, findTask)
         const bashEntries = entries.filter(
@@ -931,19 +927,29 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           entry.kind === "agent" ? [entry.id] : [],
         )
         const agentTasks = yield* AgentTaskExecutor
-        // Nothing is reported until every task has ended: a script stopped
-        // while it waits never receives the batch, so the tasks that ended
+        // Nothing is reported until the batch is ready to return: a script
+        // stopped while it waits never receives it, so the tasks that ended
         // first must still be pushed. The bash tasks are waited for first,
         // without reporting them. Then one `AgentTasks.waitTasks` call waits
-        // for the agents and reports them together, so over RPC only its
-        // single response can be cut off. The agents keep running meanwhile.
+        // for the agents with the time left and reports them together, so
+        // over RPC only its single response can be cut off. The agents keep
+        // running meanwhile. Tasks still running at the deadline are
+        // returned as running and keep going.
+        const startedAt = yield* Clock.currentTimeMillis
         yield* Effect.forEach(
           bashEntries,
           (entry) => Fiber.await(entry.command.fiber),
           { concurrency: "unbounded", discard: true },
-        )
+        ).pipe(Effect.timeoutOption(timeoutMs))
         const agentResults =
-          agentIds.length === 0 ? [] : yield* agentTasks.waitTasks(agentIds)
+          agentIds.length === 0
+            ? []
+            : yield* agentTasks.waitTasks(agentIds, {
+                timeoutMs: Math.max(
+                  0,
+                  timeoutMs - ((yield* Clock.currentTimeMillis) - startedAt),
+                ),
+              })
         const ended = new Map(
           [...bashEntries.map(reportBash), ...agentResults].map((task) => [
             task.id,
@@ -988,7 +994,22 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           stdin: "ignore",
         })
         const { timeout } = yield* CommandLimits
-        return yield* runCommand(cmd, timeout, "stop")
+        const running = yield* startCommand(cmd)
+        const exit = yield* awaitCommand(running, timeout)
+        if (Option.isNone(exit)) {
+          yield* Fiber.interrupt(running.fiber)
+          return yield* Effect.die(
+            new Error(
+              `Command timed out after ${Duration.toMillis(timeout!)}ms`,
+            ),
+          )
+        }
+        const exitCode = yield* exit.value
+        const output = running.output()
+        if (exitCode === 0) return output
+        return yield* Effect.die(
+          new Error(`Command failed with exit code ${exitCode}: ${output}`),
+        )
       }, Effect.orDie),
       webSearch: Effect.fn("AgentTools.webSearch")(function* (options) {
         yield* Effect.logInfo(`Calling "webSearch"`).pipe(
@@ -1234,8 +1255,12 @@ const decodeTaskOutput = decodeParams(
 )
 const decodeWaitTasks = decodeParams(
   AgentTools.tools.waitTasks.parametersSchema,
-  'waitTasks requires an array of task ids, for example: waitTasks(["3", "4"]).',
+  'waitTasks requires an options object, for example: waitTasks({ ids: ["3", "4"] }) or waitTasks({ ids: ["3"], timeoutMs: 60000 }).',
 )
+
+/** The caller's `bash` timeout, which also bounds `waitTasks`. */
+const bashTimeoutMs = (limits: typeof CommandLimits.Service) =>
+  Duration.toMillis(limits.timeout ?? defaultBashTimeout)
 const decodeStopTask = decodeParams(
   AgentTools.tools.stopTask.parametersSchema,
   'stopTask requires a task id, for example: stopTask("1").',
@@ -1252,6 +1277,20 @@ interface RunningCommand {
    * model as well.
    */
   reported: boolean
+}
+
+// Waits up to `timeout` for a command to exit. A caller that is
+// interrupted first stops the command.
+const awaitCommand = (
+  command: Omit<RunningCommand, "reported">,
+  timeout: Duration.Duration | undefined,
+) => {
+  const awaited = Fiber.await(command.fiber)
+  return (
+    timeout === undefined
+      ? Effect.asSome(awaited)
+      : Effect.timeoutOption(awaited, timeout)
+  ).pipe(Effect.onInterrupt(() => Fiber.interrupt(command.fiber)))
 }
 
 interface BashEntry {

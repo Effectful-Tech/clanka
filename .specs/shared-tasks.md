@@ -37,33 +37,43 @@ interface Task {
 ## Script API
 
 ```ts
-bash({ command, timeoutMs?, background? }): string | Task
+bash({ command, timeoutMs?, background? }): Task
 delegate({ prompt, background? }): Task
 taskOutput(id): Task
-waitTasks(ids): Array<Task>
+waitTasks({ ids, timeoutMs? }): Array<Task>
 stopTask(id): Task
 listTasks(): Array<Task>
 messageAgent({ id, message }): Task
 ```
 
-- `bash` in the foreground returns its output as before. With
-  `background: true` it returns the running bash task. A foreground command
-  still running at its timeout is moved to the background, and the call
-  still returns a string: the output so far and a line naming the task ID.
+- `bash` always returns a bash task, and every call gets an ID, so any
+  command can be read with `taskOutput`. A foreground command that exits 0
+  in time returns `completed` with its output. One that exits with another
+  code rejects with `Command failed with exit code <code>: <output>`, and no
+  task is returned. `background: true` returns the task straight away as
+  `running`. A foreground command still running at its timeout keeps running
+  and is returned as `running` with the output so far.
 - `delegate` in the foreground returns the completed agent task, and a
   failed foreground agent still crashes the script. In the background it
   returns the running agent task.
 - `taskOutput`, `waitTasks`, `stopTask` and `listTasks` take tasks of either
-  kind. `waitTasks` returns the tasks in the order of its IDs. A failed task
-  is returned with `status: "failed"`, not thrown.
+  kind. A failed task is returned with `status: "failed"`, not thrown.
+- `waitTasks` returns the listed tasks in the order of their IDs, once all of
+  them have ended or `timeoutMs` has passed. The timeout covers the whole
+  call and both kinds. It defaults to the caller's command timeout (10
+  minutes unless the caller sets `commandTimeout`), which is also its
+  maximum. Tasks still running at the deadline are returned as `running` and
+  keep going; interrupting the wait stops nothing either. A model whose
+  sub-agents run longer calls `waitTasks` again.
 - `waitTasks` requires IDs. The old `waitAgents()` waited for every child; a
   version that waits for every task would hang on a dev server.
 - `messageAgent` only addresses agent tasks. On a bash task it fails with a
   message naming the task as a bash task.
 - An unknown ID fails with `No task with id "<id>"` and points at
   `listTasks()`.
-- `jobOutput`, `stopJob`, `waitAgents`, `stopAgent` and `listAgents` are gone,
-  with no aliases. The model reads the type declarations every run.
+- `jobOutput`, `waitJob`, `stopJob`, `waitAgents`, `stopAgent` and
+  `listAgents` are gone, with no aliases. The model reads the type
+  declarations every run.
 
 ## IDs and ownership
 
@@ -108,18 +118,25 @@ The rules of each kind stay as they were:
 
   `exitCode` is left out unless a bash command exited on its own.
 
-- A final state is reported when a task function returned it: `taskOutput`
-  that saw the final status, `waitTasks`, or `stopTask`. Foreground agent
-  results are reported by `delegate` itself. Reported tasks are not pushed.
-- `waitTasks` reports nothing until every task in the batch has ended. A
-  script stopped while it waits, for example at its timeout, never receives
-  the batch, so the tasks that ended first are still pushed.
-  The executor waits for the batch's bash tasks first, without reporting
-  them. It then makes one `AgentTasks.waitTasks` call, which waits for the
-  agents and reports them together, and reports the bash tasks last. Over
-  RPC only that call's single response can be cut off. The order matters:
-  a `waitTasks` call made alongside the bash wait would report the agents
-  while a bash task is still pending.
+- A final state is reported when a task function returned it: `bash`,
+  `taskOutput` that saw the final status, `waitTasks`, or `stopTask`.
+  Foreground agent results are reported by `delegate` itself. Reported tasks
+  are not pushed. A bash task that `bash` returns finished is never handed to
+  the agent at all, so it emits no `JobComplete` event either. `bash` takes
+  one snapshot of a running task before handing it over and returns that
+  snapshot, so the final state reaches the model once.
+- `waitTasks` reports nothing until the batch is ready to return. A script
+  stopped while it waits, for example at its own timeout, never receives the
+  batch, so the tasks that ended first are still pushed. In a returned
+  batch, ended tasks count as reported, and tasks still running are pushed
+  when they end.
+- The executor waits for the batch's bash tasks first, up to the deadline,
+  without reporting them. It then makes one `AgentTasks.waitTasks` call with
+  the time left, which waits for the agents and reports the ones that ended
+  together, and reports the bash tasks last. Over RPC only that call's
+  single response can be cut off. The order matters: a `waitTasks` call made
+  alongside the bash wait would report the agents while a bash task is
+  still pending. The `WaitTasks` RPC request carries the time left.
 - Both kinds are drained by one loop in the Agent, right before the model
   call. Bash tasks are claimed from the executor at that point, so a
   `taskOutput` read between the end of a task and the push still wins.
@@ -128,12 +145,18 @@ The rules of each kind stay as they were:
 
 ## Prompt
 
+- The `bash` bullet states that `bash` returns a task, rejects when a
+  foreground command fails, and reports a failed background task as
+  `failed` with its `exitCode`.
 - The system prompt has one bullet for tasks. It names only the task
-  functions the executor offers.
+  functions the executor offers, and says that `waitTasks` returns tasks
+  still running at its timeout as `running`.
 - It describes the `<task>` message only when `Capabilities.taskPushes` is
   set, and otherwise tells the model to check bash tasks with `taskOutput`.
-  The `delegate` bullet and the tool descriptions never name the message, as
-  the executor renders the tool declarations for clients of every version.
+  The `delegate` bullet and the tool descriptions never name the message,
+  as the executor renders the tool declarations for clients of every
+  version. The `bash` description names no task function, so a caller that
+  leaves one out never sees it mentioned.
 
 ## Executors
 
@@ -163,6 +186,5 @@ The rules of each kind stay as they were:
 
 - The output events `SubagentStart`, `SubagentComplete` and `JobComplete`,
   and their CLI and ACP rendering, are unchanged.
-- `bash` renders as one signature returning `Promise<string | Task>`, and the
-  `Task` type is written out in each declaration. Overloads keyed on
-  `background: true` and a shared `Task` declaration need renderer support.
+- The `Task` type is written out in each declaration. A shared `Task`
+  declaration needs renderer support.

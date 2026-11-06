@@ -1,5 +1,9 @@
 # Background bash commands
 
+> Superseded in part by [Shared tasks](./shared-tasks.md): the script API,
+> IDs, statuses, push message and executor interfaces below are replaced
+> there. The lifetime rules still apply.
+
 ## Overview
 
 `bash` can run a command in the background, and a command that reaches its

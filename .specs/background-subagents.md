@@ -1,5 +1,9 @@
 # Background sub-agents
 
+> Superseded in part by [Shared tasks](./shared-tasks.md): the script API,
+> IDs, statuses, push message and executor interfaces below are replaced
+> there. The lifetime rules still apply.
+
 ## Overview
 
 `delegate` can start a sub-agent in the background. The sub-agent keeps

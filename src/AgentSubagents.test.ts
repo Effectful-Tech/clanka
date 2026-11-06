@@ -972,3 +972,71 @@ console.log("RETURNED")`,
     )
   })
 }
+
+// Over RPC every task callback is a round trip to the client. Responses that
+// take 400ms each, against a 1 second script limit, leave no time for one
+// round trip per agent after the wait: all of the batch must be reported in
+// one, or results that were marked reported are neither returned nor pushed.
+const slow = <A, E>(effect: Effect.Effect<A, E>) =>
+  Effect.tap(effect, () => Effect.sleep("400 millis"))
+
+const slowCallbacks = (
+  tasks: AgentExecutor.ExecuteAgentTasks,
+): AgentExecutor.ExecuteAgentTasks => ({
+  ...tasks,
+  taskOutput: (id) => slow(tasks.taskOutput(id)),
+  waitTasks: (ids) => slow(tasks.waitTasks(ids)),
+  messageAgent: (options) => slow(tasks.messageAgent(options)),
+  stopTask: (id) => slow(tasks.stopTask(id)),
+  listTasks: slow(tasks.listTasks),
+})
+
+describe("agent tasks (rpc executor, slow callbacks)", () => {
+  it.live("every result of a waitTasks batch reaches the model", () =>
+    Effect.gen(function* () {
+      const executor = yield* AgentExecutor.AgentExecutor
+      const slowExecutor = AgentExecutor.AgentExecutor.of({
+        ...executor,
+        execute: (options) =>
+          executor.execute({
+            ...options,
+            agentTasks: slowCallbacks(options.agentTasks),
+          }),
+      })
+      const { exit, calls } = yield* runAgent({
+        conversationMode: true,
+        respond: (call) => {
+          if (call.role === "child") {
+            return complete(
+              firstUserText(call.prompt).includes("TASK-CHILD-A")
+                ? "CHILD-A-OUT"
+                : "CHILD-B-OUT",
+            )
+          }
+          switch (call.index) {
+            case 0:
+              return Stream.make(
+                toolCall(
+                  "wait",
+                  `const a = await delegate({ prompt: "TASK-CHILD-A", background: true })
+const b = await delegate({ prompt: "TASK-CHILD-B", background: true })
+const ended = await waitTasks([a.id, b.id])
+console.log(ended.map((task) => task.output).join(" "))`,
+                ),
+              )
+            case 1:
+              return Stream.fromIterable(text("done"))
+            default:
+              return unexpected(call)
+          }
+        },
+      }).pipe(Effect.provideService(AgentExecutor.AgentExecutor, slowExecutor))
+
+      assert.deepStrictEqual(exit, Exit.succeed("done"))
+      const prompt = calls.filter((call) => call.role === "root")[1]!.prompt
+      const seen = [lastToolResult(prompt), ...pushTexts(prompt)].join("\n")
+      assert.include(seen, "CHILD-A-OUT", "returned or pushed")
+      assert.include(seen, "CHILD-B-OUT", "returned or pushed")
+    }).pipe(Effect.provide(rpcExecutorLayer({ scriptTimeout: "1 second" }))),
+  )
+})

@@ -720,6 +720,20 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         if (Option.isSome(imageType)) {
           return yield* readImage(path, imageType.value, options)
         }
+        if (
+          options.lineNumbers === false &&
+          !options.startLine &&
+          !options.endLine
+        ) {
+          // Return the file verbatim, keeping its trailing newline and line
+          // endings so the text can be written back unchanged.
+          return yield* fs.readFileString(path).pipe(
+            Effect.catchReason("PlatformError", "NotFound", () =>
+              Effect.succeed(null),
+            ),
+            Effect.orDie,
+          )
+        }
         let stream = pipe(fs.stream(path), Stream.decodeText, Stream.splitLines)
         if (options.startLine) {
           stream = Stream.drop(stream, options.startLine - 1)

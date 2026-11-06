@@ -8,7 +8,12 @@ import * as Path from "effect/Path"
 import * as AgentExecutor from "./AgentExecutor.ts"
 
 describe("readFile line numbers", () => {
-  const cases = [
+  const cases: ReadonlyArray<{
+    readonly name: string
+    readonly options: Record<string, unknown>
+    readonly expected: string
+    readonly content?: string
+  }> = [
     {
       name: "numbers lines by default",
       options: {},
@@ -29,9 +34,15 @@ describe("readFile line numbers", () => {
       options: { lineNumbers: true, startLine: 2, endLine: 3 },
       expected: "2: beta\n3: gamma",
     },
+    {
+      name: "preserves the trailing newline when unnumbered",
+      options: { lineNumbers: false },
+      content: "alpha\nbeta\n",
+      expected: "alpha\nbeta\n",
+    },
   ]
 
-  for (const { name, options, expected } of cases) {
+  for (const { name, options, expected, content } of cases) {
     it.effect(name, () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
@@ -39,7 +50,7 @@ describe("readFile line numbers", () => {
         const project = yield* fs.makeTempDirectoryScoped()
         yield* fs.writeFileString(
           path.join(project, "sample.txt"),
-          "alpha\nbeta\ngamma\ndelta",
+          content ?? "alpha\nbeta\ngamma\ndelta",
         )
         const result = yield* Effect.gen(function* () {
           const executor = yield* AgentExecutor.AgentExecutor

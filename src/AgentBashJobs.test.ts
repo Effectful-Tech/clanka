@@ -20,13 +20,14 @@ import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 
 // =============================================================================
-// Background bash jobs: completion pushes.
+// Background bash tasks: completion pushes and lifecycle.
 //
-// These drive the real Agent loop and a real executor. When a background job
-// exits, the next model call gets a user message
-// `<job id="…" status="…" exitCode="…">output</job>`, unless the job was
-// already reported by `stopJob` or by a `jobOutput` call that saw its final
-// status. Job IDs come from the executor's counter: "1", "2", ...
+// These drive the real Agent loop and a real executor. When a background bash
+// task exits, the next model call gets a user message
+// `<task id="…" kind="bash" status="…" exitCode="…">output</task>`, unless the
+// task was already reported by `stopTask`, `waitTasks` or a `taskOutput` call
+// that saw its final status. Task IDs come from the executor's counter: "1",
+// "2", ...
 // =============================================================================
 
 type Respond = (
@@ -103,11 +104,11 @@ const systemPrompt = (prompts: ReadonlyArray<Prompt.Prompt>): string =>
   messageText(prompts[0]!.content[0]!)
 
 /** The user messages in `prompt` that carry a completion push. */
-const jobPushes = (prompt: Prompt.Prompt): Array<string> =>
+const taskPushes = (prompt: Prompt.Prompt): Array<string> =>
   prompt.content.flatMap((message) => {
     if (message.role !== "user") return []
     const text = messageText(message)
-    return text.includes("<job id=") ? [text] : []
+    return text.includes("<task id=") ? [text] : []
   })
 
 // --- executors ---------------------------------------------------------------
@@ -157,16 +158,16 @@ const executors = [
 // --- tests -------------------------------------------------------------------
 
 for (const [executorName, executorLayer] of executors) {
-  // Each test gets its own executor, so job IDs start at "1".
-  describe(`background bash jobs (${executorName} executor)`, () => {
+  // Each test gets its own executor, so task IDs start at "1".
+  describe(`background bash tasks (${executorName} executor)`, () => {
     it.live(
-      "a finished job is pushed once with its id, status, exit code and output",
+      "a finished bash task is pushed once with its id, kind, status, exit code and output",
       () =>
         Effect.gen(function* () {
           const { exit, prompts } = yield* runAgent((index) => {
             switch (index) {
               case 0:
-                // The script outlives the job, so it has exited before the
+                // The script outlives the task, so it has exited before the
                 // next model call.
                 return execute(
                   "start",
@@ -182,14 +183,14 @@ await sleep(500)`,
 
           assert.deepStrictEqual(exit, Exit.succeed("done"))
           assert.strictEqual(prompts.length, 3)
-          const pushes = jobPushes(prompts[1]!)
+          const pushes = taskPushes(prompts[1]!)
           assert.strictEqual(pushes.length, 1, "pushed before the next call")
           assert.match(
             pushes[0]!,
-            /^<job id="1" status="failed" exitCode="3">\s*JOB-OUTPUT\s*<\/job>$/,
+            /^<task id="1" kind="bash" status="failed" exitCode="3">\s*JOB-OUTPUT\s*<\/task>$/,
           )
           assert.deepStrictEqual(
-            jobPushes(prompts[2]!),
+            taskPushes(prompts[2]!),
             pushes,
             "not pushed a second time",
           )
@@ -197,26 +198,26 @@ await sleep(500)`,
     )
 
     it.live(
-      "a job whose final state stopJob, jobOutput, waitJob or bash returned is not pushed",
+      "a bash task whose final state stopTask, taskOutput, waitTasks or bash returned is not pushed",
       () =>
         Effect.gen(function* () {
           const { exit, prompts } = yield* runAgent((index) => {
             switch (index) {
               case 0:
-                // Job 3 is never read, so it is the only push.
+                // Task 3 is never read, so it is the only push.
                 return execute(
                   "start",
                   `await bash({ command: "sleep 30", background: true })
 await bash({ command: "echo READ", background: true })
 await bash({ command: "echo UNREAD", background: true })
-await stopJob("1")
-let job = await jobOutput("2")
-while (job.status === "running") {
+await stopTask("1")
+let task = await taskOutput("2")
+while (task.status === "running") {
   await sleep(20)
-  job = await jobOutput("2")
+  task = await taskOutput("2")
 }
 await bash({ command: "echo FOREGROUND" })
-await waitJob({ id: (await bash({ command: "echo WAITED", background: true })).id })
+await waitTasks({ ids: [(await bash({ command: "echo WAITED", background: true })).id] })
 await sleep(500)
 console.log("SCRIPT" + "-DONE")`,
                 )
@@ -227,13 +228,44 @@ console.log("SCRIPT" + "-DONE")`,
 
           assert.deepStrictEqual(exit, Exit.succeed("done"))
           assert.strictEqual(prompts.length, 2)
-          const pushes = jobPushes(prompts[1]!)
+          const pushes = taskPushes(prompts[1]!)
           assert.strictEqual(pushes.length, 1)
           assert.match(
             pushes[0]!,
-            /^<job id="3" status="completed" exitCode="0">\s*UNREAD\s*<\/job>$/,
+            /^<task id="3" kind="bash" status="completed" exitCode="0">\s*UNREAD\s*<\/task>$/,
           )
           assert.include(JSON.stringify(prompts[1]), "SCRIPT-DONE")
+        }).pipe(Effect.provide(executorLayer)),
+    )
+
+    // Unlike a sub-agent, a running bash task such as a dev server never holds
+    // the run open. The run timeout fails a run that waits for it.
+    it.live(
+      "a running bash task neither keeps an idle turn alive nor blocks taskComplete",
+      () =>
+        Effect.gen(function* () {
+          const idle = yield* runAgent((index) =>
+            index === 0
+              ? execute(
+                  "start",
+                  `await bash({ command: "sleep 30", background: true })`,
+                )
+              : text("idle"),
+          )
+          assert.deepStrictEqual(idle.exit, Exit.succeed("idle"))
+          assert.strictEqual(idle.prompts.length, 2)
+
+          const completed = yield* runAgent((index) =>
+            index === 0
+              ? execute(
+                  "complete",
+                  `await bash({ command: "sleep 30", background: true })
+await taskComplete("done")`,
+                )
+              : text("taskComplete was rejected"),
+          )
+          assert.deepStrictEqual(completed.exit, Exit.succeed("done"))
+          assert.strictEqual(completed.prompts.length, 1)
         }).pipe(Effect.provide(executorLayer)),
     )
   })
@@ -241,9 +273,9 @@ console.log("SCRIPT" + "-DONE")`,
 
 // Clients and executor servers of different versions must keep working
 // together.
-describe("background bash jobs across versions", () => {
+describe("background bash tasks across versions", () => {
   it.live(
-    "the prompt promises job pushes only when the executor sends them",
+    "the prompt promises task pushes only when the executor sends them",
     () =>
       Effect.gen(function* () {
         const { current, capabilities } = yield* Effect.gen(function* () {
@@ -253,34 +285,34 @@ describe("background bash jobs across versions", () => {
             capabilities: yield* executor.capabilities,
           }
         }).pipe(Effect.provide(localExecutorLayer))
-        assert.include(systemPrompt(current.prompts), '<job id="..."')
+        assert.include(systemPrompt(current.prompts), '<task id="..."')
 
-        // The current executor's tool typings without job pushes: what an
+        // The current executor's tool typings without task pushes: what an
         // older client sees from a current server, or what a custom executor
-        // that does not set `jobPushes` renders.
-        const withoutJobPushes = AgentExecutor.AgentExecutor.of({
+        // that does not set `taskPushes` renders.
+        const withoutTaskPushes = AgentExecutor.AgentExecutor.of({
           capabilities: Effect.succeed(
             new AgentExecutor.Capabilities({
               ...capabilities,
-              jobPushes: false,
+              taskPushes: false,
             }),
           ),
           execute: () => Stream.empty,
           executeUnsafe: () => Effect.die("executeUnsafe not implemented"),
         })
         const older = yield* runAgent(() => text("done")).pipe(
-          Effect.provideService(AgentExecutor.AgentExecutor, withoutJobPushes),
+          Effect.provideService(AgentExecutor.AgentExecutor, withoutTaskPushes),
         )
         const olderPrompt = systemPrompt(older.prompts)
         assert.include(olderPrompt, "bash(", "the tool typings are included")
-        assert.include(olderPrompt, '"jobOutput"')
-        assert.notInclude(olderPrompt, "<job", "no push is promised")
+        assert.include(olderPrompt, '"taskOutput"')
+        assert.notInclude(olderPrompt, "<task", "no push is promised")
       }),
   )
 
-  // A client from before job pushes cannot decode a `Job` part, so one would
-  // end its script with a defect.
-  it.live("the server sends no Job parts to a client that did not ask", () =>
+  // A client from before task pushes cannot decode a `Task` part, so one
+  // would end its script with a defect.
+  it.live("the server sends no Task parts to a client that did not ask", () =>
     Effect.gen(function* () {
       const client = yield* RpcClient.make(AgentExecutor.Rpcs)
       const { environment } = yield* client.capabilities()
@@ -293,7 +325,7 @@ describe("background bash jobs across versions", () => {
         .pipe(Stream.runCollect)
       const tags = parts.map((part) => part._tag)
       assert.include(tags, "Environment", "the script ran")
-      assert.notInclude(tags, "Job")
+      assert.notInclude(tags, "Task")
     }).pipe(Effect.scoped, Effect.provide(rpcProtocolLayer)),
   )
 })

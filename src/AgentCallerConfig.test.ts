@@ -26,7 +26,7 @@ import * as RpcServer from "effect/rpc/RpcServer"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as AgentSkills from "./AgentSkills.ts"
-import { type ExcludableTool, subagentsUnavailable } from "./AgentTools.ts"
+import { type ExcludableTool, agentTasksUnavailable } from "./AgentTools.ts"
 
 // =============================================================================
 // Caller-selected tools, instructions, skills and loop-side tools.
@@ -218,7 +218,7 @@ const execute = (
         onEnvironment: () => Effect.void,
         onTaskComplete: () => Effect.void,
         onImage: () => Effect.void,
-        subagents: subagentsUnavailable,
+        agentTasks: agentTasksUnavailable,
         loopTools,
       })
       .pipe(Stream.mkString)
@@ -236,7 +236,7 @@ for (const mode of modes) {
           executor: {
             excludeTools: ["gh", "webSearch", "fetchMarkdown", "delegate"],
           },
-          script: `const missing = [typeof gh, typeof webSearch, typeof fetchMarkdown, typeof delegate, typeof waitAgents].join(",")
+          script: `const missing = [typeof gh, typeof webSearch, typeof fetchMarkdown, typeof delegate, typeof messageAgent].join(",")
 let call
 try {
   await gh(["pr", "view"])
@@ -252,9 +252,41 @@ await taskComplete(missing + " " + call)`,
         )
         assert.notMatch(
           system,
-          /\b(gh|webSearch|fetchMarkdown|delegate|waitAgents|messageAgent|stopAgent|listAgents)\b/,
+          /\b(gh|webSearch|fetchMarkdown|delegate|messageAgent)\b/,
         )
         assert.include(system, "declare function readFile(")
+      }),
+    )
+
+    // The shared task functions address bash and agent tasks, so they stay
+    // while either kind can still be started.
+    it.live("the task functions go only when bash and delegate both go", () =>
+      Effect.gen(function* () {
+        const tasks =
+          "[typeof taskOutput, typeof waitTasks, typeof stopTask, typeof listTasks].join()"
+        const withBash = yield* runAgent({
+          mode,
+          executor: { excludeTools: ["delegate"] },
+          script: `await taskComplete(${tasks})`,
+        })
+        assert.strictEqual(
+          withBash.summary,
+          "function,function,function,function",
+        )
+        const withNeither = yield* runAgent({
+          mode,
+          executor: { excludeTools: ["bash", "delegate"] },
+          script: `await taskComplete(${tasks})`,
+        })
+        assert.strictEqual(
+          withNeither.summary,
+          "undefined,undefined,undefined,undefined",
+        )
+        assert.notMatch(
+          withNeither.system,
+          /\b(taskOutput|waitTasks|stopTask|listTasks)\b/,
+        )
+        assert.notInclude(withNeither.system, "<task")
       }),
     )
 
@@ -404,12 +436,12 @@ describe("agent", () => {
       // applyPatch hint and the executor's skills catalog.
       const { system, summary } = yield* runAgent({
         mode: "local",
-        executor: { excludeTools: ["waitAgents", "applyPatch", "readFile"] },
+        executor: { excludeTools: ["waitTasks", "applyPatch", "readFile"] },
         script:
-          "await taskComplete([typeof waitAgents, typeof applyPatch, typeof readFile].join())",
+          "await taskComplete([typeof waitTasks, typeof applyPatch, typeof readFile].join())",
       })
       assert.strictEqual(summary, "undefined,undefined,undefined")
-      assert.notMatch(system, /\b(waitAgents|applyPatch|readFile)\b/)
+      assert.notMatch(system, /\b(waitTasks|applyPatch|readFile)\b/)
       assert.include(system, "declare function delegate(")
     }),
   )

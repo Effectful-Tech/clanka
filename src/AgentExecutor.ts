@@ -8,12 +8,10 @@ import { Writable } from "node:stream"
 import { Worker } from "node:worker_threads"
 import type * as NodeWorkerThreads from "node:worker_threads"
 import {
+  AgentTaskExecutor,
+  type AgentTasks,
+  agentTasksUnavailable,
   AgentToolHandlers,
-  type BackgroundJob,
-  BashJob,
-  type DelegateResult,
-  type SubagentInfo,
-  type SubagentResult,
   AgentTools,
   AgentToolsWithSearch,
   CommandLimits,
@@ -23,12 +21,13 @@ import {
   type ExcludableTool,
   ImageAttacher,
   type ImageAttachment,
-  JobWatcher,
   makeBashTool,
-  SubagentExecutor,
-  type Subagents,
-  subagentsUnavailable,
+  Task,
   TaskCompleter,
+  type TaskHandle,
+  TaskKind,
+  TaskOwner,
+  TaskWatcher,
 } from "./AgentTools.ts"
 import * as Image from "./Image.ts"
 import { ToolkitRenderer } from "./ToolkitRenderer.ts"
@@ -132,19 +131,25 @@ export interface ExecuteOptions {
    */
   readonly onTaskComplete: (summary: string) => Effect.Effect<void, string>
   /**
+   * The agent running the script. Background bash tasks are scoped to it,
+   * like the sub-agents in `agentTasks`: the task functions only see tasks
+   * started under the same id. Scripts without one share their tasks.
+   */
+  readonly agentId?: string | undefined
+  /**
    * The sub-agents of the agent running the script.
    */
-  readonly subagents: ExecuteSubagents
+  readonly agentTasks: ExecuteAgentTasks
   /**
    * Receives every image `readFile` attached while the script ran.
    */
   readonly onImage: (image: ImageAttachment) => Effect.Effect<void>
   /**
-   * Receives every background `bash` job the script starts, including a
-   * command moved to the background at its timeout. The job can outlive the
+   * Receives every background `bash` task the script starts, including a
+   * command moved to the background at its timeout. The task can outlive the
    * script, so `await` and `claim` stay usable after it ends.
    */
-  readonly onJob?: ((job: BackgroundJob) => Effect.Effect<void>) | undefined
+  readonly onTask?: ((task: TaskHandle) => Effect.Effect<void>) | undefined
   /**
    * Functions added to the script sandbox whose handlers run on the loop
    * side, next to the Agent.
@@ -161,12 +166,13 @@ export interface ExecuteOptions {
  * @since 1.0.0
  * @category Models
  */
-export interface ExecuteSubagents extends Omit<Subagents, "delegate"> {
+export interface ExecuteAgentTasks extends Omit<AgentTasks, "delegate"> {
   readonly delegate: (options: {
+    readonly id: string
     readonly prompt: string
     readonly background: boolean
     readonly environment: EnvironmentUpdate
-  }) => Effect.Effect<DelegateResult>
+  }) => Effect.Effect<Task>
 }
 
 /**
@@ -250,12 +256,12 @@ export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
     Schema.withConstructorDefault(Effect.succeed([])),
   ),
   /**
-   * Whether the executor hands background `bash` jobs to
-   * `ExecuteOptions.onJob`, so the agent can push their results. Executors
-   * and executor servers from before job pushes leave it out, and then the
-   * model is told to poll with `jobOutput`.
+   * Whether the executor hands background `bash` tasks to
+   * `ExecuteOptions.onTask`, so the agent can push their results. Executors
+   * and executor servers from before task pushes leave it out, and then the
+   * model is told to poll with `taskOutput`.
    */
-  jobPushes: Schema.Boolean.pipe(
+  taskPushes: Schema.Boolean.pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(false)),
     Schema.withConstructorDefault(Effect.succeed(false)),
   ),
@@ -307,8 +313,8 @@ export interface LocalOptions<Toolkit extends Toolkit.Any = never> {
   readonly limits?: Limits | undefined
   /**
    * Built-in tools to leave out of the sandbox and the type declarations.
-   * Leaving out `delegate` also leaves out the tools that address its
-   * sub-agents.
+   * Leaving out `delegate` also leaves out `messageAgent`, and leaving out
+   * both `delegate` and `bash` leaves out the task functions.
    */
   readonly excludeTools?: ReadonlyArray<ExcludableTool> | undefined
 }
@@ -324,7 +330,7 @@ type LocalServices<Toolkit> =
         : never,
       | CurrentDirectory
       | DirectoryChanger
-      | SubagentExecutor
+      | AgentTaskExecutor
       | TaskCompleter
       | ImageAttacher
     >
@@ -507,19 +513,20 @@ const makeLocalWith = Effect.fnUntraced(function* <
     const taskServices = Context.empty().pipe(
       Context.add(TaskCompleter, opts.onTaskComplete),
       Context.add(DirectoryChanger, changeDirectory),
-      Context.add(SubagentExecutor, {
-        ...opts.subagents,
+      Context.add(AgentTaskExecutor, {
+        ...opts.agentTasks,
         // A new agent has only the system prompt, so it gets everything that
         // applies to the directory.
         delegate: (options) =>
           renderEnvironment(currentEnvironment(), { reset: true }).pipe(
             Effect.flatMap((environment) =>
-              opts.subagents.delegate({ ...options, environment }),
+              opts.agentTasks.delegate({ ...options, environment }),
             ),
           ),
       }),
       Context.add(ImageAttacher, opts.onImage),
-      Context.add(JobWatcher, opts.onJob ?? (() => Effect.void)),
+      Context.add(TaskWatcher, opts.onTask ?? (() => Effect.void)),
+      Context.add(TaskOwner, opts.agentId),
       Context.add(CommandLimits, commandLimits),
       Context.add(Console.Console, console),
       Context.add(References.CurrentLogAnnotations, {}),
@@ -681,7 +688,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
         }),
         tools: Object.keys(tools.tools),
         skills,
-        jobPushes: true,
+        taskPushes: true,
       })
     }),
     execute: (opts) => execute(opts),
@@ -704,7 +711,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
           Context.add(DirectoryChanger, (directory) =>
             resolveDirectory(cwd, directory),
           ),
-          Context.add(SubagentExecutor, subagentsUnavailable),
+          Context.add(AgentTaskExecutor, agentTasksUnavailable),
           // Direct tool calls have no model turn to attach images to.
           Context.add(ImageAttacher, () => Effect.void),
           Context.add(CommandLimits, commandLimits),
@@ -750,7 +757,8 @@ export const makeRpc = Effect.gen(function* () {
             script: opts.script,
             environment: opts.environment,
             loopTools: Object.keys(opts.loopTools ?? {}),
-            ...(opts.onJob === undefined ? {} : { watchJobs: true }),
+            ...(opts.agentId === undefined ? {} : { agentId: opts.agentId }),
+            ...(opts.onTask === undefined ? {} : { watchTasks: true }),
           })
           .pipe(
             Stream.tap((part) => {
@@ -783,13 +791,14 @@ export const makeRpc = Effect.gen(function* () {
                   latest = part.environment
                   return Effect.void
                 }
-                case "Job": {
-                  if (opts.onJob === undefined) return Effect.void
+                case "Task": {
+                  if (opts.onTask === undefined) return Effect.void
                   const id = part.id
-                  return opts.onJob({
+                  return opts.onTask({
                     id,
-                    await: Effect.orDie(client.awaitJob({ id })),
-                    claim: Effect.orDie(client.claimJob({ id })),
+                    kind: part.kind,
+                    await: Effect.orDie(client.awaitTask({ id })),
+                    claim: Effect.orDie(client.claimTask({ id })),
                   })
                 }
               }
@@ -841,7 +850,7 @@ export const layerLocal = <Toolkit extends Toolkit.Any = never>(
         : never,
       | CurrentDirectory
       | DirectoryChanger
-      | SubagentExecutor
+      | AgentTaskExecutor
       | TaskCompleter
       | ImageAttacher
     >
@@ -884,7 +893,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
         : never,
       | CurrentDirectory
       | DirectoryChanger
-      | SubagentExecutor
+      | AgentTaskExecutor
       | TaskCompleter
       | ImageAttacher
     >
@@ -902,25 +911,25 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
             (effect: Effect.Effect<unknown, string>) => void
           >()
           let requestId = 0
-          // Background jobs started by any script, for `awaitJob` and
-          // `claimJob`.
-          const jobs = new Map<string, BackgroundJob>()
-          const findJob = (id: string) =>
+          // Background bash tasks started by any script, for `awaitTask` and
+          // `claimTask`.
+          const tasks = new Map<string, TaskHandle>()
+          const findTask = (id: string) =>
             Effect.suspend(() => {
-              const job = jobs.get(id)
-              return job === undefined
-                ? Effect.fail(`No background job with id "${id}"`)
-                : Effect.succeed(job)
+              const task = tasks.get(id)
+              return task === undefined
+                ? Effect.fail(`No task with id "${id}"`)
+                : Effect.succeed(task)
             })
 
           return Rpcs.of({
             capabilities: () => local.executor.capabilities,
             renderEnvironment: ({ environment, reset }) =>
               local.renderEnvironment(environment, { reset }),
-            awaitJob: ({ id }) =>
-              Effect.flatMap(findJob(id), (job) => job.await),
-            claimJob: ({ id }) =>
-              Effect.flatMap(findJob(id), (job) => job.claim),
+            awaitTask: ({ id }) =>
+              Effect.flatMap(findTask(id), (task) => task.await),
+            claimTask: ({ id }) =>
+              Effect.flatMap(findTask(id), (task) => task.claim),
             respond: ({ id, response }) => {
               const resume = requestResumes.get(id)
               if (resume) {
@@ -937,7 +946,8 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
               script,
               environment,
               loopTools,
-              watchJobs,
+              agentId,
+              watchTasks,
             }) {
               const queue = yield* Queue.unbounded<
                 typeof ExecuteOutput.Type,
@@ -968,29 +978,32 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                       Queue.offer(queue, { _tag: "Environment", environment }),
                     onTaskComplete: (summary) =>
                       request<void>({ _tag: "TaskComplete", summary }),
-                    subagents: {
+                    agentId,
+                    agentTasks: {
                       delegate: (options) =>
                         Effect.orDie(
-                          request<DelegateResult>({
+                          request<Task>({
                             _tag: "Delegate",
                             ...options,
                           }),
                         ),
-                      waitAgents: (ids) =>
-                        request<ReadonlyArray<SubagentResult>>({
-                          _tag: "WaitAgents",
+                      taskOutput: (id) =>
+                        request<Task>({ _tag: "TaskOutput", id }),
+                      waitTasks: (ids, { timeoutMs }) =>
+                        request<ReadonlyArray<Task>>({
+                          _tag: "WaitTasks",
                           ids,
+                          timeoutMs,
                         }),
                       messageAgent: (options) =>
-                        request<SubagentResult>({
+                        request<Task>({
                           _tag: "MessageAgent",
                           ...options,
                         }),
-                      stopAgent: (id) =>
-                        request<SubagentResult>({ _tag: "StopAgent", id }),
-                      listAgents: Effect.orDie(
-                        request<ReadonlyArray<SubagentInfo>>({
-                          _tag: "ListAgents",
+                      stopTask: (id) => request<Task>({ _tag: "StopTask", id }),
+                      listTasks: Effect.orDie(
+                        request<ReadonlyArray<Task>>({
+                          _tag: "ListTasks",
                         }),
                       ),
                     },
@@ -1002,14 +1015,15 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                         data: image.data,
                       })
                     },
-                    // Older clients cannot decode a `Job` part.
-                    ...(watchJobs === true
+                    // Older clients cannot decode a `Task` part.
+                    ...(watchTasks === true
                       ? {
-                          onJob: (job: BackgroundJob) => {
-                            jobs.set(job.id, job)
+                          onTask: (task: TaskHandle) => {
+                            tasks.set(task.id, task)
                             return Queue.offer(queue, {
-                              _tag: "Job",
-                              id: job.id,
+                              _tag: "Task",
+                              id: task.id,
+                              kind: task.kind,
                             })
                           },
                         }
@@ -1080,14 +1094,16 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
 export const AgentRequest = Schema.TaggedUnion({
   TaskComplete: { summary: Schema.String },
   Delegate: {
+    id: Schema.String,
     prompt: Schema.String,
     background: Schema.Boolean,
     environment: EnvironmentUpdate,
   },
-  WaitAgents: { ids: Schema.UndefinedOr(Schema.Array(Schema.String)) },
+  TaskOutput: { id: Schema.String },
+  WaitTasks: { ids: Schema.Array(Schema.String), timeoutMs: Schema.Finite },
   MessageAgent: { id: Schema.String, message: Schema.String },
-  StopAgent: { id: Schema.String },
-  ListAgents: {},
+  StopTask: { id: Schema.String },
+  ListTasks: {},
   LoopTool: { name: Schema.String, params: Schema.optional(Schema.Json) },
   /**
    * The script changed its environment. The client records it before it
@@ -1126,11 +1142,11 @@ export const ExecuteOutput = Schema.TaggedUnion({
    */
   Environment: { environment: ExecutionEnvironment },
   /**
-   * The script started a background `bash` job. Only sent when the client
-   * asked with `watchJobs`. The client follows it with `awaitJob` and
-   * `claimJob`.
+   * The script started a background `bash` task. Only sent when the client
+   * asked with `watchTasks`. The client follows it with `awaitTask` and
+   * `claimTask`.
    */
-  Job: { id: Schema.String },
+  Task: { id: Schema.String, kind: TaskKind },
 })
 
 /**
@@ -1158,27 +1174,31 @@ export class Rpcs extends RpcGroup.make(
         Schema.withDecodingDefaultKey(Effect.succeed([])),
       ),
       /**
-       * Send a `Job` part for each background job the script starts. Older
-       * clients leave it out, as they cannot decode those parts.
+       * The agent running the script, which owns the tasks it starts.
        */
-      watchJobs: Schema.optionalKey(Schema.Boolean),
+      agentId: Schema.optionalKey(Schema.String),
+      /**
+       * Send a `Task` part for each background bash task the script starts.
+       * Older clients leave it out, as they cannot decode those parts.
+       */
+      watchTasks: Schema.optionalKey(Schema.Boolean),
     }),
     success: ExecuteOutput,
     stream: true,
   }),
   /**
-   * Waits for a background job to end and returns its final state.
+   * Waits for a background bash task to end and returns its final state.
    */
-  Rpc.make("awaitJob", {
+  Rpc.make("awaitTask", {
     payload: { id: Schema.String },
-    success: BashJob,
+    success: Task,
     error: Schema.String,
   }),
   /**
-   * Marks a background job's final state as reported. Returns `false` when
-   * it already was.
+   * Marks a background bash task's final state as reported. Returns `false`
+   * when it already was.
    */
-  Rpc.make("claimJob", {
+  Rpc.make("claimTask", {
     payload: { id: Schema.String },
     success: Schema.Boolean,
     error: Schema.String,
@@ -1271,15 +1291,17 @@ const handleRequest = (
     case "TaskComplete":
       return opts.onTaskComplete(request.summary)
     case "Delegate":
-      return opts.subagents.delegate(request)
-    case "WaitAgents":
-      return opts.subagents.waitAgents(request.ids)
+      return opts.agentTasks.delegate(request)
+    case "TaskOutput":
+      return opts.agentTasks.taskOutput(request.id)
+    case "WaitTasks":
+      return opts.agentTasks.waitTasks(request.ids, request)
     case "MessageAgent":
-      return opts.subagents.messageAgent(request)
-    case "StopAgent":
-      return opts.subagents.stopAgent(request.id)
-    case "ListAgents":
-      return opts.subagents.listAgents
+      return opts.agentTasks.messageAgent(request)
+    case "StopTask":
+      return opts.agentTasks.stopTask(request.id)
+    case "ListTasks":
+      return opts.agentTasks.listTasks
     case "EnvironmentChanged":
       // Recorded by the client before it responds.
       return Effect.void
@@ -1343,26 +1365,19 @@ const errorMessage = (error: unknown): string =>
       ? error.message
       : String(error)
 
-// Leaving out `delegate` leaves out the tools that address its sub-agents,
-// and leaving out `bash` leaves out the tools that address its jobs.
+// Leaving out `delegate` leaves out `messageAgent`. The task functions
+// address both kinds, so they go once neither can be started.
 const excludedToolNames = (
   excludeTools: ReadonlyArray<ExcludableTool> | undefined,
 ): ReadonlySet<string> => {
   const names = new Set<string>(excludeTools)
   if (names.has("delegate")) {
-    for (const name of [
-      "waitAgents",
-      "messageAgent",
-      "stopAgent",
-      "listAgents",
-    ]) {
-      names.add(name)
+    names.add("messageAgent")
+    if (names.has("bash")) {
+      for (const name of ["taskOutput", "waitTasks", "stopTask", "listTasks"]) {
+        names.add(name)
+      }
     }
-  }
-  if (names.has("bash")) {
-    names.add("jobOutput")
-    names.add("waitJob")
-    names.add("stopJob")
   }
   return names
 }

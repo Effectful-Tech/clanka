@@ -18,7 +18,7 @@ import type * as Response from "effect/ai/Response"
 import * as ResponseIdTracker from "effect/ai/ResponseIdTracker"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
-import { subagentsUnavailable } from "./AgentTools.ts"
+import { agentTasksUnavailable } from "./AgentTools.ts"
 import * as AgentOutput from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
 
@@ -175,11 +175,12 @@ describe("Agent", () => {
       )
       // The root delegates once in the foreground, then every agent finishes.
       const executor = makeExecutor(
-        ({ script, environment, subagents, onTaskComplete }) =>
+        ({ script, environment, agentTasks, onTaskComplete }) =>
           Stream.fromEffect(
             (script === "done"
               ? onTaskComplete("done")
-              : subagents.delegate({
+              : agentTasks.delegate({
+                  id: "1",
                   prompt: "TASK-CHILD",
                   background: false,
                   environment: new AgentExecutor.EnvironmentUpdate({
@@ -560,7 +561,7 @@ it.layer(localExecutorLayer, { excludeTestServices: true })(
                   Effect.sync(() => {
                     summaries.push(summary)
                   }),
-                subagents: subagentsUnavailable,
+                agentTasks: agentTasksUnavailable,
                 onImage: () => Effect.void,
               })
               .pipe(Stream.mkString)

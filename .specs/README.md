@@ -10,13 +10,16 @@
   the provider layer. Includes token storage via `KeyValueStore`, automatic
   refresh, and a fully wired `LanguageModel` layer.
 - [Background sub-agents](./background-subagents.md) - Run `delegate`
-  sub-agents in the background, address them by ID with `waitAgents`,
-  `messageAgent`, `stopAgent` and `listAgents`, and push their results to the
-  parent between model turns.
+  sub-agents in the background and push their results to the parent between
+  model turns. Its script API is superseded by Shared tasks.
 - [Background bash commands](./background-bash.md) - Run `bash` commands in
-  the background, hand a command that reaches its timeout over to the
-  background instead of killing it, and read or stop jobs by ID with
-  `jobOutput` and `stopJob`.
+  the background, and hand a command that reaches its timeout over to the
+  background instead of killing it. Its script API is superseded by Shared
+  tasks.
+- [Shared tasks](./shared-tasks.md) - Background bash commands and
+  sub-agents are both tasks: one `Task` shape, one ID space per executor,
+  shared `taskOutput`, `waitTasks`, `stopTask` and `listTasks` functions, one
+  `<task>` push message, and tasks scoped to the agent that started them.
 - [Caller-selected tools, instructions, skills and loop-side tools](./caller-tools.md) -
   Let a caller leave out built-in tools, supply the project instructions and
   skills, and register tools whose handlers run next to the `Agent` rather than

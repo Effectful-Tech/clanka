@@ -1361,6 +1361,7 @@ const excludedToolNames = (
   }
   if (names.has("bash")) {
     names.add("jobOutput")
+    names.add("waitJob")
     names.add("stopJob")
   }
   return names

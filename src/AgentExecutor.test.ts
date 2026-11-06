@@ -566,9 +566,11 @@ const result = await bash({
   command: ${JSON.stringify(gatedCommand(environment.cwd))},
   background: true,
 })
-console.log("RETURNED:", result)`)
-        assert.include(output, "RETURNED:")
-        assert.match(output, /background/i)
+console.log("RETURNED:", JSON.stringify(result))`)
+        assert.include(
+          output,
+          'RETURNED: {"id":"1","status":"running","output":""}',
+        )
         assert.strictEqual(
           yield* waitForLog(environment.cwd, started),
           "start\n",
@@ -589,16 +591,18 @@ console.log("RETURNED:", result)`)
         const output = yield* runScript(`
 try {
   const result = await bash({
-    command: ${JSON.stringify(gatedCommand(environment.cwd))},
+    command: ${JSON.stringify(`echo early && ${gatedCommand(environment.cwd)}`)},
     timeoutMs: 60000,
   })
-  console.log("RETURNED:", result)
+  console.log("RETURNED:", JSON.stringify(result))
 } catch (error) {
   console.log("REJECTED:", String(error))
 }`)
-        assert.include(output, "RETURNED:")
+        assert.include(
+          output,
+          'RETURNED: {"id":"1","status":"running","output":"early\\n"}',
+        )
         assert.notInclude(output, "REJECTED:")
-        assert.match(output, /background/i)
         assert.strictEqual(
           yield* waitForLog(environment.cwd, started),
           "start\n",
@@ -613,6 +617,118 @@ try {
         Effect.timeout("5 seconds"),
         Effect.provide(executorLayer({ commandTimeout: "300 millis" })),
       ),
+    )
+
+    // A foreground command that succeeds returns a task with an id from the
+    // same counter as background jobs; one that fails still rejects.
+    it.live(
+      "returns a task from a foreground bash command, or rejects on failure",
+      () =>
+        Effect.gen(function* () {
+          const output = yield* runScript(`
+try {
+  console.log("OK:", JSON.stringify(await bash({ command: "echo hi" })))
+  console.log("RETURNED:", JSON.stringify(await bash({ command: "echo out && exit 3" })))
+} catch (error) {
+  console.log("REJECTED:", String(error))
+}`)
+          assert.include(
+            output,
+            'OK: {"id":"1","status":"completed","exitCode":0,"output":"hi\\n"}',
+          )
+          assert.match(
+            output,
+            /REJECTED:.*Command failed with exit code 3: out/,
+          )
+          assert.notInclude(output, "RETURNED:")
+        }).pipe(Effect.timeout("5 seconds"), Effect.provide(executorLayer({}))),
+    )
+
+    it.live("waits for a background task with waitJob", () =>
+      Effect.gen(function* () {
+        const executor = yield* AgentExecutor.AgentExecutor
+        const { environment } = yield* executor.capabilities
+        const output = yield* runScript(`
+const task = await bash({
+  command: ${JSON.stringify(`${gatedCommand(environment.cwd)} && echo done`)},
+  background: true,
+})
+await writeFile({ path: "gate", content: "" })
+console.log("WAITED:", JSON.stringify(await waitJob({ id: task.id })))`)
+        assert.include(
+          output,
+          'WAITED: {"id":"1","status":"completed","exitCode":0,"output":"done\\n"}',
+        )
+      }).pipe(Effect.timeout("5 seconds"), Effect.provide(executorLayer({}))),
+    )
+
+    // Without `timeoutMs` the wait uses the caller's command timeout, which
+    // also caps it. The test timeout catches a wait that never ends.
+    it.live("stops waiting at the timeout and leaves the task running", () =>
+      Effect.gen(function* () {
+        const executor = yield* AgentExecutor.AgentExecutor
+        const { environment } = yield* executor.capabilities
+        const output = yield* runScript(`
+const task = await bash({
+  command: ${JSON.stringify(gatedCommand(environment.cwd))},
+  background: true,
+})
+const waits = [
+  await waitJob({ id: task.id, timeoutMs: 100 }),
+  await waitJob({ id: task.id }),
+  await waitJob({ id: task.id, timeoutMs: 60000 }),
+]
+console.log("WAITS:", JSON.stringify(waits.map((job) => job.status)))`)
+        assert.include(output, 'WAITS: ["running","running","running"]')
+        assert.strictEqual(
+          yield* waitForLog(environment.cwd, started),
+          "start\n",
+          "still running after the waits",
+        )
+        openGate(environment.cwd)
+        assert.strictEqual(
+          yield* waitForLog(environment.cwd, finished),
+          "start\nfinish\n",
+        )
+      }).pipe(
+        Effect.timeout("5 seconds"),
+        Effect.provide(executorLayer({ commandTimeout: "300 millis" })),
+      ),
+    )
+
+    // The watcher returns only after the job has ended, so the job always
+    // finishes before `bash` returns. `bash` must return the snapshot it
+    // handed over, leaving the final state to the watcher alone. Over RPC the
+    // server's watcher does not wait for the client's, so only local mode
+    // forces the ordering.
+    it.live("returns the task it hands to the job watcher", () =>
+      Effect.gen(function* () {
+        const executor = yield* AgentExecutor.AgentExecutor
+        const { environment } = yield* executor.capabilities
+        const watched: Array<string> = []
+        const claims: Array<boolean> = []
+        const output = yield* executor
+          .execute({
+            environment,
+            onEnvironment: () => Effect.void,
+            script: `
+await bash({ command: "true" })
+console.log("RETURNED:", JSON.stringify(await bash({ command: "true", background: true })))`,
+            onTaskComplete: () => Effect.void,
+            subagents: subagentsUnavailable,
+            onImage: () => Effect.void,
+            onJob: (job) =>
+              Effect.gen(function* () {
+                watched.push(job.id)
+                yield* job.await
+                claims.push(yield* job.claim)
+              }),
+          })
+          .pipe(Stream.mkString)
+        assert.include(output, 'RETURNED: {"id":"2","status":"running"')
+        assert.deepStrictEqual(watched, ["2"], "only the running task")
+        assert.deepStrictEqual(claims, [true], "reported once, by the watcher")
+      }).pipe(Effect.timeout("5 seconds"), Effect.provide(executorLayer({}))),
     )
 
     it.live("reports background jobs through jobOutput", () =>
@@ -859,10 +975,10 @@ sleep(100).then(() => console.constructor.constructor("return process")().exit(7
           tool: "bash",
           params: { command: "seq 1 1000000" },
         })
-        assert(typeof output === "string")
-        assert.isBelow(output.length, 10_000 + 500)
-        assert.isTrue(output.startsWith("1\n2\n3\n"), "start kept")
-        assert.isTrue(output.trimEnd().endsWith("999999\n1000000"), "end kept")
+        const { output: text } = output as { readonly output: string }
+        assert.isBelow(text.length, 10_000 + 500)
+        assert.isTrue(text.startsWith("1\n2\n3\n"), "start kept")
+        assert.isTrue(text.trimEnd().endsWith("999999\n1000000"), "end kept")
       }).pipe(
         Effect.timeout("10 seconds"),
         Effect.provide(executorLayer({ commandOutputChars: 10_000 })),

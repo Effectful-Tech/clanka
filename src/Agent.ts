@@ -1516,6 +1516,9 @@ const generateSystemTools = (
   `
 - Avoid passing scripts into the "bash" function, and instead write javascript.
 - Pass \`background: true\` to "bash" for commands that keep running, such as dev servers or watchers. A command still running at its timeout is moved to the background instead of being stopped. Use "jobOutput" and "stopJob" with the returned job id.${when(
+    tools.offers("waitJob"),
+    ` "bash" returns a task, and rejects when a command that has not been moved to the background fails. Use "waitJob" to wait for a running task; it returns the task as "running" if its timeout passes first. A background task that fails is returned with status "failed" and its \`exitCode\`.`,
+  )}${when(
     tools.jobPushes,
     ` When a job ends, its status and output are sent to you as a \`<job id="..." status="..." exitCode="...">\` message, unless "jobOutput" or "stopJob" already gave you its final status. You do not need to poll jobs with "jobOutput" to find out when they end.`,
   )}`,

@@ -223,7 +223,8 @@ export type BashJobStatus = typeof BashJobStatus.Type
 /**
  * A `bash` command and its state: the task that `bash`, `jobOutput`,
  * `waitJob` and `stopJob` return. `exitCode` is set once the command has
- * exited; a non-zero exit is `failed` rather than a rejection.
+ * exited; a non-zero exit is `failed`. A foreground `bash` command that
+ * fails rejects instead of returning a task.
  *
  * @since 1.0.0
  * @category Models
@@ -321,7 +322,7 @@ export class CommandLimits extends Context.Reference<{
 export const makeBashTool = (timeout: Duration.Duration) =>
   Tool.make("bash", {
     description:
-      'Run a bash command and return a task with its job id, status, exit code and output. It does not reject when the command fails: a non-zero exit returns status "failed" with its exitCode, so check the status. With `background: true` it returns straight away with status "running" while the command keeps going. A command still running at its timeout is not stopped: it is moved to the background and returned as "running" with the output so far. Wait for a job with "waitJob", read it with "jobOutput" and stop it with "stopJob".',
+      'Run a bash command and return a task with its job id, status, exit code and output. A command that fails before it is returned rejects with its exit code and output. With `background: true` it returns straight away with status "running" while the command keeps going. A command still running at its timeout is not stopped: it is moved to the background and returned as "running" with the output so far. Wait for a job with "waitJob", read it with "jobOutput" and stop it with "stopJob"; a background job that fails is reported with status "failed" and its exitCode.',
     parameters: Schema.Struct({
       command: Schema.String,
       timeoutMs: Schema.optional(Schema.Finite).annotate({
@@ -909,7 +910,17 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         const { id, running } = addJob(yield* startCommand(cmd))
         if (options.background !== true) {
           const exit = yield* awaitCommand(running, Duration.millis(timeoutMs))
-          if (Option.isSome(exit)) return reportJob(id, running)
+          if (Option.isSome(exit)) {
+            // A finished command is reported here, so it is never pushed.
+            const exitCode = yield* exit.value
+            const job = reportJob(id, running)
+            if (exitCode === 0) return job
+            return yield* Effect.die(
+              new Error(
+                `Command failed with exit code ${exitCode}: ${job.output}`,
+              ),
+            )
+          }
         }
         yield* watchJob(id, running)
         return reportJob(id, running)

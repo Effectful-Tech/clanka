@@ -20,9 +20,10 @@ stopJob(id): Task
 
 - `bash` always returns a task. Every call gets a job ID, so any command can
   be read with `jobOutput`.
-- A foreground command that exits in time returns `completed` (exit code 0)
-  or `failed` (another exit code) with its output. It does not reject: the
-  model checks `status` and `exitCode`.
+- A foreground command that exits in time with exit code 0 returns
+  `completed` with its output. One that exits with another code rejects
+  with `Command failed with exit code <code>: <output>`, as before, and no
+  task is returned.
 - `background: true` starts the command and returns the task straight away
   as `running`.
 - In the foreground, `timeoutMs` is how long to wait before handing the
@@ -38,7 +39,8 @@ stopJob(id): Task
   its final state. An unknown ID fails with a message.
 - Status values are `running`, `completed` (exit code 0), `failed` (another
   exit code, or the command could not be run) and `stopped`. `exitCode` is
-  set once the command has exited.
+  set once the command has exited. `failed` reaches the model only for
+  jobs: a background command, or one handed over at its timeout.
 - IDs come from a per-executor counter as strings: `"1"`, `"2"`, ...
 - `gh` keeps its old behaviour: it returns its output, rejects on a non-zero
   exit and is stopped at its timeout.
@@ -111,10 +113,10 @@ together. Where one side predates job pushes, the model polls with
   end the script with a defect. Older servers ignore the key.
 
 - The `bash` tool description, rendered by the executor, states that
-  `bash` returns a task and does not reject on a failed command. The
+  `bash` returns a task and rejects when a foreground command fails. The
   system prompt repeats it, and mentions `waitJob`, only when the executor
-  offers `waitJob`. An older executor still returns strings and rejects on
-  failure, and its prompt says nothing about tasks.
+  offers `waitJob`. An older executor still returns strings, and its
+  prompt says nothing about tasks. Both reject on a foreground failure.
 
 ## Not included
 

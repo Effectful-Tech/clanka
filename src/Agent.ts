@@ -414,7 +414,6 @@ export const makeWith = Effect.fnUntraced(function* <
     if (typeof opts.system === "string") {
       system += `\n${opts.system}\n`
     }
-    console.log("system:", system)
 
     function maybeSend(options: {
       readonly agentId: number

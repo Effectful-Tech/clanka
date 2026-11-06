@@ -922,8 +922,12 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
             )
           }
         }
-        yield* watchJob(id, running)
-        return reportJob(id, running)
+        // Snapshot the task before yielding to the watcher: the command can
+        // finish while it is being handed over, and its final state must
+        // reach the model only once. A finished task is never handed over.
+        const job = reportJob(id, running)
+        if (job.status === "running") yield* watchJob(id, running)
+        return job
       }, Effect.orDie),
       jobOutput: Effect.fn("AgentTools.jobOutput")(function* (input: unknown) {
         const id = yield* decodeJobOutput(input)

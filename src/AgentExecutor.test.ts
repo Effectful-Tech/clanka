@@ -696,6 +696,41 @@ console.log("WAITS:", JSON.stringify(waits.map((job) => job.status)))`)
       ),
     )
 
+    // The watcher returns only after the job has ended, so the job always
+    // finishes before `bash` returns. `bash` must return the snapshot it
+    // handed over, leaving the final state to the watcher alone. Over RPC the
+    // server's watcher does not wait for the client's, so only local mode
+    // forces the ordering.
+    it.live("returns the task it hands to the job watcher", () =>
+      Effect.gen(function* () {
+        const executor = yield* AgentExecutor.AgentExecutor
+        const { environment } = yield* executor.capabilities
+        const watched: Array<string> = []
+        const claims: Array<boolean> = []
+        const output = yield* executor
+          .execute({
+            environment,
+            onEnvironment: () => Effect.void,
+            script: `
+await bash({ command: "true" })
+console.log("RETURNED:", JSON.stringify(await bash({ command: "true", background: true })))`,
+            onTaskComplete: () => Effect.void,
+            subagents: subagentsUnavailable,
+            onImage: () => Effect.void,
+            onJob: (job) =>
+              Effect.gen(function* () {
+                watched.push(job.id)
+                yield* job.await
+                claims.push(yield* job.claim)
+              }),
+          })
+          .pipe(Stream.mkString)
+        assert.include(output, 'RETURNED: {"id":"2","status":"running"')
+        assert.deepStrictEqual(watched, ["2"], "only the running task")
+        assert.deepStrictEqual(claims, [true], "reported once, by the watcher")
+      }).pipe(Effect.timeout("5 seconds"), Effect.provide(executorLayer({}))),
+    )
+
     it.live("reports background jobs through jobOutput", () =>
       Effect.gen(function* () {
         const executor = yield* AgentExecutor.AgentExecutor

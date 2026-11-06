@@ -6,9 +6,9 @@
  * 1. An always-on cap on `execute` results before they enter the Prompt
  *    (`capOutput`). It runs on every surface and is not affected by the
  *    compaction kill switch.
- * 2. Auto-compaction of the live Prompt (`compactIfNeeded` before a model
- *    call, `compact` after a context-length error). Both rewrite the Prompt
- *    to `system + <compaction-summary> user message + kept tail`.
+ * 2. Auto-compaction of the live Prompt (`compact` at the threshold, next
+ *    to the model calls, and after a context-length error). Both rewrite the
+ *    Prompt to `system + <compaction-summary> user message + kept tail`.
  *
  * @since 1.0.0
  */
@@ -511,6 +511,19 @@ export const split = (
 }
 
 /**
+ * Whether two splits send the same input to the summarizer: the same
+ * previous summary and the same messages to summarize.
+ *
+ * @since 1.0.0
+ * @category Cut points
+ */
+export const sameSummarizerInput = (self: Split, that: Split): boolean =>
+  Option.getOrUndefined(self.previousSummary) ===
+    Option.getOrUndefined(that.previousSummary) &&
+  self.toSummarize.length === that.toSummarize.length &&
+  self.toSummarize.every((message, i) => message === that.toSummarize[i])
+
+/**
  * Find the text of a previous compaction summary in a Prompt, if present.
  *
  * @since 1.0.0
@@ -802,6 +815,11 @@ export const compact: (options: {
    */
   readonly onStart?:
     ((reason: CompactionReason) => Effect.Effect<void>) | undefined
+  /**
+   * Runs for every part the summarizer streams, so a caller can tell a slow
+   * summary from a stalled one.
+   */
+  readonly onActivity?: (() => void) | undefined
 }) => Effect.Effect<
   Option.Option<CompactionResult>,
   AiError.AiError,
@@ -828,8 +846,10 @@ export const compact: (options: {
         .pipe(
           Stream.runFold(
             () => "",
-            (text, part) =>
-              part.type === "text-delta" ? text + part.delta : text,
+            (text, part) => {
+              options.onActivity?.()
+              return part.type === "text-delta" ? text + part.delta : text
+            },
           ),
         ),
     )
@@ -865,36 +885,4 @@ export const compact: (options: {
     tokensBefore: estimateTokens(options.prompt),
     tokensAfter: estimateTokens(rewritten),
   })
-})
-
-/**
- * Compact before the next model call when `shouldCompact` fires.
- *
- * Returns `None` when compaction is disabled, not needed, or a no-op. A
- * failing summarizer is swallowed here: the caller proceeds with the
- * uncompacted prompt and relies on the overflow path.
- *
- * @since 1.0.0
- * @category Compaction
- */
-export const compactIfNeeded: (options: {
-  readonly prompt: Prompt.Prompt
-  readonly contextTokens: number | undefined
-  readonly onStart?:
-    ((reason: CompactionReason) => Effect.Effect<void>) | undefined
-}) => Effect.Effect<
-  Option.Option<CompactionResult>,
-  never,
-  LanguageModel.LanguageModel
-> = Effect.fnUntraced(function* (options) {
-  const config = yield* CompactionConfig
-  if (!shouldCompact({ ...options, config })) return Option.none()
-  return yield* compact({ ...options, reason: "threshold" }).pipe(
-    Effect.catch((error) =>
-      Effect.logWarning(
-        "Compaction failed, continuing with the uncompacted prompt",
-        error,
-      ).pipe(Effect.as(Option.none<CompactionResult>())),
-    ),
-  )
 })

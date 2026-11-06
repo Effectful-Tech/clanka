@@ -798,7 +798,7 @@ console.log(JSON.stringify(result))`,
                         toolCall(
                           `pwd-${name}`,
                           `const pwd = await bash({ command: "pwd" })
-await taskComplete("${name.toUpperCase()}:" + pwd.trim())`,
+await taskComplete("${name.toUpperCase()}:" + pwd.output.trim())`,
                         ),
                       ),
                     ),
@@ -814,7 +814,7 @@ await changeDirectory("a")
 await delegate({ prompt: "TASK-CHILD-ONE", background: true })
 await delegate({ prompt: "TASK-CHILD-TWO", background: true })
 console.log(JSON.stringify(await waitAgents()))
-console.log("ROOT:" + (await bash({ command: "pwd" })).trim())`,
+console.log("ROOT:" + (await bash({ command: "pwd" })).output.trim())`,
                       ),
                     )
                   case 1:

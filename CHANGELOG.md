@@ -1,5 +1,11 @@
 # clanka
 
+## 0.22.3
+
+### Patch Changes
+
+- [#291](https://github.com/Effectful-Tech/clanka/pull/291) [`5e29bc6`](https://github.com/Effectful-Tech/clanka/commit/5e29bc6c3525478c0f620623277eaa1908d78b6d) Thanks [@tim-smart](https://github.com/tim-smart)! - Run threshold compaction in the background, so a resumed session no longer waits for the summary before its first output. A compaction times out only when the summarizer goes quiet, and one that fails is not retried with the same input until a few model calls later. Without `--summarizer-model`, the summarizer runs on its own copy of the session model, so a summary can finish after the prompt that started it. `clanka acp` reports compaction progress as thought chunks.
+
 ## 0.22.2
 
 ### Patch Changes

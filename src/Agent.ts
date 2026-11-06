@@ -803,9 +803,37 @@ ${prompt}`,
       })
     }
 
-    // The refresh is rendered before the rewrite and both are committed
-    // together, so an interrupt leaves the old history and the old
-    // environment, which still agree.
+    // Closes a compaction's progress event, after committing its rewrite
+    // when it has one. The refresh is rendered before the rewrite and both
+    // are committed together, so an interrupt leaves the old history and
+    // the old environment, which still agree.
+    const endCompaction = (
+      reason: Compaction.CompactionReason,
+      rewrite: Option.Option<{
+        readonly prompt: Prompt.Prompt
+        readonly refresh: AgentExecutor.EnvironmentUpdate
+      }>,
+    ) => {
+      const tokensBefore = Compaction.estimateTokens(prompt.current)
+      let tokensAfter = tokensBefore
+      if (Option.isSome(rewrite)) {
+        // The refresh sends the kept updates again, so they are dropped
+        // here to appear once.
+        replaceHistory(
+          Prompt.fromMessages(
+            rewrite.value.prompt.content.filter(
+              (message) => !isEnvironmentUpdate(message),
+            ),
+          ),
+        )
+        tokensAfter = Compaction.estimateTokens(rewrite.value.prompt)
+      }
+      maybeSend({
+        agentId,
+        part: new CompactionEnded({ reason, tokensBefore, tokensAfter }),
+      })
+      if (Option.isSome(rewrite)) applyEnvironmentUpdate(rewrite.value.refresh)
+    }
     const compactWithEvents = <E, R>(
       reason: Compaction.CompactionReason,
       compaction: Effect.Effect<
@@ -823,40 +851,17 @@ ${prompt}`,
             onNone: () => Effect.succeedNone,
             onSome: (result) =>
               Effect.map(renderEnvironment({ reset: true }), (refresh) =>
-                Option.some({ ...result, refresh }),
+                Option.some({ prompt: result.prompt, refresh }),
               ),
           }),
         ),
         Effect.onExit((exit) =>
           Effect.sync(() => {
             if (!compactionStarted) return
-            const result = Exit.isSuccess(exit) ? exit.value : Option.none()
-            let tokensBefore: number
-            let tokensAfter: number
-            if (Option.isSome(result)) {
-              // The refresh sends the kept updates again, so they are
-              // dropped here to appear once.
-              replaceHistory(
-                Prompt.fromMessages(
-                  result.value.prompt.content.filter(
-                    (message) => !isEnvironmentUpdate(message),
-                  ),
-                ),
-              )
-              tokensBefore = result.value.tokensBefore
-              tokensAfter = result.value.tokensAfter
-            } else {
-              tokensBefore = tokensAfter = Compaction.estimateTokens(
-                prompt.current,
-              )
-            }
-            maybeSend({
-              agentId,
-              part: new CompactionEnded({ reason, tokensBefore, tokensAfter }),
-            })
-            if (Option.isSome(result)) {
-              applyEnvironmentUpdate(result.value.refresh)
-            }
+            endCompaction(
+              reason,
+              Exit.isSuccess(exit) ? exit.value : Option.none(),
+            )
           }),
         ),
       )
@@ -893,28 +898,13 @@ ${prompt}`,
     // has passed, so a summary that times out is not retried every turn.
     // Only a compaction on a `SummarizerModel` outlives the run; any other is
     // cancelled when the run ends, which does not count as a failure.
-    let background = backgroundCompactions.get(prompt)
-    if (background === undefined) {
-      background = {
-        running: undefined,
-        failed: undefined,
-        failures: 0,
-        calls: 0,
-      }
-      backgroundCompactions.set(prompt, background)
+    const state: BackgroundCompaction = backgroundCompactions.get(prompt) ?? {
+      running: undefined,
+      failed: undefined,
+      failures: 0,
+      calls: 0,
     }
-    const state = background
-    const endCompactionUnchanged = (reason: Compaction.CompactionReason) => {
-      const tokens = Compaction.estimateTokens(prompt.current)
-      maybeSend({
-        agentId,
-        part: new CompactionEnded({
-          reason,
-          tokensBefore: tokens,
-          tokensAfter: tokens,
-        }),
-      })
-    }
+    backgroundCompactions.set(prompt, state)
     const startCompaction = Effect.suspend(() => {
       state.calls++
       if (
@@ -928,16 +918,16 @@ ${prompt}`,
         return Effect.void
       }
       const snapshot = prompt.current
-      const parts = Compaction.split(
+      const split = Compaction.split(
         snapshot,
         compactionConfig.keepRecentTokens,
       )
-      if (Option.isNone(parts)) return Effect.void
-      const failed = state.failed
+      if (Option.isNone(split)) return Effect.void
+      const { failed } = state
       if (
         failed !== undefined &&
         state.calls < failed.retryAt &&
-        Compaction.sameSummarizerInput(failed.split, parts.value)
+        Compaction.sameSummarizerInput(failed.split, split.value)
       ) {
         return Effect.void
       }
@@ -945,14 +935,6 @@ ${prompt}`,
         agentId,
         part: new CompactionStarted({ reason: "threshold" }),
       })
-      const running: RunningCompaction = {
-        snapshot,
-        split: parts.value,
-        outlivesRun: ownSummarizer,
-        fiber: undefined,
-        exit: undefined,
-      }
-      state.running = running
       return withIdleTimeout((onActivity) =>
         Compaction.compact({
           prompt: snapshot,
@@ -960,16 +942,16 @@ ${prompt}`,
           onActivity,
         }),
       ).pipe(
-        Effect.onExit((exit) =>
-          Effect.sync(() => {
-            running.exit = exit
-          }),
-        ),
         Effect.forkIn(ownSummarizer ? agentScope : runScope, {
           startImmediately: true,
         }),
         Effect.map((fiber) => {
-          running.fiber = fiber
+          state.running = {
+            snapshot,
+            split: split.value,
+            outlivesRun: ownSummarizer,
+            fiber,
+          }
         }),
       )
     })
@@ -978,21 +960,23 @@ ${prompt}`,
     const settleCompaction = Effect.suspend(
       (): Effect.Effect<"applied" | "timed-out" | "unchanged"> => {
         const running = state.running
-        if (running?.exit === undefined) return Effect.succeed("unchanged")
-        state.running = undefined
-        const exit = running.exit
-        // Cancelled with the run that started it, not a failure.
-        if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
-          endCompactionUnchanged("threshold")
+        const exit = running?.fiber.pollUnsafe()
+        if (running === undefined || exit === undefined) {
           return Effect.succeed("unchanged")
         }
+        state.running = undefined
         if (Exit.isFailure(exit)) {
+          // Cancelled with the run that started it, not a failure.
+          if (Cause.hasInterruptsOnly(exit.cause)) {
+            endCompaction("threshold", Option.none())
+            return Effect.succeed("unchanged")
+          }
           state.failures++
           state.failed = {
             split: running.split,
             retryAt: state.calls + 4 * 2 ** (state.failures - 1),
           }
-          endCompactionUnchanged("threshold")
+          endCompaction("threshold", Option.none())
           const error = Cause.squash(exit.cause)
           return Effect.as(
             Effect.logWarning(
@@ -1010,57 +994,32 @@ ${prompt}`,
           rebaseCompaction(running.snapshot, prompt.current, result.prompt),
         )
         if (Option.isNone(next)) {
-          endCompactionUnchanged("threshold")
+          endCompaction("threshold", Option.none())
           return Effect.succeed("unchanged")
         }
         return Effect.map(renderEnvironment({ reset: true }), (refresh) => {
-          const tokensBefore = Compaction.estimateTokens(prompt.current)
-          // The refresh sends the kept updates again, so they are dropped
-          // here to appear once.
-          replaceHistory(
-            Prompt.fromMessages(
-              next.value.content.filter(
-                (message) => !isEnvironmentUpdate(message),
-              ),
-            ),
+          endCompaction(
+            "threshold",
+            Option.some({ prompt: next.value, refresh }),
           )
-          maybeSend({
-            agentId,
-            part: new CompactionEnded({
-              reason: "threshold",
-              tokensBefore,
-              tokensAfter: Compaction.estimateTokens(next.value),
-            }),
-          })
-          applyEnvironmentUpdate(refresh)
           return "applied" as const
         })
       },
     )
     // Waits for a threshold compaction in flight to finish, then settles it.
-    const awaitCompaction = Effect.suspend(() => {
-      const fiber = state.running?.fiber
-      return fiber === undefined
+    const awaitCompaction = Effect.suspend(() =>
+      state.running === undefined
         ? settleCompaction
-        : Effect.andThen(Fiber.await(fiber), settleCompaction)
+        : Effect.andThen(Fiber.await(state.running.fiber), settleCompaction),
+    )
+    // Cancels a compaction that cannot outlive this run, when the run ends.
+    const cancelRunCompaction = Effect.suspend(() => {
+      const running = state.running
+      if (running === undefined || running.outlivesRun) return Effect.void
+      state.running = undefined
+      endCompaction("threshold", Option.none())
+      return Fiber.interrupt(running.fiber)
     })
-    // Cancels the compaction in flight, or with `runOnly` only one that
-    // cannot outlive this run.
-    const cancelCompaction = (options?: { readonly runOnly?: boolean }) =>
-      Effect.suspend(() => {
-        const running = state.running
-        if (
-          running === undefined ||
-          (options?.runOnly === true && running.outlivesRun)
-        ) {
-          return Effect.void
-        }
-        state.running = undefined
-        endCompactionUnchanged("threshold")
-        return running.fiber === undefined
-          ? Effect.void
-          : Fiber.interrupt(running.fiber)
-      })
 
     // Script execution
     const executeScript = Effect.fnUntraced(function* (script: string) {
@@ -1148,7 +1107,7 @@ ${prompt}`,
           // Before the output closes, so the progress event is closed too.
           // A finished summary is applied rather than lost.
           yield* settleCompaction
-          yield* cancelCompaction({ runOnly: true })
+          yield* cancelRunCompaction
           mailbox.emit = undefined
           yield* Queue.fail(
             output,
@@ -1443,7 +1402,6 @@ ${prompt}`,
         ) =>
           Effect.gen(function* () {
             discardAttempt()
-            yield* cancelCompaction()
             const compacted = yield* compactWithEvents(
               "overflow",
               withIdleTimeout((onActivity) =>
@@ -1472,17 +1430,16 @@ ${prompt}`,
               // A threshold summary in flight covers the start of this
               // history, so it is awaited rather than started over. When it
               // compacted the history, the call is retried on it first.
-              const settled = yield* awaitCompaction
-              if (settled === "applied") {
-                return yield* attemptWithImageFallback.pipe(
-                  Effect.catchIf(isOverflow, (err) =>
-                    overflowCompaction(err, true),
-                  ),
-                )
-              }
               // After a summary that went quiet, one more quiet summary
               // fails the turn, so the wait stays at two timeouts.
-              return yield* overflowCompaction(err, settled !== "timed-out")
+              const settled = yield* awaitCompaction
+              const compact = (err: AiError.AiError) =>
+                overflowCompaction(err, settled !== "timed-out")
+              return settled === "applied"
+                ? yield* attemptWithImageFallback.pipe(
+                    Effect.catchIf(isOverflow, compact),
+                  )
+                : yield* compact(err)
             }),
           ),
         )
@@ -1583,18 +1540,10 @@ interface RunningCompaction {
   readonly split: Compaction.Split
   /** Whether it runs on a `SummarizerModel`, which can outlive the run. */
   readonly outlivesRun: boolean
-  fiber:
-    | Fiber.Fiber<
-        Option.Option<Compaction.CompactionResult>,
-        AiError.AiError | Cause.TimeoutError
-      >
-    | undefined
-  exit:
-    | Exit.Exit<
-        Option.Option<Compaction.CompactionResult>,
-        AiError.AiError | Cause.TimeoutError
-      >
-    | undefined
+  readonly fiber: Fiber.Fiber<
+    Option.Option<Compaction.CompactionResult>,
+    AiError.AiError | Cause.TimeoutError
+  >
 }
 
 interface BackgroundCompaction {

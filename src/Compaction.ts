@@ -830,7 +830,6 @@ export const compact: (options: {
   const parts = split(options.prompt, config.keepRecentTokens)
   if (Option.isNone(parts)) return Option.none()
   const { system, previousSummary, toSummarize, kept } = parts.value
-  const onActivity = options.onActivity
 
   if (options.onStart) {
     yield* options.onStart(options.reason)
@@ -848,7 +847,7 @@ export const compact: (options: {
           Stream.runFold(
             () => "",
             (text, part) => {
-              onActivity?.()
+              options.onActivity?.()
               return part.type === "text-delta" ? text + part.delta : text
             },
           ),
@@ -886,36 +885,4 @@ export const compact: (options: {
     tokensBefore: estimateTokens(options.prompt),
     tokensAfter: estimateTokens(rewritten),
   })
-})
-
-/**
- * Compact before the next model call when `shouldCompact` fires.
- *
- * Returns `None` when compaction is disabled, not needed, or a no-op. A
- * failing summarizer is swallowed here: the caller proceeds with the
- * uncompacted prompt and relies on the overflow path.
- *
- * @since 1.0.0
- * @category Compaction
- */
-export const compactIfNeeded: (options: {
-  readonly prompt: Prompt.Prompt
-  readonly contextTokens: number | undefined
-  readonly onStart?:
-    ((reason: CompactionReason) => Effect.Effect<void>) | undefined
-}) => Effect.Effect<
-  Option.Option<CompactionResult>,
-  never,
-  LanguageModel.LanguageModel
-> = Effect.fnUntraced(function* (options) {
-  const config = yield* CompactionConfig
-  if (!shouldCompact({ ...options, config })) return Option.none()
-  return yield* compact({ ...options, reason: "threshold" }).pipe(
-    Effect.catch((error) =>
-      Effect.logWarning(
-        "Compaction failed, continuing with the uncompacted prompt",
-        error,
-      ).pipe(Effect.as(Option.none<CompactionResult>())),
-    ),
-  )
 })

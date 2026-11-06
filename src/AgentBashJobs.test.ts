@@ -198,7 +198,7 @@ await sleep(500)`,
     )
 
     it.live(
-      "a bash task reported by stopTask or by taskOutput's final status is not pushed",
+      "a bash task whose final state stopTask, taskOutput, waitTasks or bash returned is not pushed",
       () =>
         Effect.gen(function* () {
           const { exit, prompts } = yield* runAgent((index) => {
@@ -216,7 +216,10 @@ while (task.status === "running") {
   await sleep(20)
   task = await taskOutput("2")
 }
-await sleep(500)`,
+await bash({ command: "echo FOREGROUND" })
+await waitTasks({ ids: [(await bash({ command: "echo WAITED", background: true })).id] })
+await sleep(500)
+console.log("SCRIPT" + "-DONE")`,
                 )
               default:
                 return text("done")
@@ -231,6 +234,7 @@ await sleep(500)`,
             pushes[0]!,
             /^<task id="3" kind="bash" status="completed" exitCode="0">\s*UNREAD\s*<\/task>$/,
           )
+          assert.include(JSON.stringify(prompts[1]), "SCRIPT-DONE")
         }).pipe(Effect.provide(executorLayer)),
     )
 

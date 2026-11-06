@@ -1047,7 +1047,7 @@ await changeDirectory("sub")`),
           Effect.gen(function* () {
             const server = yield* makeServer(
               runsScript(
-                `console.log("PWD:" + (await bash({ command: "pwd" })).trim())`,
+                `console.log("PWD:" + (await bash({ command: "pwd" })).output.trim())`,
               ),
               yield* localExecutor(cwd),
             )

@@ -474,7 +474,7 @@ try {
                 assert.notInclude(rejected, "ACCEPTED")
                 assert.include(
                   rejected,
-                  'waitTasks(["1"])',
+                  'waitTasks({ ids: ["1"] })',
                   "quotes the call that waits for the running child",
                 )
                 assert.include(rejected, "stopTask")
@@ -482,7 +482,7 @@ try {
                 return Stream.make(
                   toolCall(
                     "wait",
-                    `const results = await waitTasks(["1"])
+                    `const results = await waitTasks({ ids: ["1"] })
 console.log(JSON.stringify(results))
 await taskComplete("done")`,
                   ),
@@ -780,7 +780,7 @@ console.log(JSON.stringify(result))`,
                     toolCall(
                       `pwd-${name}`,
                       `const pwd = await bash({ command: "pwd" })
-await taskComplete("${name.toUpperCase()}:" + pwd.trim())`,
+await taskComplete("${name.toUpperCase()}:" + pwd.output.trim())`,
                     ),
                   ),
                 ),
@@ -795,8 +795,8 @@ await taskComplete("${name.toUpperCase()}:" + pwd.trim())`,
 await changeDirectory("a")
 const one = await delegate({ prompt: "TASK-CHILD-ONE", background: true })
 const two = await delegate({ prompt: "TASK-CHILD-TWO", background: true })
-console.log(JSON.stringify(await waitTasks([one.id, two.id])))
-console.log("ROOT:" + (await bash({ command: "pwd" })).trim())`,
+console.log(JSON.stringify(await waitTasks({ ids: [one.id, two.id] })))
+console.log("ROOT:" + (await bash({ command: "pwd" })).output.trim())`,
                   ),
                 )
               case 1:
@@ -828,7 +828,7 @@ console.log("ROOT:" + (await bash({ command: "pwd" })).trim())`,
                     "mixed",
                     `const bashTask = await bash({ command: "echo BASH-OUT", background: true })
 const agentTask = await delegate({ prompt: "TASK-CHILD", background: true })
-const ended = await waitTasks([bashTask.id, agentTask.id])
+const ended = await waitTasks({ ids: [bashTask.id, agentTask.id] })
 console.log(JSON.stringify(ended.map(({ kind, status, output }) => ({ kind, status, output: output.trim() }))))`,
                   ),
                 )
@@ -937,7 +937,7 @@ console.log("ROOT:" + JSON.stringify(mine.map((task) => task.kind + ":" + task.s
                       `const quick = await bash({ command: "echo BASH-OUT", background: true })
 const child = await delegate({ prompt: "TASK-CHILD", background: true })
 const slow = await bash({ command: "sleep 30", background: true })
-await waitTasks([quick.id, child.id, slow.id])
+await waitTasks({ ids: [quick.id, child.id, slow.id] })
 console.log("RETURNED")`,
                     ),
                   )
@@ -985,7 +985,7 @@ const slowCallbacks = (
 ): AgentExecutor.ExecuteAgentTasks => ({
   ...tasks,
   taskOutput: (id) => slow(tasks.taskOutput(id)),
-  waitTasks: (ids) => slow(tasks.waitTasks(ids)),
+  waitTasks: (...args) => slow(tasks.waitTasks(...args)),
   messageAgent: (options) => slow(tasks.messageAgent(options)),
   stopTask: (id) => slow(tasks.stopTask(id)),
   listTasks: slow(tasks.listTasks),
@@ -1020,7 +1020,7 @@ describe("agent tasks (rpc executor, slow callbacks)", () => {
                   "wait",
                   `const a = await delegate({ prompt: "TASK-CHILD-A", background: true })
 const b = await delegate({ prompt: "TASK-CHILD-B", background: true })
-const ended = await waitTasks([a.id, b.id])
+const ended = await waitTasks({ ids: [a.id, b.id] })
 console.log(ended.map((task) => task.output).join(" "))`,
                 ),
               )

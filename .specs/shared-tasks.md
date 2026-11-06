@@ -114,8 +114,12 @@ The rules of each kind stay as they were:
 - `waitTasks` reports nothing until every task in the batch has ended. A
   script stopped while it waits, for example at its timeout, never receives
   the batch, so the tasks that ended first are still pushed.
-  `AgentTasks.waitTasks` only waits; the executor reports each agent with
-  `AgentTasks.taskOutput` once the batch is ready to return.
+  The executor waits for the batch's bash tasks first, without reporting
+  them. It then makes one `AgentTasks.waitTasks` call, which waits for the
+  agents and reports them together, and reports the bash tasks last. Over
+  RPC only that call's single response can be cut off. The order matters:
+  a `waitTasks` call made alongside the bash wait would report the agents
+  while a bash task is still pending.
 - Both kinds are drained by one loop in the Agent, right before the model
   call. Bash tasks are claimed from the executor at that point, so a
   `taskOutput` read between the end of a task and the push still wins.

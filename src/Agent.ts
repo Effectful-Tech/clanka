@@ -661,8 +661,8 @@ ${prompt}`,
           if (!running) break
           yield* Deferred.await(running.turn.done)
         }
-        // Reported by the executor once the whole batch returns.
-        return targets.map(childTask)
+        // Reported together, once every agent in the batch has ended.
+        return targets.map(reportChild)
       }),
       messageAgent: Effect.fnUntraced(function* ({ id, message }) {
         const child = yield* lookupChild(id)

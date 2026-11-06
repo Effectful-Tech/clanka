@@ -137,10 +137,10 @@ export interface AgentTasks {
    */
   readonly taskOutput: (id: string) => Effect.Effect<Task, string>
   /**
-   * Wait for the listed agents to end. Failures are returned as tasks, not
-   * raised. Waiting does not count as reported: `waitTasks` can be part of a
-   * batch the script never receives, so the executor reports each agent with
-   * `taskOutput` once the whole batch is ready to return.
+   * Wait for the listed agents to end, then report them all at once.
+   * Failures are returned as tasks, not raised. The executor calls it once
+   * per batch, after any bash tasks in the batch have ended, so nothing is
+   * reported while the batch is still waiting.
    */
   readonly waitTasks: (
     ids: ReadonlyArray<string>,
@@ -931,26 +931,19 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           entry.kind === "agent" ? [entry.id] : [],
         )
         const agentTasks = yield* AgentTaskExecutor
-        // Nothing is reported until every task has ended. A script stopped
+        // Nothing is reported until every task has ended: a script stopped
         // while it waits never receives the batch, so the tasks that ended
-        // first must still be pushed.
-        yield* Effect.all(
-          [
-            Effect.forEach(
-              bashEntries,
-              (entry) => Fiber.await(entry.command.fiber),
-              { concurrency: "unbounded", discard: true },
-            ),
-            agentIds.length === 0
-              ? Effect.void
-              : agentTasks.waitTasks(agentIds),
-          ],
+        // first must still be pushed. The bash tasks are waited for first,
+        // without reporting them. Then one `AgentTasks.waitTasks` call waits
+        // for the agents and reports them together, so over RPC only its
+        // single response can be cut off. The agents keep running meanwhile.
+        yield* Effect.forEach(
+          bashEntries,
+          (entry) => Fiber.await(entry.command.fiber),
           { concurrency: "unbounded", discard: true },
         )
-        const agentResults = yield* Effect.forEach(
-          agentIds,
-          agentTasks.taskOutput,
-        )
+        const agentResults =
+          agentIds.length === 0 ? [] : yield* agentTasks.waitTasks(agentIds)
         const ended = new Map(
           [...bashEntries.map(reportBash), ...agentResults].map((task) => [
             task.id,

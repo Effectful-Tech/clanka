@@ -919,6 +919,65 @@ console.log("ROOT:" + JSON.stringify(mine.map((task) => task.kind + ":" + task.s
         )
       }))
 
+    // A bounded wait that passes its deadline returns the agent as running and
+    // leaves it running; its result is pushed when it ends.
+    test("waitTasks returns a running agent at its deadline and leaves it running", () =>
+      Effect.gen(function* () {
+        const childRelease = Latch.makeUnsafe(false)
+        let childInterrupted = false
+        let waited = ""
+        const { exit, calls } = yield* runAgent({
+          conversationMode: true,
+          respond: (call) => {
+            if (call.role === "child") {
+              return call.index === 0
+                ? Stream.fromEffect(
+                    childRelease.await.pipe(
+                      Effect.onInterrupt(() =>
+                        Effect.sync(() => {
+                          childInterrupted = true
+                        }),
+                      ),
+                    ),
+                  ).pipe(Stream.flatMap(() => complete("CHILD-LATE")))
+                : unexpected(call)
+            }
+            switch (call.index) {
+              case 0:
+                return Stream.make(
+                  toolCall(
+                    "wait",
+                    `const child = await delegate({ prompt: "TASK-CHILD", background: true })
+const [task] = await waitTasks({ ids: [child.id], timeoutMs: 200 })
+console.log("WAITED:" + task.status)`,
+                  ),
+                )
+              case 1:
+                waited = lastToolResult(call.prompt)
+                // The child ends only now, after the wait gave up.
+                return Stream.fromIterable(text("waiting")).pipe(
+                  Stream.ensuring(Effect.sync(() => childRelease.openUnsafe())),
+                )
+              case 2:
+                return Stream.fromIterable(text("done"))
+              default:
+                return unexpected(call)
+            }
+          },
+        })
+
+        assert.include(waited, "WAITED:running", "returned at the deadline")
+        assert.isFalse(childInterrupted, "the deadline does not stop the agent")
+        assert.deepStrictEqual(exit, Exit.succeed("done"))
+        const root = calls.filter((call) => call.role === "root")
+        assert.strictEqual(root.length, 3)
+        assert.include(
+          findPush(root[2]!.prompt, "1", "completed").text,
+          "CHILD-LATE",
+          "its result is pushed once it ends",
+        )
+      }))
+
     // The script times out while `waitTasks` still waits for the slow task,
     // so it never returns the two that ended. They must still be pushed.
     test(

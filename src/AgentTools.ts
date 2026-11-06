@@ -138,7 +138,9 @@ export interface AgentTasks {
   readonly taskOutput: (id: string) => Effect.Effect<Task, string>
   /**
    * Wait for the listed agents to end. Failures are returned as tasks, not
-   * raised, and count as reported.
+   * raised. Waiting does not count as reported: `waitTasks` can be part of a
+   * batch the script never receives, so the executor reports each agent with
+   * `taskOutput` once the whole batch is ready to return.
    */
   readonly waitTasks: (
     ids: ReadonlyArray<string>,
@@ -929,24 +931,31 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           entry.kind === "agent" ? [entry.id] : [],
         )
         const agentTasks = yield* AgentTaskExecutor
-        const [bashTasks, agentResults] = yield* Effect.all(
+        // Nothing is reported until every task has ended. A script stopped
+        // while it waits never receives the batch, so the tasks that ended
+        // first must still be pushed.
+        yield* Effect.all(
           [
             Effect.forEach(
               bashEntries,
-              (entry) =>
-                Fiber.await(entry.command.fiber).pipe(
-                  Effect.map(() => reportBash(entry)),
-                ),
-              { concurrency: "unbounded" },
+              (entry) => Fiber.await(entry.command.fiber),
+              { concurrency: "unbounded", discard: true },
             ),
             agentIds.length === 0
-              ? Effect.succeed([])
+              ? Effect.void
               : agentTasks.waitTasks(agentIds),
           ],
-          { concurrency: "unbounded" },
+          { concurrency: "unbounded", discard: true },
+        )
+        const agentResults = yield* Effect.forEach(
+          agentIds,
+          agentTasks.taskOutput,
         )
         const ended = new Map(
-          [...bashTasks, ...agentResults].map((task) => [task.id, task]),
+          [...bashEntries.map(reportBash), ...agentResults].map((task) => [
+            task.id,
+            task,
+          ]),
         )
         return ids.map((id) => ended.get(id)!)
       }),

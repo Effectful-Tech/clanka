@@ -111,6 +111,11 @@ The rules of each kind stay as they were:
 - A final state is reported when a task function returned it: `taskOutput`
   that saw the final status, `waitTasks`, or `stopTask`. Foreground agent
   results are reported by `delegate` itself. Reported tasks are not pushed.
+- `waitTasks` reports nothing until every task in the batch has ended. A
+  script stopped while it waits, for example at its timeout, never receives
+  the batch, so the tasks that ended first are still pushed.
+  `AgentTasks.waitTasks` only waits; the executor reports each agent with
+  `AgentTasks.taskOutput` once the batch is ready to return.
 - Both kinds are drained by one loop in the Agent, right before the model
   call. Bash tasks are claimed from the executor at that point, so a
   `taskOutput` read between the end of a task and the push still wins.

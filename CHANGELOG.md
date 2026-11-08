@@ -1,5 +1,11 @@
 # clanka
 
+## 0.22.6
+
+### Patch Changes
+
+- [`dbb347c`](https://github.com/Effectful-Tech/clanka/commit/dbb347c5cc9ad8059456eb2441fa67f87d50798d) Thanks [@tim-smart](https://github.com/tim-smart)! - Ensure `messageAgent` returns void at runtime and make `stopTask` return void consistently in the script API and local and RPC executors. Task state remains available through `taskOutput`.
+
 ## 0.22.5
 
 ### Patch Changes

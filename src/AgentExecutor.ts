@@ -315,6 +315,7 @@ export interface LocalOptions<Toolkit extends Toolkit.Any = never> {
    * Built-in tools to leave out of the sandbox and the type declarations.
    * Leaving out `delegate` also leaves out `messageAgent`, and leaving out
    * both `delegate` and `bash` leaves out the task functions.
+   * Leaving out `fetch` removes the global Fetch API.
    */
   readonly excludeTools?: ReadonlyArray<ExcludableTool> | undefined
 }
@@ -401,6 +402,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
     Duration.fromInputUnsafe,
   )
   const excluded = excludedToolNames(options.excludeTools)
+  const offersFetch = !excluded.has("fetch")
   const search = yield* Effect.serviceOption(SemanticSearch)
   const BuiltInTools = Toolkit.make(
     ...Object.values(
@@ -418,7 +420,14 @@ const makeLocalWith = Effect.fnUntraced(function* <
     (options.tools as unknown as Toolkit.Toolkit<{}>) ?? Toolkit.empty,
   )
   const tools = yield* AllTools
-  const toolsDts = renderer.render(AllTools)
+  const toolsDts = [
+    renderer.render(AllTools),
+    offersFetch
+      ? "/** The global Fetch API available for making HTTP requests. */\ndeclare const fetch: typeof globalThis.fetch"
+      : "",
+  ]
+    .filter((dts) => dts !== "")
+    .join("\n\n")
 
   const services = yield* Effect.context()
 
@@ -548,6 +557,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
               eval: true,
               workerData: {
                 source,
+                offersFetch,
                 tools: [...toolNames, ...Object.keys(opts.loopTools ?? {})],
               } satisfies WorkerData,
             }),
@@ -686,7 +696,9 @@ const makeLocalWith = Effect.fnUntraced(function* <
           ],
           seen: [],
         }),
-        tools: Object.keys(tools.tools),
+        tools: Array.from(
+          new Set([...toolNames, ...(offersFetch ? ["fetch"] : [])]),
+        ),
         skills,
         taskPushes: true,
       })
@@ -1420,6 +1432,7 @@ const prepareScript = (script: string): string => {
 
 interface WorkerData {
   readonly source: string
+  readonly offersFetch: boolean
   readonly tools: ReadonlyArray<string>
 }
 
@@ -1569,7 +1582,7 @@ function runScriptWorker(load: (id: string) => unknown): void {
       stdout,
       inspectOptions: { colors: false, compact: true, breakLength: Infinity },
     }),
-    fetch,
+    ...(data.offersFetch ? { fetch } : {}),
     process: undefined,
   }
   // MCP tools are named "<server>.<tool>" and bound as `mcp[server][tool]`.

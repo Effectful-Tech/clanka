@@ -562,10 +562,8 @@ export const AgentToolsWithSearch = Toolkit.merge(SearchTool, AgentTools)
  * @since 1.0.0
  * @category Toolkit
  */
-export type ExcludableTool = Exclude<
-  keyof typeof AgentToolsWithSearch.tools,
-  "taskComplete"
->
+export type ExcludableTool =
+  Exclude<keyof typeof AgentToolsWithSearch.tools, "taskComplete"> | "fetch"
 
 /**
  * @since 1.0.0

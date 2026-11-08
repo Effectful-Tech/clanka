@@ -229,6 +229,32 @@ const execute = (
 // Where the RPC executor takes its own path.
 for (const mode of modes) {
   describe(`${mode} executor`, () => {
+    it.live("fetch is available by default and can be left out", () =>
+      Effect.gen(function* () {
+        const enabled = yield* runAgent({
+          mode,
+          script: `await taskComplete(typeof fetch + " " + await (await fetch("data:text/plain,hello")).text())`,
+        })
+        assert.strictEqual(enabled.summary, "function hello")
+        assert.include(enabled.system, "declare const fetch:")
+
+        const disabled = yield* runAgent({
+          mode,
+          executor: { excludeTools: ["fetch"] },
+          script: `let result = typeof globalThis.fetch
+try {
+  await fetch("data:text/plain,hello")
+  result += " called"
+} catch {
+  result += " failed"
+}
+await taskComplete(result)`,
+        })
+        assert.strictEqual(disabled.summary, "undefined failed")
+        assert.notMatch(disabled.system, /\bfetch\b/)
+      }),
+    )
+
     it.live("left-out tools are not offered to the model or the script", () =>
       Effect.gen(function* () {
         const { system, summary } = yield* runAgent({

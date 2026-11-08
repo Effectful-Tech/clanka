@@ -2,6 +2,8 @@ import { OpenAiClient } from "@effect/ai-openai-compat"
 import { OpenAiClient as ResponsesClient } from "@effect/ai-openai"
 import { assert, describe, it } from "@effect/vitest"
 import * as Effect from "effect/Effect"
+import * as Exit from "effect/Exit"
+import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Layer from "effect/Layer"
 import * as Stream from "effect/Stream"
 import * as LanguageModel from "effect/ai/LanguageModel"
@@ -10,14 +12,69 @@ import * as HttpClient from "effect/http/HttpClient"
 import type * as HttpClientRequest from "effect/http/HttpClientRequest"
 import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as Copilot from "./Copilot.ts"
+import { CopilotModels } from "./CopilotModels.ts"
+import { STORE_TOKEN_KEY, TokenData, toTokenStore } from "./CopilotAuth.ts"
+import * as DeviceCodeHandler from "./DeviceCodeHandler.ts"
 
-const requestBody = Effect.fnUntraced(function* (
+// Deliberately different from public-provider names; these are catalog fixtures,
+// not a hard-coded list of real Copilot models.
+const catalog = [
+  {
+    id: "copilot-only-id",
+    name: "Friendly model name",
+    supported_endpoints: ["/responses"],
+    capabilities: {
+      supports: {
+        tool_calls: true,
+        reasoning_effort: ["low", "high", "unknown"],
+      },
+    },
+  },
+  {
+    id: "gpt-6-astra",
+    name: "Chat fixture",
+    supported_endpoints: ["/chat/completions"],
+    capabilities: { supports: { tool_calls: true } },
+  },
+  {
+    id: "disabled",
+    name: "Disabled",
+    policy: { state: "disabled" },
+    capabilities: { supports: { tool_calls: true } },
+  },
+  {
+    id: "hidden",
+    name: "Hidden",
+    model_picker_enabled: false,
+    capabilities: { supports: { tool_calls: true } },
+  },
+  {
+    id: "no-tools",
+    name: "No tools",
+    capabilities: { supports: { tool_calls: false } },
+  },
+  {
+    id: "messages-only",
+    name: "Unsupported API",
+    supported_endpoints: ["/v1/messages"],
+    capabilities: { supports: { tool_calls: true } },
+  },
+  { id: "malformed" },
+]
+
+const requestModel = Effect.fnUntraced(function* (
   options: Parameters<typeof Copilot.model>[1],
-  model = "gpt-6-astra",
+  model = "copilot-only-id",
 ) {
   const requests: Array<HttpClientRequest.HttpClientRequest> = []
   const client = HttpClient.make((request) =>
     Effect.sync(() => {
+      if (request.url.endsWith("/models")) {
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json({ data: catalog }),
+        )
+      }
       requests.push(request)
       return HttpClientResponse.fromWeb(
         request,
@@ -25,7 +82,7 @@ const requestBody = Effect.fnUntraced(function* (
       )
     }),
   )
-  yield* Effect.gen(function* () {
+  const result = yield* Effect.gen(function* () {
     assert.strictEqual(yield* Model.ProviderName, "copilot")
     assert.strictEqual(yield* Model.ModelName, model)
     const ai = yield* LanguageModel.LanguageModel
@@ -37,12 +94,23 @@ const requestBody = Effect.fnUntraced(function* (
           Layer.mergeAll(
             OpenAiClient.layer({ apiUrl: "https://copilot.test" }),
             ResponsesClient.layer({ apiUrl: "https://copilot.test" }),
+            CopilotModels.layer,
           ),
         ),
         Layer.provide(Layer.succeed(HttpClient.HttpClient, client)),
       ),
     ),
+    Effect.exit,
   )
+  return { requests, result }
+})
+
+const requestBody = Effect.fnUntraced(function* (
+  options: Parameters<typeof Copilot.model>[1],
+  model = "copilot-only-id",
+) {
+  const { requests, result } = yield* requestModel(options, model)
+  assert.isTrue(Exit.isSuccess(result))
   assert.lengthOf(requests, 1)
   const body = requests[0]!.body
   if (body._tag !== "Uint8Array") throw new Error("Expected JSON body")
@@ -70,19 +138,80 @@ describe("Copilot.model", () => {
   it.effect("routes Copilot model IDs to their supported API", () =>
     Effect.gen(function* () {
       for (const [model, endpoint] of [
-        ["gpt-6-astra", "/responses"],
-        ["gpt-6.1-sol", "/responses"],
-        ["grok-4.6", "/responses"],
-        ["mai-code-1.1-flash", "/responses"],
-        ["gpt-5-mini", "/chat/completions"],
-        ["gpt-4.1", "/chat/completions"],
-        ["claude-fable-5.1", "/chat/completions"],
-        ["gemini-4-argon", "/chat/completions"],
+        ["copilot-only-id", "/responses"],
+        ["gpt-6-astra", "/chat/completions"],
       ]) {
         const request = yield* requestBody(undefined, model)
         assert.strictEqual(request.url, "https://copilot.test" + endpoint)
         assert.strictEqual(request.body.model, model)
       }
+      const { requests, result } = yield* requestModel(
+        undefined,
+        "other-provider-name",
+      )
+      assert.lengthOf(requests, 0)
+      assert.isTrue(Exit.isFailure(result))
+      assert.include(
+        String(result),
+        'does not advertise model "other-provider-name"',
+      )
     }),
+  )
+  it.effect(
+    "lists exact account catalog IDs and capabilities, never guessed names",
+    () =>
+      Effect.gen(function* () {
+        const kvs = yield* KeyValueStore.KeyValueStore
+        yield* toTokenStore(kvs).set(
+          STORE_TOKEN_KEY,
+          new TokenData({ access: "test-copilot-token", expires: 0 }),
+        )
+        const client = HttpClient.make((request) => {
+          assert.strictEqual(
+            request.url,
+            "https://api.githubcopilot.com/models",
+          )
+          assert.strictEqual(
+            request.headers.authorization,
+            "Bearer test-copilot-token",
+          )
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              Response.json({ data: catalog }),
+            ),
+          )
+        })
+        const models = yield* CopilotModels.use((repo) => repo.models).pipe(
+          Effect.provide(
+            CopilotModels.layerAuthenticated.pipe(
+              Layer.provide(DeviceCodeHandler.layerConsole),
+            ),
+          ),
+          Effect.provideService(HttpClient.HttpClient, client),
+        )
+        assert.deepStrictEqual(
+          models.map(({ id, name, efforts, endpoint }) => ({
+            id,
+            name,
+            efforts,
+            endpoint,
+          })),
+          [
+            {
+              id: "copilot-only-id",
+              name: "Friendly model name",
+              efforts: ["low", "high"],
+              endpoint: "/responses",
+            },
+            {
+              id: "gpt-6-astra",
+              name: "Chat fixture",
+              efforts: [],
+              endpoint: "/chat/completions",
+            },
+          ],
+        )
+      }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   )
 })

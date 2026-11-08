@@ -16,6 +16,7 @@ import * as McpConfig from "./McpConfig.ts"
 import * as McpServers from "./McpServers.ts"
 import * as ModelLayer from "./ModelLayer.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
+import { CopilotModels, CopilotModelsError } from "./CopilotModels.ts"
 import * as Stream from "effect/Stream"
 import * as Stdio from "effect/Stdio"
 import { pipe } from "effect/Function"
@@ -67,13 +68,23 @@ type Provider = ModelsRepo.Provider
 
 const providers = ModelsRepo.Provider.literals
 
+const copilotModels = CopilotModels.use((repo) => repo.models).pipe(
+  Effect.provide(CopilotModels.layerAuthenticated),
+)
+
 // Pick a model from the catalog, filtering by name as the user types, then
 // one of its reasoning efforts.
 const selectModel = Effect.fnUntraced(function* (provider: Provider) {
   const repo = yield* ModelsRepo.ModelsRepo
-  const catalog = (yield* repo.models).filter(
-    (model) => model.provider === provider,
-  )
+  const catalog = (
+    provider === "copilot" ? yield* copilotModels : yield* repo.models
+  ).filter((model) => model.provider === provider)
+  if (provider === "copilot" && catalog.length === 0) {
+    return yield* new CopilotModelsError({
+      message:
+        "Copilot advertises no supported tool-calling models for this account",
+    })
+  }
   const models =
     catalog.length > 0
       ? catalog
@@ -425,6 +436,25 @@ const acp = Command.make("acp", {
     Effect.gen(function* () {
       const repo = yield* ModelsRepo.ModelsRepo
       const defaultThoughtLevel = yield* reasoning
+      const copilot = yield* CopilotModels.pipe(
+        Effect.provide(CopilotModels.layerAuthenticated),
+      )
+      // Never advertise models.dev aliases as Copilot API IDs. Only load
+      // Copilot's account catalog when it is the configured provider, so other
+      // providers do not trigger a GitHub login during ACP discovery.
+      const models = yield* Effect.cached(
+        Effect.gen(function* () {
+          const catalog = (yield* repo.models).filter(
+            (entry) => entry.provider !== "copilot",
+          )
+          return Option.exists(
+            ModelLayer.parseAcpModelId(model.model),
+            ({ provider }) => provider === "copilot",
+          )
+            ? [...catalog, ...(yield* copilot.models)]
+            : catalog
+        }).pipe(Effect.orDie),
+      )
       return yield* Acp.runStdio({
         version,
         defaultModel: model.model,
@@ -434,7 +464,7 @@ const acp = Command.make("acp", {
         ),
         defaultFastMode: fast,
         supportsFastMode: ModelLayer.acpSupportsFastMode,
-        availableModels: Effect.map(repo.models, ModelLayer.acpModels),
+        availableModels: Effect.map(models, ModelLayer.acpModels),
         // Built in the session scope: the executor runs commands in its own
         // scope, which `Effect.provide` would close once the agent is made.
         makeAgent: (cwd) =>
@@ -449,7 +479,7 @@ const acp = Command.make("acp", {
             ),
           ),
         makeModel: ModelLayer.makeAcp({
-          models: repo.models,
+          models,
           openai: {
             apiKey: Option.getOrUndefined(apiKey),
             apiUrl: Option.getOrUndefined(apiUrl),

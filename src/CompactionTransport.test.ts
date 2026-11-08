@@ -15,6 +15,7 @@ import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as Codex from "./Codex.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Copilot from "./Copilot.ts"
+import { CopilotModels } from "./CopilotModels.ts"
 import * as Xai from "./Xai.ts"
 
 const user = (text: string) =>
@@ -36,6 +37,27 @@ const captureHttp = () => {
   const requests: Array<HttpClientRequest.HttpClientRequest> = []
   const client = HttpClient.make((request) =>
     Effect.sync(() => {
+      if (request.url.endsWith("/models")) {
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json({
+            data: [
+              {
+                id: "gpt-4.1",
+                name: "Chat",
+                supported_endpoints: ["/chat/completions"],
+                capabilities: { supports: { tool_calls: true } },
+              },
+              {
+                id: "gpt-6-astra",
+                name: "Responses",
+                supported_endpoints: ["/responses"],
+                capabilities: { supports: { tool_calls: true } },
+              },
+            ],
+          }),
+        )
+      }
       requests.push(request)
       return HttpClientResponse.fromWeb(
         request,
@@ -208,6 +230,7 @@ describe("Compaction provider transport", () => {
                   Layer.mergeAll(
                     CompatClient.layer({ apiUrl: "https://copilot.test" }),
                     OpenAiClient.layer({ apiUrl: "https://copilot.test" }),
+                    CopilotModels.layer,
                   ).pipe(Layer.provide(http.layer)),
                 ),
               ),

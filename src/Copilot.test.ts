@@ -10,7 +10,7 @@ import * as HttpClient from "effect/http/HttpClient"
 import type * as HttpClientRequest from "effect/http/HttpClientRequest"
 import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as Copilot from "./Copilot.ts"
-import { CopilotModels, diagnoseCatalog } from "./CopilotModels.ts"
+import { CopilotModels } from "./CopilotModels.ts"
 
 // Deliberately different from public-provider names; these are catalog fixtures,
 // not a hard-coded list of real Copilot models.
@@ -94,44 +94,6 @@ const requestBody = Effect.fnUntraced(function* (
 })
 
 describe("Copilot.model", () => {
-  it.effect(
-    "diagnoses catalog shape without printing credentials or arbitrary strings",
-    () =>
-      Effect.gen(function* () {
-        const client = HttpClient.make((request) =>
-          Effect.succeed(
-            HttpClientResponse.fromWeb(
-              request,
-              Response.json({
-                access_token: "top-level-secret",
-                data: [
-                  {
-                    id: "secret-id",
-                    name: "secret-name",
-                    access_token: "model-secret",
-                    model_picker_enabled: true,
-                    supported_endpoints: ["/responses", "secret-endpoint"],
-                    policy: { state: "secret-state" },
-                    capabilities: {
-                      supports: {
-                        tool_calls: "secret-value",
-                        reasoning_effort: ["high", "secret-effort"],
-                      },
-                    },
-                  },
-                ],
-              }),
-            ),
-          ),
-        )
-        const diagnostic = yield* diagnoseCatalog.pipe(
-          Effect.provideService(HttpClient.HttpClient, client),
-        )
-        assert.strictEqual(diagnostic.count, 1)
-        assert.strictEqual(diagnostic.entries[0]?.eligibility, "decode_failed")
-        assert.notInclude(JSON.stringify(diagnostic), "secret")
-      }),
-  )
   it.effect("sends the given reasoning effort, and none when it is null", () =>
     Effect.gen(function* () {
       assert.deepStrictEqual(

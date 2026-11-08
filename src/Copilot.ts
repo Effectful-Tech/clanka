@@ -6,17 +6,20 @@ import {
   OpenAiClient as ResponsesClient,
   OpenAiLanguageModel as ResponsesLanguageModel,
 } from "@effect/ai-openai"
-import * as Layer from "effect/Layer"
 import * as Effect from "effect/Effect"
+import * as Layer from "effect/Layer"
 import * as Struct from "effect/Struct"
 import { API_URL, GithubCopilotAuth } from "./CopilotAuth.ts"
+import { CopilotModels } from "./CopilotModels.ts"
 import { AgentModelConfig } from "./Agent.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Model from "effect/ai/Model"
 import type * as LanguageModel from "effect/ai/LanguageModel"
-import { CopilotModels, CopilotModelsError } from "./CopilotModels.ts"
 
 /**
+ * Both Copilot APIs and the account catalog that says which one a model is
+ * served on.
+ *
  * @since 1.0.0
  * @category Layers
  */
@@ -27,6 +30,9 @@ export const layerClient = Layer.mergeAll(
 ).pipe(Layer.provide(GithubCopilotAuth.layerClient))
 
 /**
+ * A model by its Copilot id, on the API the account catalog advertises for
+ * it. Building the layer fails for an id the catalog does not list.
+ *
  * @since 1.0.0
  * @category Layers
  */
@@ -39,26 +45,21 @@ export const model = (
   "copilot",
   LanguageModel.LanguageModel,
   OpenAiClient.OpenAiClient | ResponsesClient.OpenAiClient | CopilotModels
-> => {
-  const config = Struct.omit(
-    options ?? {},
-    options?.reasoning === null
-      ? ["reasoning", ...AgentModelConfig.optionKeys]
-      : AgentModelConfig.optionKeys,
-  )
-  return Model.make(
+> =>
+  Model.make(
     "copilot",
     model,
     Layer.unwrap(
       Effect.gen(function* () {
-        const catalog = yield* (yield* CopilotModels).models
-        const selected = catalog.find((entry) => entry.id === model)
-        if (selected === undefined) {
-          return yield* new CopilotModelsError({
-            message: `Copilot does not advertise model "${model}" for this account. Available model IDs: ${catalog.map((entry) => entry.id).join(", ")}`,
-          })
-        }
-        const responses = selected.endpoint === "/responses"
+        const { endpoint } = yield* CopilotModels.use((repo) => repo.get(model))
+        // `reasoning: null` asks for no reasoning options.
+        const config = Struct.omit(
+          options ?? {},
+          options?.reasoning === null
+            ? ["reasoning", ...AgentModelConfig.optionKeys]
+            : AgentModelConfig.optionKeys,
+        )
+        const responses = endpoint === "/responses"
         return Layer.mergeAll(
           responses
             ? ResponsesLanguageModel.layer({
@@ -83,4 +84,3 @@ export const model = (
       }).pipe(Effect.orDie),
     ),
   )
-}

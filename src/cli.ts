@@ -16,7 +16,7 @@ import * as McpConfig from "./McpConfig.ts"
 import * as McpServers from "./McpServers.ts"
 import * as ModelLayer from "./ModelLayer.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
-import { CopilotModels, CopilotModelsError } from "./CopilotModels.ts"
+import { CopilotModels } from "./CopilotModels.ts"
 import * as Stream from "effect/Stream"
 import * as Stdio from "effect/Stdio"
 import { pipe } from "effect/Function"
@@ -68,23 +68,15 @@ type Provider = ModelsRepo.Provider
 
 const providers = ModelsRepo.Provider.literals
 
-const copilotModels = CopilotModels.use((repo) => repo.models).pipe(
-  Effect.provide(CopilotModels.layerAuthenticated),
-)
-
 // Pick a model from the catalog, filtering by name as the user types, then
-// one of its reasoning efforts.
+// one of its reasoning efforts. Copilot models come from the account catalog:
+// models.dev lists Copilot models the account may not have.
 const selectModel = Effect.fnUntraced(function* (provider: Provider) {
   const repo = yield* ModelsRepo.ModelsRepo
-  const catalog = (
-    provider === "copilot" ? yield* copilotModels : yield* repo.models
-  ).filter((model) => model.provider === provider)
-  if (provider === "copilot" && catalog.length === 0) {
-    return yield* new CopilotModelsError({
-      message:
-        "Copilot advertises no supported tool-calling models for this account",
-    })
-  }
+  const catalog =
+    provider === "copilot"
+      ? yield* CopilotModels.account
+      : (yield* repo.models).filter((model) => model.provider === provider)
   const models =
     catalog.length > 0
       ? catalog
@@ -436,24 +428,29 @@ const acp = Command.make("acp", {
     Effect.gen(function* () {
       const repo = yield* ModelsRepo.ModelsRepo
       const defaultThoughtLevel = yield* reasoning
+      // Advertise the account's Copilot models rather than the models.dev
+      // ones the account may not have, and only when Copilot is the default
+      // provider, so other providers never start a GitHub login during ACP
+      // discovery. Like `repo.models`, never fails: a catalog that cannot be
+      // read is left out and `Copilot.model` reports the failure.
+      const copilotDefault = Option.exists(
+        ModelLayer.parseAcpModelId(model.model),
+        ({ provider }) => provider === "copilot",
+      )
       const copilot = yield* CopilotModels.pipe(
         Effect.provide(CopilotModels.layerAuthenticated),
       )
-      // Never advertise models.dev aliases as Copilot API IDs. Only load
-      // Copilot's account catalog when it is the configured provider, so other
-      // providers do not trigger a GitHub login during ACP discovery.
       const models = yield* Effect.cached(
         Effect.gen(function* () {
           const catalog = (yield* repo.models).filter(
             (entry) => entry.provider !== "copilot",
           )
-          return Option.exists(
-            ModelLayer.parseAcpModelId(model.model),
-            ({ provider }) => provider === "copilot",
-          )
-            ? [...catalog, ...(yield* copilot.models)]
-            : catalog
-        }).pipe(Effect.orDie),
+          if (!copilotDefault) return catalog
+          return [
+            ...catalog,
+            ...(yield* Effect.orElseSucceed(copilot.models, () => [])),
+          ]
+        }),
       )
       return yield* Acp.runStdio({
         version,

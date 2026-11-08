@@ -2,6 +2,4 @@
 "clanka": patch
 ---
 
-Restart Copilot device authorization once with a fresh code when GitHub rejects an invalid or expired device code. Use the authenticated Copilot model catalog for model IDs, reasoning efforts and supported API endpoints instead of assuming public-provider names or routing by model-name prefixes. Reject unavailable model IDs before inference and identify Copilot models correctly in agent output.
-
-Keep explicitly policy-enabled models available even when Copilot marks them hidden from its picker, and resolve live reasoning capabilities when switching ACP sessions to Copilot. Add an opt-in credential-free catalog diagnostic for investigating account-specific filtering failures.
+Fix GitHub Copilot sign-in and model selection. Device authorization restarts once with a fresh code when GitHub rejects the code as invalid or expired. Copilot models now come from the account's `/models` catalog: the picker and the ACP model list (when Copilot is the default provider) offer the account's model ids, names and reasoning efforts, and each model runs on the Responses or Chat Completions API the catalog advertises for it. Models the account cannot run fail before inference, naming the available ids. Agent output identifies these models as `copilot`.

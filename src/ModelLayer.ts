@@ -215,11 +215,12 @@ export const makeAcp =
     Option.map(parseAcpModelId(modelId), ({ provider, model }) =>
       Layer.unwrap(
         Effect.map(
+          // Copilot efforts come from the account catalog, which `models`
+          // omits unless Copilot is the default provider. A catalog that
+          // cannot be read leaves the model unlisted; `Copilot.model` reports
+          // the failure.
           provider === "copilot"
-            ? CopilotModels.use((repo) => repo.models).pipe(
-                Effect.provide(CopilotModels.layerAuthenticated),
-                Effect.orDie,
-              )
+            ? Effect.orElseSucceed(CopilotModels.account, () => [])
             : options.models,
           (catalog) => {
             const info = catalog.find(

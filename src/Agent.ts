@@ -686,7 +686,7 @@ ${prompt}`,
         if (child.turn.status === "running") {
           child.mailbox.messages.add({ message, resume: () => {} })
           child.mailbox.notify()
-          return childTask(child)
+          return
         }
         child.turn = makeTurn(true)
         yield* startTurn({
@@ -695,7 +695,6 @@ ${prompt}`,
           label: message,
           background: true,
         })
-        return childTask(child)
       }),
       stopTask: Effect.fnUntraced(function* (id) {
         const child = yield* lookupChild(id)
@@ -704,7 +703,6 @@ ${prompt}`,
         if (turn.status === "running") {
           yield* Fiber.interrupt(turn.fiber!)
         }
-        return childTask(child)
       }),
       listTasks: Effect.sync(() =>
         Array.Array.from(children.values(), childTask),
@@ -1796,26 +1794,12 @@ const generateSystemTools = (
   `
 - Prefer using the "search" function over "rg", unless you are targeting specific files or patterns.`,
 )}${when(
-  tools.offers("applyPatch"),
-  `
-- You can add / update / remove multiple files in one go with "applyPatch".${when(
-    tools.offers("writeFile"),
-    ` Prefer it over "writeFile" to update existing files.`,
-  )}`,
-)}${when(
   tools.offers("bash"),
   `
 - Avoid passing scripts into the "bash" function, and instead write javascript.`,
 )}
 - Variables are not shared between executions.
-- Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.${when(
-  tools.offers("delegate"),
-  `
-- "delegate" runs a sub-agent and waits for it. Pass \`background: true\` to keep working while it runs: it returns an agent task straight away, and the agent's result is sent to you when it ends.${when(
-    tools.offers("messageAgent"),
-    ` Use "messageAgent" to send a message to a sub-agent.`,
-  )}`,
-)}${taskInstructions(tools)}${when(
+- Do not use \`require\`, \`import\`, \`process\`, or any other Node.js apis.${taskInstructions(tools)}${when(
   !conversationMode,
   `
 
@@ -1850,12 +1834,7 @@ Here is how you would read a file and list a directory:
 \`\`\`
 const [files, content] = await Promise.all([
   ls("."),
-  readFile({
-    path: "package.json",
-    startLine: 1,
-    endLine: 10,
-    lineNumbers: false,
-  })
+  readFile({ path: "package.json", startLine: 1, endLine: 10 })
 ])
 console.log("files:", files)
 console.log("package.json:", JSON.parse(content))

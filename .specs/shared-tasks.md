@@ -41,9 +41,9 @@ bash({ command, timeoutMs?, background? }): Task
 delegate({ prompt, background? }): Task
 taskOutput(id): Task
 waitTasks({ ids, timeoutMs? }): Array<Task>
-stopTask(id): Task
+stopTask(id): void
 listTasks(): Array<Task>
-messageAgent({ id, message }): Task
+messageAgent({ id, message }): void
 ```
 
 - `bash` always returns a bash task, and every call gets an ID, so any
@@ -57,7 +57,10 @@ messageAgent({ id, message }): Task
   failed foreground agent still crashes the script. In the background it
   returns the running agent task.
 - `taskOutput`, `waitTasks`, `stopTask` and `listTasks` take tasks of either
-  kind. A failed task is returned with `status: "failed"`, not thrown.
+  kind. Functions that return tasks return a failed task with
+  `status: "failed"`, not thrown.
+- `stopTask` stops the task and returns nothing. Use `taskOutput` to read its
+  final state.
 - `waitTasks` returns the listed tasks in the order of their IDs, once all of
   them have ended or `timeoutMs` has passed. The timeout covers the whole
   call and both kinds. It defaults to the caller's command timeout (10
@@ -68,7 +71,8 @@ messageAgent({ id, message }): Task
 - `waitTasks` requires IDs. The old `waitAgents()` waited for every child; a
   version that waits for every task would hang on a dev server.
 - `messageAgent` only addresses agent tasks. On a bash task it fails with a
-  message naming the task as a bash task.
+  message naming the task as a bash task. It returns nothing, without waiting
+  for the agent to finish its turn.
 - An unknown ID fails with `No task with id "<id>"` and points at
   `listTasks()`.
 - `jobOutput`, `waitJob`, `stopJob`, `waitAgents`, `stopAgent` and
@@ -119,7 +123,8 @@ The rules of each kind stay as they were:
   `exitCode` is left out unless a bash command exited on its own.
 
 - A final state is reported when a task function returned it: `bash`,
-  `taskOutput` that saw the final status, `waitTasks`, or `stopTask`.
+  `taskOutput` that saw the final status, or `waitTasks`. `stopTask` also marks
+  the task as reported, without returning its final state.
   Foreground agent results are reported by `delegate` itself. Reported tasks
   are not pushed. A bash task that `bash` returns finished is never handed to
   the agent at all, so it emits no `JobComplete` event either. `bash` takes

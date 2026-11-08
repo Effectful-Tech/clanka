@@ -603,8 +603,8 @@ await taskComplete("done")`,
                       Stream.as(
                         toolCall(
                           "stop",
-                          `const result = await stopTask("1")
-console.log(JSON.stringify(result))`,
+                          `console.log("STOP-VOID:", (await stopTask("1")) === undefined)
+console.log(JSON.stringify(await taskOutput("1")))`,
                         ),
                       ),
                     )
@@ -622,12 +622,58 @@ console.log(JSON.stringify(result))`,
         assert.deepStrictEqual(exit, Exit.succeed("stopped"))
         const root = calls.filter((call) => call.role === "root")
         const stopped = lastToolResult(root[2]!.prompt)
+        assert.include(stopped, "STOP-VOID: true")
         assert.include(stopped, '"id":"1"')
         assert.include(stopped, '"status":"stopped"')
         assert.isTrue(
           interruptedBeforeNextTurn,
           "stopTask interrupts the child and its grandchild before returning",
         )
+      }))
+
+    test("messageAgent returns void when steering a running child", () =>
+      Effect.gen(function* () {
+        const childStarted = Latch.makeUnsafe(false)
+        const childRelease = Latch.makeUnsafe(false)
+        const { exit, calls } = yield* runAgent({
+          conversationMode: true,
+          respond: (call) => {
+            if (call.role === "child") {
+              if (call.index === 0) {
+                return Stream.fromEffect(
+                  Effect.sync(() => childStarted.openUnsafe()).pipe(
+                    Effect.andThen(childRelease.await),
+                  ),
+                ).pipe(Stream.flatMap(() => Stream.fromIterable(text("ready"))))
+              }
+              return complete("STEERED-ANSWER")
+            }
+            if (call.index === 0) {
+              return Stream.make(spawnBackground("TASK-CHILD"))
+            }
+            if (call.index === 1) {
+              return Stream.fromEffect(childStarted.await).pipe(
+                Stream.as(
+                  toolCall(
+                    "message",
+                    `console.log("MESSAGE-VOID:", (await messageAgent({ id: "1", message: "STEER" })) === undefined)`,
+                  ),
+                ),
+              )
+            }
+            childRelease.openUnsafe()
+            return Stream.fromIterable(text("steered"))
+          },
+        })
+
+        assert.deepStrictEqual(exit, Exit.succeed("steered"))
+        const root = calls.filter((call) => call.role === "root")
+        assert.include(lastToolResult(root[2]!.prompt), "MESSAGE-VOID: true")
+        const steered = calls.find(
+          (call) => call.role === "child" && call.index === 1,
+        )
+        assert.isDefined(steered, "the running child received the message")
+        assert.include(JSON.stringify(steered!.prompt), "STEER")
       }))
 
     test("messageAgent resumes a finished child on top of its history", () =>
@@ -666,7 +712,7 @@ console.log(JSON.stringify(result))`,
                 toolCall(
                   "message",
                   `const result = await messageAgent({ id: "1", message: "FOLLOW-UP" })
-console.log(JSON.stringify(result))`,
+console.log("MESSAGE-VOID:", result === undefined)`,
                 ),
               )
             }
@@ -678,12 +724,7 @@ console.log(JSON.stringify(result))`,
         assert.isDefined(messageCall, "the first answer was pushed")
         const root = calls.filter((call) => call.role === "root")
         const messaged = lastToolResult(root[messageCall! + 1]!.prompt)
-        assert.include(messaged, '"id":"1"')
-        assert.include(
-          messaged,
-          '"status":"running"',
-          "messageAgent returns without waiting for the new turn",
-        )
+        assert.include(messaged, "MESSAGE-VOID: true")
 
         assert.isDefined(resumedPrompt, "the finished child was resumed")
         const resumed = messageJsons(resumedPrompt!)

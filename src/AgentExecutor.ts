@@ -1008,11 +1008,14 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                           timeoutMs,
                         }),
                       messageAgent: (options) =>
-                        request<void>({
-                          _tag: "MessageAgent",
-                          ...options,
-                        }),
-                      stopTask: (id) => request<Task>({ _tag: "StopTask", id }),
+                        Effect.asVoid(
+                          request<void>({
+                            _tag: "MessageAgent",
+                            ...options,
+                          }),
+                        ),
+                      stopTask: (id) =>
+                        Effect.asVoid(request<void>({ _tag: "StopTask", id })),
                       listTasks: Effect.orDie(
                         request<ReadonlyArray<Task>>({
                           _tag: "ListTasks",

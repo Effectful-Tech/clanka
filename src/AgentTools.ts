@@ -161,7 +161,7 @@ export interface AgentTasks {
   /**
    * Interrupt an agent and everything it spawned.
    */
-  readonly stopTask: (id: string) => Effect.Effect<Task, string>
+  readonly stopTask: (id: string) => Effect.Effect<void, string>
   /**
    * The agents this agent started.
    */
@@ -454,7 +454,6 @@ export const AgentTools = Toolkit.make(
     parameters: Schema.String.annotate({
       identifier: "id",
     }),
-    success: Task,
     failure: Schema.String,
     dependencies: [AgentTaskExecutor],
   }),
@@ -979,7 +978,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           return yield* agentTasks.stopTask(id)
         }
         yield* Fiber.interrupt(entry.command.fiber)
-        return reportBash(entry)
+        entry.command.reported = true
       }),
       listTasks: Effect.fn("AgentTools.listTasks")(function* () {
         yield* Effect.logInfo(`Calling "listTasks"`)

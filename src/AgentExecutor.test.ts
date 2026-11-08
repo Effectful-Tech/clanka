@@ -801,7 +801,8 @@ try {
 } catch (error) {
   console.log("MESSAGE-REJECTED:", String(error))
 }
-console.log("STOPPED:", show(await stopTask("1")))
+console.log("STOP-VOID:", (await stopTask("1")) === undefined)
+console.log("STOPPED:", show(await taskOutput("1")))
 try {
   await stopTask("99")
 } catch (error) {
@@ -816,6 +817,7 @@ try {
           output,
           'STOPPED: {"id":"1","kind":"bash","status":"stopped"}',
         )
+        assert.include(output, "STOP-VOID: true")
         assert.match(output, /REJECTED:.*No task with id "99".*listTasks\(\)/)
         openGate(environment.cwd)
         yield* Effect.sleep("500 millis")

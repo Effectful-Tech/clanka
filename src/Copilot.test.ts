@@ -12,7 +12,7 @@ import * as HttpClient from "effect/http/HttpClient"
 import type * as HttpClientRequest from "effect/http/HttpClientRequest"
 import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as Copilot from "./Copilot.ts"
-import { CopilotModels } from "./CopilotModels.ts"
+import { CopilotModels, diagnoseCatalog } from "./CopilotModels.ts"
 import { STORE_TOKEN_KEY, TokenData, toTokenStore } from "./CopilotAuth.ts"
 import * as DeviceCodeHandler from "./DeviceCodeHandler.ts"
 
@@ -124,6 +124,61 @@ const requestBody = Effect.fnUntraced(function* (
 })
 
 describe("Copilot.model", () => {
+  it.effect(
+    "diagnoses catalog shape without printing credentials or arbitrary strings",
+    () =>
+      Effect.gen(function* () {
+        const client = HttpClient.make((request) =>
+          Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              Response.json({
+                access_token: "top-level-secret",
+                data: [
+                  {
+                    id: "secret-id",
+                    name: "secret-name",
+                    access_token: "model-secret",
+                    model_picker_enabled: true,
+                    supported_endpoints: ["/responses", "secret-endpoint"],
+                    policy: { state: "secret-state" },
+                    capabilities: {
+                      supports: {
+                        tool_calls: "secret-value",
+                        reasoning_effort: ["high", "secret-effort"],
+                      },
+                    },
+                  },
+                ],
+              }),
+            ),
+          ),
+        )
+        const diagnostic = yield* diagnoseCatalog.pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+        )
+        assert.notInclude(JSON.stringify(diagnostic), "secret")
+        assert.deepStrictEqual(diagnostic, {
+          count: 1,
+          entries: [
+            {
+              decodes: false,
+              eligibility: "decode_failed",
+              id: "string",
+              name: "string",
+              model_picker_enabled: true,
+              supported_endpoints: ["/responses", "string"],
+              policy: "object",
+              policy_state: "string",
+              capabilities: "object",
+              supports: "object",
+              tool_calls: "string",
+              reasoning_effort: ["high", "string"],
+            },
+          ],
+        })
+      }),
+  )
   it.effect("sends the given reasoning effort, and none when it is null", () =>
     Effect.gen(function* () {
       assert.deepStrictEqual(

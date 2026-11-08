@@ -1831,9 +1831,6 @@ These are the functions available to you:
 
 \`\`\`ts
 ${tools.toolsDts}
-
-/** The global Fetch API available for making HTTP requests. */
-declare const fetch: typeof globalThis.fetch
 \`\`\`${when(
   tools.mcp !== "",
   `

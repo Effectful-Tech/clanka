@@ -292,6 +292,15 @@ const compactionConfig = (flags: {
     thresholdTokens: flags.compactionThreshold,
   })
 
+const fetch = Flag.Boolean("fetch").pipe(
+  Flag.withDescription(
+    "Expose the global Fetch API to scripts. Disable with --no-fetch or CLANKA_FETCH=false.",
+  ),
+  Flag.withFallbackConfig(
+    Config.Boolean("CLANKA_FETCH").pipe(Config.withDefault(true)),
+  ),
+)
+
 // Kill switch: `--no-mcp` or CLANKA_MCP=false.
 const mcp = Flag.Boolean("mcp").pipe(
   Flag.withDescription(
@@ -399,6 +408,7 @@ const reasoning = Config.schema(Acp.ThoughtLevel, "CLANKA_REASONING").pipe(
 
 const acp = Command.make("acp", {
   model: acpModel,
+  fetch,
   trustAllTools,
   fast,
   compaction,
@@ -428,7 +438,12 @@ const acp = Command.make("acp", {
         // Built in the session scope: the executor runs commands in its own
         // scope, which `Effect.provide` would close once the agent is made.
         makeAgent: (cwd) =>
-          Layer.build(AgentExecutor.layerLocal({ directory: cwd })).pipe(
+          Layer.build(
+            AgentExecutor.layerLocal({
+              directory: cwd,
+              excludeTools: flags.fetch ? [] : ["fetch"],
+            }),
+          ).pipe(
             Effect.flatMap((context) =>
               Agent.make.pipe(Effect.provideContext(context)),
             ),
@@ -456,6 +471,7 @@ const acp = Command.make("acp", {
 
 Command.make("clanka", {
   provider,
+  fetch,
   model,
   fast,
   semantic,
@@ -548,6 +564,7 @@ Command.make("clanka", {
         Effect.provide([
           Agent.layerLocal({
             directory: process.cwd(),
+            excludeTools: flags.fetch ? [] : ["fetch"],
           }).pipe(
             Layer.provide(
               Option.match(semantic, {

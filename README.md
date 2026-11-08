@@ -140,6 +140,18 @@ Limitations:
 - Claude Code features such as plan mode, memory, skills, sub-agents, auto
   mode and `/usage` are off.
 
+## Disabling fetch
+
+The global Fetch API is enabled in scripts by default. Pass `--no-fetch` or set
+`CLANKA_FETCH=false` to remove it from the script environment and the model
+instructions. Both `clanka` and `clanka acp` accept this option. An explicit
+`--fetch` overrides the environment variable.
+
+Library callers can pass `excludeTools: ["fetch"]` to `Agent.layerLocal`,
+`AgentExecutor.layerLocal` or `AgentExecutor.layerRpcServer`. This only removes
+the global `fetch` function; it does not disable `fetchMarkdown`, `webSearch` or
+other tools that can access the network.
+
 ## MCP servers
 
 clanka can use the tools of MCP servers, over stdio or streamable HTTP. The CLI

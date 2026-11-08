@@ -33,25 +33,19 @@ const summaryPrompt = Compaction.summarizerPrompt({
 
 // Use the real provider model and client. Stop at the transport boundary so no
 // credentials, network access, or permissive scripted LanguageModel are involved.
-const captureHttp = () => {
+const captureHttp = (catalog?: { id: string; endpoint: string }) => {
   const requests: Array<HttpClientRequest.HttpClientRequest> = []
   const client = HttpClient.make((request) =>
     Effect.sync(() => {
-      if (request.url.endsWith("/models")) {
+      if (catalog && request.url.endsWith("/models")) {
         return HttpClientResponse.fromWeb(
           request,
           Response.json({
             data: [
               {
-                id: "gpt-4.1",
-                name: "Chat",
-                supported_endpoints: ["/chat/completions"],
-                capabilities: { supports: { tool_calls: true } },
-              },
-              {
-                id: "gpt-6-astra",
-                name: "Responses",
-                supported_endpoints: ["/responses"],
+                id: catalog.id,
+                name: "Copilot fixture",
+                supported_endpoints: [catalog.endpoint],
                 capabilities: { supports: { tool_calls: true } },
               },
             ],
@@ -216,7 +210,7 @@ describe("Compaction provider transport", () => {
           ["gpt-4.1", "/chat/completions", "max_tokens"],
           ["gpt-6-astra", "/responses", "max_output_tokens"],
         ] as const) {
-          const http = captureHttp()
+          const http = captureHttp({ id: model, endpoint })
           yield* Effect.gen(function* () {
             yield* streamedSummary.pipe(Effect.exit)
             const ai = yield* LanguageModel.LanguageModel

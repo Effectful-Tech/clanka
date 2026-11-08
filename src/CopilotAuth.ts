@@ -49,6 +49,7 @@ export class GithubCopilotAuthError extends Schema.TaggedError<GithubCopilotAuth
   {
     reason: Schema.Literal("DeviceFlowFailed"),
     message: Schema.String,
+    oauthError: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
@@ -365,9 +366,11 @@ export class GithubCopilotAuth extends Context.Service<
           }
 
           if (payload.error !== undefined && payload.error !== "") {
-            return yield* deviceFlowError(
-              `GitHub Copilot device authorization failed: ${payload.error}`,
-            )
+            return yield* new GithubCopilotAuthError({
+              reason: "DeviceFlowFailed",
+              message: `GitHub Copilot device authorization failed: ${payload.error}`,
+              oauthError: payload.error,
+            })
           }
 
           yield* Effect.sleep(delayMs + OAUTH_POLLING_SAFETY_MARGIN_MS)
@@ -382,7 +385,16 @@ export class GithubCopilotAuth extends Context.Service<
         deviceCode: deviceCode.userCode,
       })
       return yield* pollAccessToken(deviceCode)
-    })
+    }).pipe(
+      // GitHub requires a new device authorization when the code is invalid
+      // or expired. Do not keep polling that code or restart on access_denied.
+      Effect.retry({
+        times: 1,
+        while: (error) =>
+          error.oauthError === "incorrect_device_code" ||
+          error.oauthError === "expired_token",
+      }),
+    )
 
     const authenticateNoLock = Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {

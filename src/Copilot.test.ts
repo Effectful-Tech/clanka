@@ -1,6 +1,8 @@
 import { OpenAiClient } from "@effect/ai-openai-compat"
+import { OpenAiClient as ResponsesClient } from "@effect/ai-openai"
 import { assert, describe, it } from "@effect/vitest"
 import * as Effect from "effect/Effect"
+import * as Exit from "effect/Exit"
 import * as Layer from "effect/Layer"
 import * as Stream from "effect/Stream"
 import * as LanguageModel from "effect/ai/LanguageModel"
@@ -8,13 +10,43 @@ import * as HttpClient from "effect/http/HttpClient"
 import type * as HttpClientRequest from "effect/http/HttpClientRequest"
 import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as Copilot from "./Copilot.ts"
+import { CopilotModels } from "./CopilotModels.ts"
 
-const requestBody = Effect.fnUntraced(function* (
+// Deliberately different from public-provider names; these are catalog fixtures,
+// not a hard-coded list of real Copilot models.
+const catalog = [
+  {
+    id: "copilot-only-id",
+    name: "Friendly model name",
+    supported_endpoints: ["/responses"],
+    capabilities: {
+      supports: {
+        tool_calls: true,
+        reasoning_effort: ["low", "high", "unknown"],
+      },
+    },
+  },
+  {
+    id: "gpt-6-astra",
+    name: "Chat fixture",
+    supported_endpoints: ["/chat/completions"],
+    capabilities: { supports: { tool_calls: true } },
+  },
+]
+
+const requestModel = Effect.fnUntraced(function* (
   options: Parameters<typeof Copilot.model>[1],
+  model = "copilot-only-id",
 ) {
   const requests: Array<HttpClientRequest.HttpClientRequest> = []
   const client = HttpClient.make((request) =>
     Effect.sync(() => {
+      if (request.url.endsWith("/models")) {
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json({ data: catalog }),
+        )
+      }
       requests.push(request)
       return HttpClientResponse.fromWeb(
         request,
@@ -22,34 +54,83 @@ const requestBody = Effect.fnUntraced(function* (
       )
     }),
   )
-  yield* Effect.gen(function* () {
+  const result = yield* Effect.gen(function* () {
     const ai = yield* LanguageModel.LanguageModel
     yield* ai.streamText({ prompt: "hello" }).pipe(Stream.runDrain, Effect.exit)
   }).pipe(
     Effect.provide(
-      Copilot.model("gpt-6-astra", options).pipe(
-        Layer.provide(OpenAiClient.layer({ apiUrl: "https://copilot.test" })),
+      Copilot.model(model, options).pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            OpenAiClient.layer({ apiUrl: "https://copilot.test" }),
+            ResponsesClient.layer({ apiUrl: "https://copilot.test" }),
+            CopilotModels.layer,
+          ),
+        ),
         Layer.provide(Layer.succeed(HttpClient.HttpClient, client)),
       ),
     ),
+    Effect.exit,
   )
+  return { requests, result }
+})
+
+const requestBody = Effect.fnUntraced(function* (
+  options: Parameters<typeof Copilot.model>[1],
+  model = "copilot-only-id",
+) {
+  const { requests, result } = yield* requestModel(options, model)
+  assert.isTrue(Exit.isSuccess(result))
   assert.lengthOf(requests, 1)
   const body = requests[0]!.body
   if (body._tag !== "Uint8Array") throw new Error("Expected JSON body")
-  return JSON.parse(new TextDecoder().decode(body.body)) as Record<
-    string,
-    unknown
-  >
+  return {
+    url: requests[0]!.url,
+    body: JSON.parse(new TextDecoder().decode(body.body)) as Record<
+      string,
+      unknown
+    >,
+  }
 })
 
 describe("Copilot.model", () => {
   it.effect("sends the given reasoning effort, and none when it is null", () =>
     Effect.gen(function* () {
       assert.deepStrictEqual(
-        (yield* requestBody({ reasoning: { effort: "high" } })).reasoning,
+        (yield* requestBody({ reasoning: { effort: "high" } })).body.reasoning,
         { effort: "high" },
       )
-      assert.isFalse("reasoning" in (yield* requestBody({ reasoning: null })))
+      assert.isFalse(
+        "reasoning" in (yield* requestBody({ reasoning: null })).body,
+      )
     }),
+  )
+  it.effect("routes Copilot model IDs to their supported API", () =>
+    Effect.gen(function* () {
+      for (const [model, endpoint] of [
+        ["copilot-only-id", "/responses"],
+        ["gpt-6-astra", "/chat/completions"],
+      ]) {
+        const request = yield* requestBody(undefined, model)
+        assert.strictEqual(request.url, "https://copilot.test" + endpoint)
+        assert.strictEqual(request.body.model, model)
+      }
+    }),
+  )
+  it.effect(
+    "rejects IDs absent from the account catalog before inference",
+    () =>
+      Effect.gen(function* () {
+        const { requests, result } = yield* requestModel(
+          undefined,
+          "other-provider-name",
+        )
+        assert.lengthOf(requests, 0)
+        assert.isTrue(Exit.isFailure(result))
+        assert.include(
+          String(result),
+          'does not advertise model "other-provider-name"',
+        )
+      }),
   )
 })

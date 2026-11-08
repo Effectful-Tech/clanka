@@ -94,6 +94,63 @@ const makeEffectClient = Effect.fn("makeEffectClient")(function* (
 
 describe("GithubCopilotAuth", () => {
   it.effect(
+    "replaces a rejected device code once without retrying denied access",
+    () =>
+      Effect.gen(function* () {
+        for (const [error, succeeds] of [
+          ["incorrect_device_code", true],
+          ["incorrect_device_code", false],
+          ["expired_token", true],
+          ["expired_token", false],
+          ["access_denied", false],
+        ] as const) {
+          let codes = 0
+          const displayed: Array<string> = []
+          const { client } = yield* makeClient((request) => {
+            if (request.url === `${ISSUER}/login/device/code`) {
+              codes++
+              return jsonResponse({
+                device_code: `private-${codes}`,
+                user_code: `USER-${codes}`,
+                verification_uri: `${ISSUER}/login/device`,
+                interval: 1,
+              })
+            }
+            assert.strictEqual(
+              JSON.parse(getBody(request)).device_code,
+              `private-${codes}`,
+            )
+            return jsonResponse(
+              codes === 2 && succeeds
+                ? { access_token: "authorized" }
+                : { error },
+            )
+          })
+          const auth = yield* GithubCopilotAuth.make.pipe(
+            Effect.provideService(HttpClient.HttpClient, client),
+            Effect.provideService(DeviceCodeHandler.DeviceCodeHandler, {
+              onCode: ({ deviceCode }) =>
+                Effect.sync(() => {
+                  displayed.push(deviceCode)
+                }),
+            }),
+            Effect.provide(KeyValueStore.layerMemory),
+          )
+          if (succeeds) {
+            assert.strictEqual((yield* auth.authenticate).access, "authorized")
+          } else {
+            const failure = yield* Effect.flip(auth.authenticate)
+            assert.include(failure.message, error)
+          }
+          assert.deepStrictEqual(
+            displayed,
+            error === "access_denied" ? ["USER-1"] : ["USER-1", "USER-2"],
+          )
+        }
+      }),
+  )
+
+  it.effect(
     "persists token data through the prefixed schema store",
     Effect.fn(function* () {
       const kvs = yield* KeyValueStore.KeyValueStore

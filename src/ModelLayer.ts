@@ -15,6 +15,7 @@ import * as ClaudeAgent from "./ClaudeAgent.ts"
 import * as Codex from "./Codex.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Copilot from "./Copilot.ts"
+import { CopilotModels } from "./CopilotModels.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
 import * as Xai from "./Xai.ts"
 
@@ -213,20 +214,29 @@ export const makeAcp =
   (modelId: string, thoughtLevel: ThoughtLevel, fastMode = false) =>
     Option.map(parseAcpModelId(modelId), ({ provider, model }) =>
       Layer.unwrap(
-        Effect.map(options.models, (catalog) => {
-          const info = catalog.find(
-            (entry) => entry.provider === provider && entry.id === model,
-          )
-          return make(
-            provider,
-            model,
-            info === undefined
-              ? thoughtLevel
-              : resolveEffort(info.efforts, thoughtLevel),
-            options.openai,
-            fastMode,
-            options.auxiliary,
-          )
-        }),
+        Effect.map(
+          // Copilot efforts come from the account catalog, which `models`
+          // omits unless Copilot is the default provider. A catalog that
+          // cannot be read fails the model rather than running it at an
+          // effort it may not support.
+          provider === "copilot"
+            ? Effect.orDie(CopilotModels.account)
+            : options.models,
+          (catalog) => {
+            const info = catalog.find(
+              (entry) => entry.provider === provider && entry.id === model,
+            )
+            return make(
+              provider,
+              model,
+              info === undefined
+                ? thoughtLevel
+                : resolveEffort(info.efforts, thoughtLevel),
+              options.openai,
+              fastMode,
+              options.auxiliary,
+            )
+          },
+        ),
       ),
     )

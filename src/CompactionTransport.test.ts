@@ -190,40 +190,46 @@ describe("Compaction provider transport", () => {
     "retains Copilot's 4k wire-level cap only for the streamed summary",
     () =>
       Effect.gen(function* () {
-        const http = captureHttp()
-        yield* Effect.gen(function* () {
-          yield* streamedSummary.pipe(Effect.exit)
-          const ai = yield* LanguageModel.LanguageModel
-          yield* ai
-            .streamText({ prompt: "continue" })
-            .pipe(Stream.runDrain, Effect.exit)
-        }).pipe(
-          Effect.provide(
-            Copilot.model("gpt-4.1").pipe(
-              Layer.provide(
-                CompatClient.layer({ apiUrl: "https://copilot.test" }).pipe(
-                  Layer.provide(http.layer),
+        for (const [model, endpoint, cap] of [
+          ["gpt-4.1", "/chat/completions", "max_tokens"],
+          ["gpt-6-astra", "/responses", "max_output_tokens"],
+        ] as const) {
+          const http = captureHttp()
+          yield* Effect.gen(function* () {
+            yield* streamedSummary.pipe(Effect.exit)
+            const ai = yield* LanguageModel.LanguageModel
+            yield* ai
+              .streamText({ prompt: "continue" })
+              .pipe(Stream.runDrain, Effect.exit)
+          }).pipe(
+            Effect.provide(
+              Copilot.model(model).pipe(
+                Layer.provide(
+                  Layer.mergeAll(
+                    CompatClient.layer({ apiUrl: "https://copilot.test" }),
+                    OpenAiClient.layer({ apiUrl: "https://copilot.test" }),
+                  ).pipe(Layer.provide(http.layer)),
                 ),
               ),
             ),
-          ),
-        )
-        assert.strictEqual(http.requests.length, 2)
-        assert.strictEqual(
-          http.requests[0]!.url,
-          "https://copilot.test/chat/completions",
-        )
-        const summary = body(http.requests[0]!)
-        const continuation = body(http.requests[1]!)
-        assert.strictEqual(summary.stream, true)
-        // The compatibility client translates max_output_tokens to max_tokens.
-        assert.strictEqual(summary.max_tokens, 4_000)
-        assert.deepStrictEqual(summary.tools ?? [], [])
-        assert.isFalse(
-          "max_tokens" in continuation,
-          "summary override must not leak into the next model call",
-        )
-        assert.strictEqual(continuation.stream, true)
+          )
+          assert.strictEqual(http.requests.length, 2)
+          assert.strictEqual(
+            http.requests[0]!.url,
+            "https://copilot.test" + endpoint,
+          )
+          const summary = body(http.requests[0]!)
+          const continuation = body(http.requests[1]!)
+          assert.strictEqual(summary.stream, true)
+          // The compatibility client translates max_output_tokens to max_tokens.
+          assert.strictEqual(summary[cap], 4_000)
+          assert.deepStrictEqual(summary.tools ?? [], [])
+          assert.isFalse(
+            cap in continuation,
+            "summary override must not leak into the next model call",
+          )
+          assert.strictEqual(continuation.stream, true)
+        }
       }),
   )
 

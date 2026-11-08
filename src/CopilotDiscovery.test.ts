@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest"
 import * as Effect from "effect/Effect"
+import * as Exit from "effect/Exit"
 import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
 import * as LanguageModel from "effect/ai/LanguageModel"
@@ -70,14 +71,23 @@ it.effect(
         STORE_TOKEN_KEY,
         new TokenData({ access: "fixture", expires: 0 }),
       )
-      for (const { efforts, expected } of [
+      for (const { efforts, expected, transient } of [
         { efforts: ["high"], expected: { effort: "high" } },
         { efforts: [], expected: undefined },
+        // A failed capability lookup must not run the model at the session
+        // effort, even when the model's own catalog read then succeeds.
+        { efforts: ["high"], expected: undefined, transient: true },
       ]) {
         let body: { reasoning?: { effort?: string } } = {}
+        let reads = 0
         const client = HttpClient.make((request) =>
           Effect.sync(() => {
-            if (request.url.endsWith("/models"))
+            if (request.url.endsWith("/models")) {
+              if (transient && reads++ === 0)
+                return HttpClientResponse.fromWeb(
+                  request,
+                  new Response(null, { status: 503 }),
+                )
               return HttpClientResponse.fromWeb(
                 request,
                 Response.json({
@@ -96,6 +106,7 @@ it.effect(
                   ],
                 }),
               )
+            }
             if (request.body._tag !== "Uint8Array")
               throw new Error("Expected JSON body")
             body = JSON.parse(new TextDecoder().decode(request.body.body))
@@ -112,7 +123,7 @@ it.effect(
         const layer = Option.getOrThrow(
           makeModel("copilot:account-model", "medium"),
         )
-        yield* Effect.gen(function* () {
+        const exit = yield* Effect.gen(function* () {
           const ai = yield* LanguageModel.LanguageModel
           yield* ai
             .streamText({ prompt: "hello" })
@@ -126,7 +137,9 @@ it.effect(
           Effect.provideService(Socket.WebSocketConstructor, () => {
             throw new Error("Unexpected socket")
           }),
+          Effect.exit,
         )
+        assert.strictEqual(Exit.isFailure(exit), transient === true)
         assert.deepStrictEqual(body.reasoning, expected)
       }
     }).pipe(Effect.provide(KeyValueStore.layerMemory)),

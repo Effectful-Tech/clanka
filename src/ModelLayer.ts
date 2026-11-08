@@ -217,10 +217,10 @@ export const makeAcp =
         Effect.map(
           // Copilot efforts come from the account catalog, which `models`
           // omits unless Copilot is the default provider. A catalog that
-          // cannot be read leaves the model unlisted; `Copilot.model` reports
-          // the failure.
+          // cannot be read fails the model rather than running it at an
+          // effort it may not support.
           provider === "copilot"
-            ? Effect.orElseSucceed(CopilotModels.account, () => [])
+            ? Effect.orDie(CopilotModels.account)
             : options.models,
           (catalog) => {
             const info = catalog.find(

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.22.5
+
+### Patch Changes
+
+- [#294](https://github.com/Effectful-Tech/clanka/pull/294) [`774e2a2`](https://github.com/Effectful-Tech/clanka/commit/774e2a27949cd698726b2f148e1ec494846bfaeb) Thanks [@tim-smart](https://github.com/tim-smart)! - Allow disabling the global Fetch API with `excludeTools: ["fetch"]` on the executor, or `--no-fetch` / `CLANKA_FETCH=false` in the CLI and ACP server. Fetch remains enabled by default.
+
 ## 0.22.4
 
 ### Patch Changes

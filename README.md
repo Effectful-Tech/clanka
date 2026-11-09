@@ -17,6 +17,8 @@ URL (for example, `https://gateway.example.com/v1`). Flags take precedence over
 environment variables. API-key mode uses the HTTP Responses API, so custom
 endpoints must support `/responses`. Without a key, the Codex authentication
 flow and endpoint remain unchanged. These options do not affect Copilot or xAI.
+For endpoints that only serve chat completions, use the `openai-compat`
+provider below.
 
 The ACP server accepts the same options:
 
@@ -28,6 +30,27 @@ These options configure the chat model, including subagents. Semantic search
 continues to use `OPENAI_API_KEY` and the default OpenAI embeddings endpoint.
 Setting only `OPENAI_API_KEY` does not enable API-key mode for chat.
 
+## OpenAI-compatible endpoints
+
+The `openai-compat` provider talks to any OpenAI-compatible chat completions
+endpoint, such as a model proxy. It takes the same `--api-url` and
+`--api-key` (or `CLANKA_OPENAI_API_URL` and `CLANKA_OPENAI_API_KEY`), and
+sends requests to `/chat/completions`:
+
+```sh
+clanka --provider openai-compat --model kimi-k3/high \
+  --api-url https://proxy.example.com/v1
+clanka acp --model openai-compat/kimi-k3 --api-url https://proxy.example.com/v1
+```
+
+The effort is sent as `reasoning_effort`. Without one, no effort is sent and
+the endpoint's default applies. In `clanka acp` every session has a thought
+level, so it is always sent. When `--api-url` is set, the models the endpoint
+lists at `/models` show up in the model prompt and in the ACP model list as
+`openai-compat` models. `--model` accepts ids the endpoint does not list,
+including ids with slashes such as `openai-compat/moonshotai/Kimi-K2-Instruct`;
+a trailing segment is read as the effort only when it is a reasoning level.
+
 ## Fast mode
 
 OpenAI fast mode sends requests on the `priority` service tier: faster
@@ -38,7 +61,7 @@ clanka --provider openai --model gpt-6-astra/medium --fast
 ```
 
 It applies to the openai provider, with Codex authentication or an API key, and
-is ignored for Copilot and xAI. In `clanka acp`, `--fast` sets the default for
+is ignored for the other providers. In `clanka acp`, `--fast` sets the default for
 new sessions, and ACP clients can switch it per session with the `fast_mode`
 config option. The option is offered only while the session model is an
 OpenAI model.

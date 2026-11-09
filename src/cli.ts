@@ -16,6 +16,7 @@ import * as McpConfig from "./McpConfig.ts"
 import * as McpServers from "./McpServers.ts"
 import * as ModelLayer from "./ModelLayer.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
+import * as OpenAiCompat from "./OpenAiCompat.ts"
 import * as Stream from "effect/Stream"
 import * as Stdio from "effect/Stdio"
 import { pipe } from "effect/Function"
@@ -26,6 +27,7 @@ import * as Schema from "effect/Schema"
 import * as Config from "effect/Config"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Option from "effect/Option"
+import type * as Redacted from "effect/Redacted"
 import { OpenAiClient, OpenAiEmbeddingModel } from "@effect/ai-openai"
 import * as DeviceCodeHandler from "./DeviceCodeHandler.ts"
 import packageJson from "../package.json" with { type: "json" }
@@ -68,7 +70,9 @@ type Provider = ModelsRepo.Provider
 const providers = ModelsRepo.Provider.literals
 
 // Pick a model from the catalog, filtering by name as the user types, then
-// one of its reasoning efforts.
+// one of its reasoning efforts. A model whose efforts are unknown runs at the
+// provider's default effort. A provider with no models takes a typed
+// <model>[/<effort>].
 const selectModel = Effect.fnUntraced(function* (provider: Provider) {
   const repo = yield* ModelsRepo.ModelsRepo
   const catalog = (yield* repo.models).filter(
@@ -78,6 +82,11 @@ const selectModel = Effect.fnUntraced(function* (provider: Provider) {
     catalog.length > 0
       ? catalog
       : ModelsRepo.fallback.filter((model) => model.provider === provider)
+  if (models.length === 0) {
+    return ModelLayer.parseModel(
+      yield* Prompt.String({ message: "Enter a model id" }),
+    )
+  }
   const defaultId = ModelsRepo.fallback.find(
     (model) => model.provider === provider,
   )?.id
@@ -90,6 +99,9 @@ const selectModel = Effect.fnUntraced(function* (provider: Provider) {
       selected: model.id === defaultId,
     })),
   })
+  if (model.efforts === undefined) {
+    return { model: model.id, effort: undefined }
+  }
   if (model.efforts.length === 0) {
     return { model: model.id, effort: null }
   }
@@ -104,30 +116,12 @@ const selectModel = Effect.fnUntraced(function* (provider: Provider) {
   return { model: model.id, effort }
 })
 
-const isProvider = Schema.is(ModelsRepo.Provider)
-
-const isThoughtLevel = Schema.is(Acp.ThoughtLevel)
-
-// `<provider>/<model>[/<effort>]` as accepted by the `acp` --model flag.
-const parseModelId = (modelId: string) => {
-  const [provider, model, effort, ...rest] = modelId.split("/")
-  return isProvider(provider) &&
-    model !== undefined &&
-    (effort === undefined || isThoughtLevel(effort)) &&
-    rest.length === 0
-    ? Option.some({
-        model: `${provider}:${model}`,
-        thoughtLevel: Option.fromUndefinedOr(effort),
-      })
-    : Option.none()
-}
-
 const ModelId = Schema.String.pipe(
   Schema.check(
     Schema.makeFilter(
       (modelId: string) =>
-        Option.isSome(parseModelId(modelId)) ||
-        `Invalid model "${modelId}", expected <provider>/<model>[/<effort>] with effort one of ${Acp.ThoughtLevel.literals.join(", ")}`,
+        Option.isSome(ModelLayer.parseModelSpec(modelId)) ||
+        `Invalid model "${modelId}", expected <provider>/<model>[/<effort>] with provider one of ${providers.join(", ")}`,
     ),
   ),
 )
@@ -145,14 +139,9 @@ const auxiliaryModel = (options: {
     ),
     Flag.withFallbackConfig(Config.String(options.env)),
     Flag.withSchema(ModelId),
-    Flag.map((modelId): ModelLayer.ModelSpec => {
-      const [provider, model, effort] = modelId.split("/") as [
-        Provider,
-        string,
-        string | undefined,
-      ]
-      return { provider, model, effort }
-    }),
+    Flag.map((modelId) =>
+      Option.getOrThrow(ModelLayer.parseModelSpec(modelId)),
+    ),
     Flag.optional,
   )
 
@@ -200,6 +189,10 @@ const provider = Flag.Literals("provider", providers).pipe(
           title: "claude",
           value: "claude",
         },
+        {
+          title: "openai-compat",
+          value: "openai-compat",
+        },
       ],
     }),
   ),
@@ -208,18 +201,35 @@ const provider = Flag.Literals("provider", providers).pipe(
 const model = Flag.String("model").pipe(Flag.withAlias("m"), Flag.optional)
 
 const apiKey = Flag.Redacted("api-key").pipe(
-  Flag.withDescription("OpenAI API key (defaults to CLANKA_OPENAI_API_KEY)"),
+  Flag.withDescription(
+    "API key for the openai API-key mode and the openai-compat provider (defaults to CLANKA_OPENAI_API_KEY)",
+  ),
   Flag.withFallbackConfig(Config.Redacted("CLANKA_OPENAI_API_KEY")),
   Flag.optional,
 )
 
 const apiUrl = Flag.String("api-url").pipe(
   Flag.withDescription(
-    "OpenAI API base URL for API-key mode (defaults to CLANKA_OPENAI_API_URL or https://api.openai.com/v1)",
+    "API base URL for the openai API-key mode and the openai-compat provider (defaults to CLANKA_OPENAI_API_URL or https://api.openai.com/v1). When set, the models it lists at /models are offered as openai-compat models.",
   ),
   Flag.withFallbackConfig(Config.String("CLANKA_OPENAI_API_URL")),
   Flag.optional,
 )
+
+// Adds the models an --api-url endpoint lists to the catalog, as openai-compat
+// models. Without --api-url the endpoint is OpenAI's, which is not listed.
+const openAiCompatModels = (flags: {
+  readonly apiKey: Option.Option<Redacted.Redacted>
+  readonly apiUrl: Option.Option<string>
+}) =>
+  Option.match(flags.apiUrl, {
+    onNone: () => Layer.empty,
+    onSome: (apiUrl) =>
+      OpenAiCompat.layerModelsRepo({
+        apiUrl,
+        apiKey: Option.getOrUndefined(flags.apiKey),
+      }),
+  })
 
 // OpenAI's `priority` service tier.
 const fast = Flag.Boolean("fast").pipe(
@@ -388,7 +398,13 @@ const acpModel = Flag.String("model").pipe(
   ),
   Flag.withSchema(ModelId),
   Flag.withDefault("openai/gpt-6-astra"),
-  Flag.map((modelId) => Option.getOrThrow(parseModelId(modelId))),
+  Flag.map((modelId) => {
+    const spec = Option.getOrThrow(ModelLayer.parseModelSpec(modelId))
+    return {
+      model: `${spec.provider}:${spec.model}`,
+      thoughtLevel: Option.fromUndefinedOr(spec.effort),
+    }
+  }),
 )
 
 // kiro launchers pass it to every `acp` run; clanka has no tool permissions to
@@ -465,6 +481,7 @@ const acp = Command.make("acp", {
       Layer.succeed(Logger.LogToStderr, true),
       DeviceCodeHandler.layerLog,
       compactionConfig(flags),
+      openAiCompatModels(flags),
     ),
   ),
 )
@@ -508,13 +525,7 @@ Command.make("clanka", {
         () => import("./OutputFormatter.ts"),
       )
       const { model, effort } = yield* Option.match(modelRaw, {
-        onSome: (selected) => {
-          const [model, effort] = selected.split("/") as [
-            string,
-            string | undefined,
-          ]
-          return Effect.succeed({ model, effort })
-        },
+        onSome: (selected) => Effect.succeed(ModelLayer.parseModel(selected)),
         onNone: () => selectModel(provider),
       })
       const Model = ModelLayer.make(
@@ -583,6 +594,7 @@ Command.make("clanka", {
     Layer.mergeAll(
       Agent.ConversationMode.layer(Option.isNone(prompt)),
       compactionConfig(flags),
+      openAiCompatModels(flags),
     ),
   ),
   Command.withSubcommands([acp]),

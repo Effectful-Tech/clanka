@@ -16,6 +16,7 @@ import * as Codex from "./Codex.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Copilot from "./Copilot.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
+import * as OpenAiCompat from "./OpenAiCompat.ts"
 import * as Xai from "./Xai.ts"
 
 /**
@@ -87,13 +88,23 @@ const languageModel = (
       return Copilot.model(model, options).pipe(
         Layer.provide(Copilot.layerClient),
       )
+    case "openai-compat":
+      return OpenAiCompat.model(model, options).pipe(
+        Layer.provide(
+          OpenAiCompat.layerClient({
+            apiKey: openai.apiKey,
+            apiUrl: openai.apiUrl,
+          }),
+        ),
+      )
   }
 }
 
 /**
  * The model layer for a provider and model id. `effort` is `null` for models
  * that take no reasoning effort, and `undefined` to keep the provider's
- * default effort. `fastMode` requests the `priority` service tier and is
+ * default effort. `openai` is the client for the `openai` API-key mode and
+ * for the `openai-compat` provider. `fastMode` requests the `priority` service tier and is
  * ignored for providers without fast mode; it also applies to the
  * `auxiliary` models.
  *
@@ -132,15 +143,56 @@ export const make = (
 const isProvider = Schema.is(ModelsRepo.Provider)
 
 /**
- * Parses a `<provider>:<model>` id as advertised over ACP.
+ * Parses a `<provider>:<model>` id as advertised over ACP. The model id is
+ * everything after the first colon, so it may hold colons itself.
  *
  * @since 1.0.0
  * @category Parsing
  */
 export const parseAcpModelId = (modelId: string) => {
-  const [provider, model, ...rest] = modelId.split(":")
-  return isProvider(provider) && model !== undefined && rest.length === 0
+  const index = modelId.indexOf(":")
+  const provider = modelId.slice(0, index)
+  const model = modelId.slice(index + 1)
+  return index !== -1 && isProvider(provider) && model !== ""
     ? Option.some({ provider, model })
+    : Option.none()
+}
+
+const isThoughtLevel = Schema.is(ThoughtLevel)
+
+/**
+ * Parses `<model>[/<effort>]`. The last segment is the effort only when it
+ * is a `ThoughtLevel`, so model ids may hold slashes, as in
+ * `moonshotai/Kimi-K2-Instruct`.
+ *
+ * @since 1.0.0
+ * @category Parsing
+ */
+export const parseModel = (
+  value: string,
+): { readonly model: string; readonly effort: ThoughtLevel | undefined } => {
+  const index = value.lastIndexOf("/")
+  const effort = value.slice(index + 1)
+  return index > 0 && isThoughtLevel(effort)
+    ? { model: value.slice(0, index), effort }
+    : { model: value, effort: undefined }
+}
+
+/**
+ * Parses `<provider>/<model>[/<effort>]`, as the CLI model flags take it.
+ * See `parseModel` for the model and effort.
+ *
+ * @since 1.0.0
+ * @category Parsing
+ */
+export const parseModelSpec = (
+  value: string,
+): Option.Option<ModelSpec & { readonly effort: ThoughtLevel | undefined }> => {
+  const index = value.indexOf("/")
+  const provider = value.slice(0, index)
+  const { model, effort } = parseModel(value.slice(index + 1))
+  return index !== -1 && isProvider(provider) && model !== ""
+    ? Option.some({ provider, model, effort })
     : Option.none()
 }
 
@@ -194,11 +246,12 @@ const resolveEffort = (
 
 /**
  * An `Acp.Options.makeModel` callback. Ids that do not parse as
- * `<provider>:<model>` are unknown models. A model the catalog lists without
+ * `<provider>:<model>` are unknown models. A model the catalog lists with no
  * efforts runs with no reasoning options, whatever the session thought level.
  * A listed model that does not support the session thought level runs at the
  * supported effort nearest to it in `ThoughtLevel` order, the higher one on a
- * tie. Unlisted models run at the session thought level. Fast mode applies
+ * tie. Unlisted models, and listed models whose efforts are unknown, run at
+ * the session thought level. Fast mode applies
  * to OpenAI models only. Every session uses the same `auxiliary` models.
  *
  * @since 1.0.0
@@ -220,7 +273,7 @@ export const makeAcp =
           return make(
             provider,
             model,
-            info === undefined
+            info?.efforts === undefined
               ? thoughtLevel
               : resolveEffort(info.efforts, thoughtLevel),
             options.openai,

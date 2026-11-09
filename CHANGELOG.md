@@ -1,5 +1,11 @@
 # clanka
 
+## 0.24.3
+
+### Patch Changes
+
+- [#309](https://github.com/Effectful-Tech/clanka/pull/309) [`66a76e8`](https://github.com/Effectful-Tech/clanka/commit/66a76e87b5f21ea101e3c61cb5b135ef940d356d) Thanks [@tim-smart](https://github.com/tim-smart)! - Treat Claude Agent 429 credential cooldown errors as retryable rate limits, including errors surfaced through Kiro.
+
 ## 0.24.2
 
 ### Patch Changes

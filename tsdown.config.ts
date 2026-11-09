@@ -5,7 +5,7 @@ export default defineConfig({
   outDir: "dist/bin",
   platform: "node",
   format: "esm",
-  sourcemap: true,
+  sourcemap: false,
   dts: false,
   // V8 keeps the bundle source resident for the life of the process. Strip
   // comments to shrink it, and escape non-ASCII characters so V8 can store

@@ -17,6 +17,7 @@ import * as Fiber from "effect/Fiber"
 import * as Toolkit from "effect/ai/Toolkit"
 import * as Tool from "effect/ai/Tool"
 import * as Schema from "effect/Schema"
+import * as Scope from "effect/Scope"
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
 import * as FileSystem from "effect/FileSystem"
 import * as Path from "effect/Path"
@@ -307,7 +308,8 @@ export class CommandLimits extends Context.Reference<{
  */
 export const makeBashTool = (timeout: Duration.Duration) =>
   Tool.make("bash", {
-    description: "Run a bash command and return a task.",
+    description:
+      "Run a bash command and return a task. Large output is abbreviated with a temporary-file path to the complete output, available until the executor closes.",
     parameters: Schema.Struct({
       command: Schema.String,
       timeoutMs: Schema.optional(Schema.Finite).annotate({
@@ -581,23 +583,43 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     const commandScope = yield* Effect.scope
     const startCommand = Effect.fnUntraced(function* (
       command: ChildProcess.Command,
+      saveLargeOutput = false,
     ) {
       const { outputChars } = yield* CommandLimits
-      const output = makeOutputBuffer(outputChars)
+      const maxChars = saveLargeOutput ? (outputChars ?? 30_000) : outputChars
+      const output = makeOutputBuffer(maxChars)
+      let total = 0
+      let outputFile: string | undefined
+      const append = Effect.fnUntraced(function* (chunk: string) {
+        if (saveLargeOutput) {
+          if (outputFile !== undefined) {
+            yield* fs.writeFileString(outputFile, chunk, { flag: "a" })
+          } else if (total + chunk.length > maxChars!) {
+            const file = yield* fs
+              .makeTempFileScoped({ prefix: "clanka-bash-" })
+              .pipe(Effect.provideService(Scope.Scope, commandScope))
+            yield* fs.writeFileString(file, output.render() + chunk)
+            outputFile = file
+          }
+        }
+        total += chunk.length
+        output.append(chunk)
+      })
       const fiber = yield* spawner.spawn(command).pipe(
         Effect.flatMap((handle) =>
           handle.all.pipe(
             Stream.decodeText,
-            Stream.runForEach((chunk) =>
-              Effect.sync(() => output.append(chunk)),
-            ),
+            Stream.runForEach(append),
             Effect.andThen(handle.exitCode),
           ),
         ),
         Effect.scoped,
         Effect.forkIn(commandScope),
       )
-      return { fiber, output: output.render }
+      return {
+        fiber,
+        output: () => output.render(outputFile),
+      }
     })
 
     // Every task started on this executor, bash and agent alike, so both
@@ -883,7 +905,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         })
         const entry = yield* addBashTask(
           options.command,
-          yield* startCommand(cmd),
+          yield* startCommand(cmd, true),
         )
         if (options.background !== true) {
           const exit = yield* awaitCommand(
@@ -1379,10 +1401,10 @@ const makeOutputBuffer = (maxChars: number | undefined) => {
         tail = (tail + rest).slice(-tailChars)
       }
     },
-    render() {
+    render(outputFile?: string) {
       const omitted = total - head.length - tail.length
       if (omitted <= 0) return head + tail
-      return `${head}\n\n[... ${omitted} of ${total} chars omitted from the middle of the output ...]\n\n${tail}`
+      return `${head}\n\n[... ${omitted} of ${total} chars omitted from the middle of the output ...]\n${outputFile === undefined ? "" : `Full output saved to: ${outputFile}\n`}\n${tail}`
     },
   }
 }

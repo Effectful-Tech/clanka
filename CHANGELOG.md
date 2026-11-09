@@ -1,5 +1,12 @@
 # clanka
 
+## 0.23.0
+
+### Minor Changes
+
+- [#298](https://github.com/Effectful-Tech/clanka/pull/298) [`db2522e`](https://github.com/Effectful-Tech/clanka/commit/db2522e6645ef0733997205716317e24259cfcad) Thanks [@tim-smart](https://github.com/tim-smart)! - Rename the `delegate` tool to `subagent`. Update scripts, custom prompts, `excludeTools` entries and `agentTasks` handlers to use `subagent`; its options and task results are unchanged.
+  The executor RPC request tag is now `Subagent` instead of `Delegate`, so update RPC clients and servers together.
+
 ## 0.22.6
 
 ### Patch Changes

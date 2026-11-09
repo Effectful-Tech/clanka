@@ -1,5 +1,11 @@
 # clanka
 
+## 0.24.0
+
+### Minor Changes
+
+- [#304](https://github.com/Effectful-Tech/clanka/pull/304) [`c499e58`](https://github.com/Effectful-Tech/clanka/commit/c499e585ac6ac991045999ee9ea72073e605f892) Thanks [@tim-smart](https://github.com/tim-smart)! - Add an `openai-compat` provider for OpenAI-compatible chat completions endpoints, such as a model proxy serving Kimi models. It uses `--api-url` and `--api-key`, sends the reasoning effort as `reasoning_effort`, caps compaction summaries with `max_tokens`, and lists the endpoint's `/models` in the model prompt and ACP model list. Model ids may now hold slashes in `--model` (e.g. `openai-compat/moonshotai/Kimi-K2-Instruct/high`) and colons in ACP ids.
+
 ## 0.23.2
 
 ### Patch Changes

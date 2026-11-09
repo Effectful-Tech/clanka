@@ -740,11 +740,15 @@ describe("Acp", () => {
                     resumed ? "SECOND-RESULT" : "FIRST-RESULT",
                   )
                 }
-                const seen = JSON.stringify(prompt.content)
-                if (seen.includes("SECOND-RESULT")) return assistantSays("done")
+                const completions = prompt.content.filter(
+                  (message) =>
+                    message.role === "user" &&
+                    JSON.stringify(message.content).includes("<task "),
+                ).length
+                if (completions === 2) return assistantSays("done")
                 if (
                   executions === 0 ||
-                  (executions === 1 && seen.includes("FIRST-RESULT"))
+                  (executions === 1 && completions === 1)
                 ) {
                   return parts({
                     type: "tool-call",
@@ -758,7 +762,7 @@ describe("Acp", () => {
               {
                 ...executor,
                 // The first script starts a background child; the second
-                // resumes it once its first result has been delivered.
+                // resumes it once its first completion has been delivered.
                 execute: ({ agentTasks, environment }) =>
                   Stream.fromEffect(
                     executions++ === 0

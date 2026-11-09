@@ -1614,7 +1614,7 @@ const taskMessage = (task: Task): string => {
   const exitCode =
     task.exitCode === undefined ? "" : ` exitCode="${task.exitCode}"`
   return `<task id="${task.id}" kind="${task.kind}" status="${task.status}"${exitCode}>
-${Compaction.capOutput(task.output).output}
+To read the output, call taskOutput(${JSON.stringify(task.id)}).
 </task>`
 }
 
@@ -1771,7 +1771,7 @@ const taskInstructions = (tools: PromptTools): string => {
       ? ""
       : ` ${functions.length === 1 ? functions[0]! : `${functions.slice(0, -1).join(", ")} and ${functions.at(-1)!}`}.`
   const pushes = tools.taskPushes
-    ? ` When a task ends, its status and output are sent to you as a \`<task id="..." kind="..." status="...">\` message, unless a task function already gave you its final status, so you do not need to poll.`
+    ? ` When a task ends, its status and a call to retrieve its output are sent to you as a \`<task id="..." kind="..." status="...">\` message, unless a task function already gave you its final status, so you do not need to poll.`
     : bash && tools.offers("taskOutput")
       ? ` Background commands are not sent to you when they end: check them with "taskOutput".`
       : ""

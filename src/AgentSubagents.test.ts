@@ -23,7 +23,6 @@ import * as RpcServer from "effect/rpc/RpcServer"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import type { Output } from "./AgentOutput.ts"
-import * as Compaction from "./Compaction.ts"
 
 // =============================================================================
 // Agent tasks: lifetime and completion delivery.
@@ -274,7 +273,7 @@ for (const [executorName, executorLayer] of executors) {
   ) => it.live(name, () => self().pipe(Effect.provide(executorLayer(limits))))
 
   describe(`agent tasks (${executorName} executor)`, () => {
-    test("an idle conversation turn waits for a running child, then gets its capped output", () =>
+    test("an idle conversation turn waits for a running child, then gets an output retrieval call", () =>
       Effect.gen(function* () {
         const childRelease = Latch.makeUnsafe(false)
         const childOutput = "CHILD-HEAD " + "x".repeat(40_000) + " CHILD-TAIL"
@@ -298,6 +297,13 @@ for (const [executorName, executorLayer] of executors) {
                   Stream.ensuring(Effect.sync(() => childRelease.openUnsafe())),
                 )
               case 2:
+                return Stream.make(
+                  toolCall(
+                    "read",
+                    `console.log((await taskOutput("1")).output)`,
+                  ),
+                )
+              case 3:
                 return Stream.fromIterable(text("all done"))
               default:
                 return unexpected(call)
@@ -307,7 +313,7 @@ for (const [executorName, executorLayer] of executors) {
 
         assert.deepStrictEqual(exit, Exit.succeed("all done"))
         const root = calls.filter((call) => call.role === "root")
-        assert.strictEqual(root.length, 3)
+        assert.strictEqual(root.length, 4)
 
         const started = lastToolResult(root[1]!.prompt)
         assert.include(started, '"id":"1"')
@@ -317,13 +323,11 @@ for (const [executorName, executorLayer] of executors) {
 
         const push = findPush(root[2]!.prompt, "1", "completed")
         assert.notStrictEqual(push.index, -1, "completion push delivered")
-        assert.include(push.text, "CHILD-HEAD")
-        assert.include(push.text, "CHILD-TAIL")
-        assert.isAtMost(
-          push.text.length,
-          Compaction.executeOutputCapChars + 1_000,
-          "push output goes through capOutput",
-        )
+        assert.include(push.text, 'taskOutput("1")')
+        assert.notInclude(push.text, "CHILD-HEAD")
+        assert.notInclude(push.text, "CHILD-TAIL")
+        assert.include(lastToolResult(root[3]!.prompt), "CHILD-HEAD")
+        assert.include(lastToolResult(root[3]!.prompt), "CHILD-TAIL")
       }))
 
     test("a completion push does not cut off the parent's in-progress response", () =>
@@ -400,7 +404,7 @@ for (const [executorName, executorLayer] of executors) {
           "the tool call after the push still ran",
         )
         const push = findPush(prompt, "1", "completed")
-        assert.include(push.text, "CHILD-RESULT")
+        assert.include(push.text, 'taskOutput("1")')
         assert.isAbove(
           push.index,
           assistantIndex,
@@ -438,7 +442,8 @@ for (const [executorName, executorLayer] of executors) {
         const root = calls.filter((call) => call.role === "root")
         const push = findPush(root[2]!.prompt, "1", "failed")
         assert.notStrictEqual(push.index, -1, "failure push delivered")
-        assert.include(push.text, "rejected")
+        assert.include(push.text, 'taskOutput("1")')
+        assert.notInclude(push.text, "rejected")
       }))
 
     test("taskComplete fails while a child is running and leaves it running", () =>
@@ -700,13 +705,10 @@ console.log(JSON.stringify(await taskOutput("1")))`,
             if (call.index === 0) {
               return Stream.make(spawnBackground("TASK-CHILD"))
             }
-            if (pushes.some((push) => push.includes("SECOND-ANSWER"))) {
+            if (pushes.length === 2) {
               return Stream.fromIterable(text("resumed"))
             }
-            if (
-              messageCall === undefined &&
-              pushes.some((push) => push.includes("FIRST-ANSWER"))
-            ) {
+            if (messageCall === undefined && pushes.length === 1) {
               messageCall = call.index
               return Stream.make(
                 toolCall(
@@ -721,7 +723,7 @@ console.log("MESSAGE-VOID:", result === undefined)`,
         })
 
         assert.deepStrictEqual(exit, Exit.succeed("resumed"))
-        assert.isDefined(messageCall, "the first answer was pushed")
+        assert.isDefined(messageCall, "the first completion was pushed")
         const root = calls.filter((call) => call.role === "root")
         const messaged = lastToolResult(root[messageCall! + 1]!.prompt)
         assert.include(messaged, "MESSAGE-VOID: true")
@@ -747,7 +749,7 @@ console.log("MESSAGE-VOID:", result === undefined)`,
               case "child":
                 if (
                   findPush(call.prompt, "2", "completed").text.includes(
-                    "GRAND-RESULT",
+                    'taskOutput("2")',
                   )
                 ) {
                   return complete("CHILD-DONE")
@@ -1014,8 +1016,8 @@ console.log("WAITED:" + task.status)`,
         assert.strictEqual(root.length, 3)
         assert.include(
           findPush(root[2]!.prompt, "1", "completed").text,
-          "CHILD-LATE",
-          "its result is pushed once it ends",
+          'taskOutput("1")',
+          "its completion is pushed once it ends",
         )
       }))
 
@@ -1056,7 +1058,7 @@ console.log("RETURNED")`,
           assert.notInclude(result, "RETURNED")
           assert.isTrue(
             pushTexts(root[1]!.prompt).some((push) =>
-              /^<task id="1" kind="bash" status="completed" exitCode="0">\s*BASH-OUT\s*<\/task>$/.test(
+              /^<task id="1" kind="bash" status="completed" exitCode="0">\s*To read the output, call taskOutput\("1"\)\.\s*<\/task>$/.test(
                 push,
               ),
             ),
@@ -1064,7 +1066,7 @@ console.log("RETURNED")`,
           )
           assert.include(
             findPush(root[1]!.prompt, "2", "completed").text,
-            "CHILD-OUT",
+            'taskOutput("2")',
             "the agent task is pushed",
           )
         }),

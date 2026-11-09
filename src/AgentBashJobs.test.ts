@@ -24,7 +24,7 @@ import * as AgentExecutor from "./AgentExecutor.ts"
 //
 // These drive the real Agent loop and a real executor. When a background bash
 // task exits, the next model call gets a user message
-// `<task id="…" kind="bash" status="…" exitCode="…">output</task>`, unless the
+// `<task id="…" kind="bash" status="…" exitCode="…">output retrieval hint</task>`, unless the
 // task was already reported by `stopTask`, `waitTasks` or a `taskOutput` call
 // that saw its final status. Task IDs come from the executor's counter: "1",
 // "2", ...
@@ -161,7 +161,7 @@ for (const [executorName, executorLayer] of executors) {
   // Each test gets its own executor, so task IDs start at "1".
   describe(`background bash tasks (${executorName} executor)`, () => {
     it.live(
-      "a finished bash task is pushed once with its id, kind, status, exit code and output",
+      "a finished bash task is pushed once with its id, kind, status, exit code and an output retrieval call",
       () =>
         Effect.gen(function* () {
           const { exit, prompts } = yield* runAgent((index) => {
@@ -175,7 +175,10 @@ for (const [executorName, executorLayer] of executors) {
 await sleep(500)`,
                 )
               case 1:
-                return execute("again", `console.log("AGAIN")`)
+                return execute(
+                  "again",
+                  `console.log((await taskOutput("1")).output)`,
+                )
               default:
                 return text("done")
             }
@@ -187,7 +190,15 @@ await sleep(500)`,
           assert.strictEqual(pushes.length, 1, "pushed before the next call")
           assert.match(
             pushes[0]!,
-            /^<task id="1" kind="bash" status="failed" exitCode="3">\s*JOB-OUTPUT\s*<\/task>$/,
+            /^<task id="1" kind="bash" status="failed" exitCode="3">\s*To read the output, call taskOutput\("1"\)\.\s*<\/task>$/,
+          )
+          assert.include(
+            JSON.stringify(
+              prompts[2]!.content.findLast(
+                (message) => message.role === "tool",
+              ),
+            ),
+            "JOB-OUTPUT",
           )
           assert.deepStrictEqual(
             taskPushes(prompts[2]!),
@@ -232,7 +243,7 @@ console.log("SCRIPT" + "-DONE")`,
           assert.strictEqual(pushes.length, 1)
           assert.match(
             pushes[0]!,
-            /^<task id="3" kind="bash" status="completed" exitCode="0">\s*UNREAD\s*<\/task>$/,
+            /^<task id="3" kind="bash" status="completed" exitCode="0">\s*To read the output, call taskOutput\("3"\)\.\s*<\/task>$/,
           )
           assert.include(JSON.stringify(prompts[1]), "SCRIPT-DONE")
         }).pipe(Effect.provide(executorLayer)),

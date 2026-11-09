@@ -1020,7 +1020,7 @@ sleep(100).then(() => console.constructor.constructor("return process")().exit(7
         })
         const { output: text } = output as { readonly output: string }
         assert.isBelow(text.length, 10_000 + 500)
-        assert.match(text, /^Full output saved to: [^\n]+$/)
+        assert.match(text, /^Output was too large\. Saved to: [^\n]+$/)
       }).pipe(
         Effect.timeout("10 seconds"),
         Effect.provide(executorLayer({ commandOutputChars: 10_000 })),

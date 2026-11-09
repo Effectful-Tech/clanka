@@ -105,7 +105,7 @@ export const Task = Schema.Struct({
   status: TaskStatus,
   /** The bash command, or the sub-agent's prompt. */
   description: Schema.String,
-  /** Output so far while running; the final output, or the error, once ended. */
+  /** Output so far, a background-running notice after a timeout, or the final output/error. */
   output: Schema.String,
   /** bash only: set when the command exited on its own. */
   exitCode: Schema.optional(Schema.Number),
@@ -931,7 +931,9 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         // reach the model only once. A finished task is never handed over.
         const task = reportBash(entry)
         if (task.status === "running") yield* watchBashTask(entry)
-        return task
+        return options.background === true
+          ? task
+          : backgroundRunningOutput(task)
       }, Effect.orDie),
       taskOutput: Effect.fn("AgentTools.taskOutput")(function* (
         input: unknown,
@@ -989,7 +991,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
             task,
           ]),
         )
-        return ids.map((id) => ended.get(id)!)
+        return ids.map((id) => backgroundRunningOutput(ended.get(id)!))
       }),
       stopTask: Effect.fn("AgentTools.stopTask")(function* (input: unknown) {
         const id = yield* decodeStopTask(input)
@@ -1414,3 +1416,11 @@ const makeOutputBuffer = (maxChars: number | undefined) => {
 class ApplyPatchError extends Data.TaggedClass("ApplyPatchError")<{
   readonly message: string
 }> {}
+
+const backgroundRunningOutput = (task: Task): Task =>
+  task.status === "running"
+    ? {
+        ...task,
+        output: `Task "${task.id}" is still running in the background`,
+      }
+    : task

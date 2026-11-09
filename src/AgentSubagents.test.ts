@@ -992,7 +992,8 @@ console.log("ROOT:" + JSON.stringify(mine.map((task) => task.kind + ":" + task.s
                     "wait",
                     `const child = await subagent({ prompt: "TASK-CHILD", background: true })
 const [task] = await waitTasks({ ids: [child.id], timeoutMs: 200 })
-console.log("WAITED:" + task.status)`,
+console.log("WAITED:" + task.status)
+console.log("OUTPUT:" + task.output)`,
                   ),
                 )
               case 1:
@@ -1010,6 +1011,10 @@ console.log("WAITED:" + task.status)`,
         })
 
         assert.include(waited, "WAITED:running", "returned at the deadline")
+        assert.include(
+          waited,
+          'OUTPUT:Task "1" is still running in the background',
+        )
         assert.isFalse(childInterrupted, "the deadline does not stop the agent")
         assert.deepStrictEqual(exit, Exit.succeed("done"))
         const root = calls.filter((call) => call.role === "root")

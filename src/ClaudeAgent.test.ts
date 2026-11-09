@@ -260,6 +260,16 @@ describe("ClaudeAgent", () => {
         {
           subtype: "success",
           is_error: true,
+          result: "API Error: Request rejected (429)",
+        },
+        {
+          subtype: "success",
+          is_error: true,
+          result: "rate_limit_error: Please try again later.",
+        },
+        {
+          subtype: "success",
+          is_error: true,
           result: "Too many requests",
           api_error_status: 429,
         },

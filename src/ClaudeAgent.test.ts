@@ -250,6 +250,58 @@ describe("ClaudeAgent", () => {
     )
   })
 
+  it.effect("classifies credential cooldowns as retryable rate limits", () =>
+    Effect.gen(function* () {
+      const description =
+        "API Error: Request rejected (429) · All credentials for model claude-fable-5-2 are cooling down (last error: rate_limit_error: This request would exceed your account's rate limit. Please try again later.) (reset after 29m52s)"
+      for (const result of [
+        { subtype: "success", is_error: true, result: description },
+        { subtype: "error_during_execution", errors: [description] },
+        {
+          subtype: "success",
+          is_error: true,
+          result: "Too many requests",
+          api_error_status: 429,
+        },
+      ]) {
+        const error = yield* Stream.fromIterable([
+          { ...frame, type: "result", ...result },
+        ] as Array<any>).pipe(
+          ClaudeAgent.toStreamParts,
+          Stream.runCollect,
+          Effect.flip,
+        )
+        assert.strictEqual(error.reason._tag, "RateLimitError")
+        if (error.reason._tag !== "RateLimitError") return
+        assert.isTrue(error.isRetryable)
+        assert.strictEqual(
+          error.reason.metadata.description,
+          "result" in result ? result.result : description,
+        )
+      }
+    }),
+  )
+
+  it.effect("keeps unrelated request rejections non-retryable", () =>
+    Effect.gen(function* () {
+      const error = yield* Stream.fromIterable([
+        {
+          ...frame,
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          result: "API Error: Request rejected (403)",
+          api_error_status: 403,
+        },
+      ] as Array<any>).pipe(
+        ClaudeAgent.toStreamParts,
+        Stream.runCollect,
+        Effect.flip,
+      )
+      assert.isFalse(error.isRetryable)
+    }),
+  )
+
   it.effect("converts a tool step to response parts", () =>
     Effect.gen(function* () {
       const parts = yield* Stream.fromIterable(toolStep as Array<any>).pipe(

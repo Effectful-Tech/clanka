@@ -293,10 +293,10 @@ export interface Limits {
   readonly scriptTimeout?: Duration.Input | undefined
   /**
    * The most characters of `bash` and `gh` output held in memory per command.
-   * Longer output keeps its start and end, with a marker in place of the
-   * middle. Bash saves the complete output to a temporary file when this
-   * limit is exceeded; the path is included in the output. Files are removed
-   * when the executor closes.
+   * Bash output exceeding this limit is saved to a temporary file; only a
+   * message with the file path is returned. Files are removed when the
+   * executor closes. Longer gh output keeps its start and end, with a marker
+   * in place of the middle.
    *
    * Defaults to 30,000 characters for bash and no limit for gh.
    */

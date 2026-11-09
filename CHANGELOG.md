@@ -1,5 +1,11 @@
 # clanka
 
+## 0.24.2
+
+### Patch Changes
+
+- [#307](https://github.com/Effectful-Tech/clanka/pull/307) [`6e9f76f`](https://github.com/Effectful-Tech/clanka/commit/6e9f76fe56cc6e74d00482da8250f925a1419ddc) Thanks [@tim-smart](https://github.com/tim-smart)! - Return a background-running notice instead of partial output when bash or waitTasks times out. Actual output remains available through taskOutput.
+
 ## 0.24.1
 
 ### Patch Changes

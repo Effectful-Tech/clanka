@@ -44,11 +44,12 @@ clanka acp --model openai-compat/kimi-k3 --api-url https://proxy.example.com/v1
 ```
 
 The effort is sent as `reasoning_effort`. Without one, no effort is sent and
-the endpoint's default applies. When `--api-url` is set, the models the
-endpoint lists at `/models` show up in the model prompt and in the ACP model
-list as `openai-compat` models. The listing has no reasoning efforts, so ACP
-runs listed models at the endpoint's default effort. `--model` accepts ids the
-endpoint does not list.
+the endpoint's default applies. In `clanka acp` every session has a thought
+level, so it is always sent. When `--api-url` is set, the models the endpoint
+lists at `/models` show up in the model prompt and in the ACP model list as
+`openai-compat` models. `--model` accepts ids the endpoint does not list,
+including ids with slashes such as `openai-compat/moonshotai/Kimi-K2-Instruct`;
+a trailing segment is read as the effort only when it is a reasoning level.
 
 ## Fast mode
 

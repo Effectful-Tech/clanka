@@ -36,6 +36,12 @@ const makeModel = ModelLayer.makeAcp({
       name: "GPT-5 Pro",
       efforts: ["high"],
     }),
+    // Discovered from an endpoint's /models, which lists no efforts.
+    new ModelsRepo.ModelInfo({
+      provider: "openai-compat",
+      id: "kimi-k3",
+      name: "kimi-k3",
+    }),
   ]),
   openai: {
     apiKey: Redacted.make("test-key"),
@@ -144,16 +150,27 @@ describe("ModelLayer.makeAcp", () => {
     }),
   )
 
-  it.effect(
-    "runs openai-compat models on chat completions, without fast mode",
-    () =>
-      Effect.gen(function* () {
-        const body = yield* requestBody("openai-compat:kimi-k3", "high", true)
-        assert.strictEqual(body.model, "kimi-k3")
-        assert.isArray(body.messages)
-        assert.strictEqual(body.reasoning_effort, "high")
-        assert.isFalse("service_tier" in body)
-      }),
+  for (const modelId of ["openai-compat:kimi-k3", "openai-compat:kimi-k9"]) {
+    it.effect(
+      "runs " + modelId + " on chat completions at the session effort",
+      () =>
+        Effect.gen(function* () {
+          const body = yield* requestBody(modelId, "low", true)
+          assert.strictEqual(body.model, modelId.slice("openai-compat:".length))
+          assert.isArray(body.messages)
+          assert.strictEqual(body.reasoning_effort, "low")
+          assert.isFalse("service_tier" in body)
+        }),
+    )
+  }
+
+  it.effect("keeps colons in the model id", () =>
+    Effect.gen(function* () {
+      assert.strictEqual(
+        (yield* requestBody("openai-compat:qwen3:8b")).model,
+        "qwen3:8b",
+      )
+    }),
   )
 
   it("rejects ids that are not <provider>:<model>", () => {
@@ -162,5 +179,38 @@ describe("ModelLayer.makeAcp", () => {
 
   it("builds claude models", () => {
     assert.isTrue(Option.isSome(makeModel("claude:claude-opus-5-5", "high")))
+  })
+})
+
+describe("ModelLayer.parseModelSpec", () => {
+  it("splits off a trailing effort and keeps slashes in the model id", () => {
+    assert.deepStrictEqual(
+      ModelLayer.parseModelSpec("openai/gpt-6-astra/medium"),
+      Option.some({
+        provider: "openai",
+        model: "gpt-6-astra",
+        effort: "medium",
+      }),
+    )
+    assert.deepStrictEqual(
+      ModelLayer.parseModelSpec("openai-compat/moonshotai/Kimi-K2-Instruct"),
+      Option.some({
+        provider: "openai-compat",
+        model: "moonshotai/Kimi-K2-Instruct",
+        effort: undefined,
+      }),
+    )
+    assert.deepStrictEqual(
+      ModelLayer.parseModelSpec(
+        "openai-compat/moonshotai/Kimi-K2-Instruct/high",
+      ),
+      Option.some({
+        provider: "openai-compat",
+        model: "moonshotai/Kimi-K2-Instruct",
+        effort: "high",
+      }),
+    )
+    assert.isTrue(Option.isNone(ModelLayer.parseModelSpec("nope/gpt-6-astra")))
+    assert.isTrue(Option.isNone(ModelLayer.parseModelSpec("openai")))
   })
 })

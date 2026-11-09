@@ -23,7 +23,7 @@ class ModelInfo {
   provider: "openai" | "copilot" | "xai" | "claude" | "openai-compat"  // clanka provider, as --provider takes it
   id: string                               // model id as the provider API expects it
   name: string                             // display name
-  efforts: ReadonlyArray<Acp.ThoughtLevel> // reasoning efforts the model accepts, [] if none
+  efforts?: ReadonlyArray<Acp.ThoughtLevel> // reasoning efforts the model accepts, [] if none, absent if unknown
 }
 
 interface ModelsRepo {
@@ -84,8 +84,10 @@ a request; an older one is refreshed, and kept if the refresh fails.
   (preselecting `medium` when offered). A model with no `efforts` skips the
   second prompt and is created with `reasoning: null`, which `Codex`, `Xai`
   and `Copilot` read as "send no reasoning options"; omitting `reasoning`
-  keeps each provider's default effort. `--model <model>/<effort>` is
-  unchanged and is not checked against the catalog.
+  keeps each provider's default effort. A model whose `efforts` are unknown
+  also skips it and omits `reasoning`. `--model <model>/<effort>` is not
+  checked against the catalog; its last segment is the effort only when it is
+  an `Acp.ThoughtLevel`, so model ids may hold slashes.
 - `clanka acp`: `Acp.Options` gains `availableModels`, an
   `Effect<ReadonlyArray<{ modelId: string; name: string }>>`. The CLI passes the
   catalog as `<provider>:<id>` ids named `<ModelInfo.name> (<provider>)`,
@@ -96,10 +98,11 @@ a request; an older one is refreshed, and kept if the refresh fails.
   server keeps advertising only the session and default model.
 - The CLI builds model layers through `src/ModelLayer.ts`. Its
   `ModelLayer.makeAcp({ models, openai })` is the `makeModel` callback for
-  `clanka acp`: ids that do not parse as `<provider>:<model>` stay unknown, a
-  model the catalog lists with no `efforts` runs with `reasoning: null`
-  whatever the session thought level, and an unlisted model runs at the
-  session thought level. A listed model whose `efforts` include the session
+  `clanka acp`: ids that do not parse as `<provider>:<model>` stay unknown
+  (the model is everything after the first colon), a model the catalog lists
+  with no `efforts` runs with `reasoning: null` whatever the session thought
+  level, and an unlisted model, or a listed one whose `efforts` are unknown,
+  runs at the session thought level. A listed model whose `efforts` include the session
   thought level runs at it; otherwise it runs at the supported effort nearest
   to it in `Acp.ThoughtLevel` order, the higher one on a tie (`medium` on
   `[low, high]` runs at `high`). ACP keeps displaying the session thought
@@ -109,7 +112,7 @@ a request; an older one is refreshed, and kept if the refresh fails.
 - models.dev does not know `openai-compat` endpoints. When `--api-url` is set,
   `OpenAiCompat.layerModelsRepo` appends the models the endpoint lists at
   `GET /models` to the catalog, newest first by `created`, named by their id
-  and with no `efforts`. The endpoint is listed once per process and not
+  and with `efforts` left out, as the listing does not say. The endpoint is listed once per process and not
   cached; a failed listing logs a warning and adds nothing. `fallback` has no
   `openai-compat` entry, so with no listed models the CLI model prompt asks
   for a model id instead.

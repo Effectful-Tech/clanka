@@ -120,35 +120,39 @@ const catalog = (response: () => Response) => {
 }
 
 describe("OpenAiCompat.layerModelsRepo", () => {
-  it.effect("appends the listed models, newest first, once", () =>
-    Effect.gen(function* () {
-      const { models, requests } = yield* catalog(() =>
-        Response.json({
-          object: "list",
-          data: [
-            { id: "kimi-k2", object: "model", created: 1 },
-            { id: "kimi-k3", object: "model", created: 3 },
-            { object: "model" },
-            { id: "custom", object: "model" },
-          ],
-        }),
-      )
-      assert.lengthOf(requests, 1)
-      assert.strictEqual(requests[0]!.url, "https://proxy.test/v1/models")
-      assert.strictEqual(requests[0]!.headers.authorization, "Bearer proxy-key")
-      assert.deepStrictEqual(models, [
-        base,
-        ...["kimi-k3", "kimi-k2", "custom"].map(
-          (id) =>
-            new ModelsRepo.ModelInfo({
-              provider: "openai-compat",
-              id,
-              name: id,
-              efforts: [],
-            }),
-        ),
-      ])
-    }),
+  it.effect(
+    "appends the listed models, newest first, with unknown efforts",
+    () =>
+      Effect.gen(function* () {
+        const { models, requests } = yield* catalog(() =>
+          Response.json({
+            object: "list",
+            data: [
+              { id: "kimi-k2", object: "model", created: 1 },
+              { id: "kimi-k3", object: "model", created: 3 },
+              { object: "model" },
+              { id: "custom", object: "model" },
+            ],
+          }),
+        )
+        assert.lengthOf(requests, 1)
+        assert.strictEqual(requests[0]!.url, "https://proxy.test/v1/models")
+        assert.strictEqual(
+          requests[0]!.headers.authorization,
+          "Bearer proxy-key",
+        )
+        assert.deepStrictEqual(models, [
+          base,
+          ...["kimi-k3", "kimi-k2", "custom"].map(
+            (id) =>
+              new ModelsRepo.ModelInfo({
+                provider: "openai-compat",
+                id,
+                name: id,
+              }),
+          ),
+        ])
+      }),
   )
 
   it.effect("keeps the catalog when the endpoint cannot be listed", () =>

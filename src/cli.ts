@@ -70,7 +70,9 @@ type Provider = ModelsRepo.Provider
 const providers = ModelsRepo.Provider.literals
 
 // Pick a model from the catalog, filtering by name as the user types, then
-// one of its reasoning efforts. A provider with no models takes a typed id.
+// one of its reasoning efforts. A model whose efforts are unknown runs at the
+// provider's default effort. A provider with no models takes a typed
+// <model>[/<effort>].
 const selectModel = Effect.fnUntraced(function* (provider: Provider) {
   const repo = yield* ModelsRepo.ModelsRepo
   const catalog = (yield* repo.models).filter(
@@ -81,8 +83,9 @@ const selectModel = Effect.fnUntraced(function* (provider: Provider) {
       ? catalog
       : ModelsRepo.fallback.filter((model) => model.provider === provider)
   if (models.length === 0) {
-    const model = yield* Prompt.String({ message: "Enter a model id" })
-    return { model, effort: undefined }
+    return ModelLayer.parseModel(
+      yield* Prompt.String({ message: "Enter a model id" }),
+    )
   }
   const defaultId = ModelsRepo.fallback.find(
     (model) => model.provider === provider,
@@ -96,6 +99,9 @@ const selectModel = Effect.fnUntraced(function* (provider: Provider) {
       selected: model.id === defaultId,
     })),
   })
+  if (model.efforts === undefined) {
+    return { model: model.id, effort: undefined }
+  }
   if (model.efforts.length === 0) {
     return { model: model.id, effort: null }
   }
@@ -110,30 +116,12 @@ const selectModel = Effect.fnUntraced(function* (provider: Provider) {
   return { model: model.id, effort }
 })
 
-const isProvider = Schema.is(ModelsRepo.Provider)
-
-const isThoughtLevel = Schema.is(Acp.ThoughtLevel)
-
-// `<provider>/<model>[/<effort>]` as accepted by the `acp` --model flag.
-const parseModelId = (modelId: string) => {
-  const [provider, model, effort, ...rest] = modelId.split("/")
-  return isProvider(provider) &&
-    model !== undefined &&
-    (effort === undefined || isThoughtLevel(effort)) &&
-    rest.length === 0
-    ? Option.some({
-        model: `${provider}:${model}`,
-        thoughtLevel: Option.fromUndefinedOr(effort),
-      })
-    : Option.none()
-}
-
 const ModelId = Schema.String.pipe(
   Schema.check(
     Schema.makeFilter(
       (modelId: string) =>
-        Option.isSome(parseModelId(modelId)) ||
-        `Invalid model "${modelId}", expected <provider>/<model>[/<effort>] with effort one of ${Acp.ThoughtLevel.literals.join(", ")}`,
+        Option.isSome(ModelLayer.parseModelSpec(modelId)) ||
+        `Invalid model "${modelId}", expected <provider>/<model>[/<effort>] with provider one of ${providers.join(", ")}`,
     ),
   ),
 )
@@ -151,14 +139,9 @@ const auxiliaryModel = (options: {
     ),
     Flag.withFallbackConfig(Config.String(options.env)),
     Flag.withSchema(ModelId),
-    Flag.map((modelId): ModelLayer.ModelSpec => {
-      const [provider, model, effort] = modelId.split("/") as [
-        Provider,
-        string,
-        string | undefined,
-      ]
-      return { provider, model, effort }
-    }),
+    Flag.map((modelId) =>
+      Option.getOrThrow(ModelLayer.parseModelSpec(modelId)),
+    ),
     Flag.optional,
   )
 
@@ -415,7 +398,13 @@ const acpModel = Flag.String("model").pipe(
   ),
   Flag.withSchema(ModelId),
   Flag.withDefault("openai/gpt-6-astra"),
-  Flag.map((modelId) => Option.getOrThrow(parseModelId(modelId))),
+  Flag.map((modelId) => {
+    const spec = Option.getOrThrow(ModelLayer.parseModelSpec(modelId))
+    return {
+      model: `${spec.provider}:${spec.model}`,
+      thoughtLevel: Option.fromUndefinedOr(spec.effort),
+    }
+  }),
 )
 
 // kiro launchers pass it to every `acp` run; clanka has no tool permissions to
@@ -536,13 +525,7 @@ Command.make("clanka", {
         () => import("./OutputFormatter.ts"),
       )
       const { model, effort } = yield* Option.match(modelRaw, {
-        onSome: (selected) => {
-          const [model, effort] = selected.split("/") as [
-            string,
-            string | undefined,
-          ]
-          return Effect.succeed({ model, effort })
-        },
+        onSome: (selected) => Effect.succeed(ModelLayer.parseModel(selected)),
         onNone: () => selectModel(provider),
       })
       const Model = ModelLayer.make(

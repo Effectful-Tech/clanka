@@ -101,8 +101,7 @@ const decodeEntry = Schema.decodeUnknownOption(ModelEntry)
 /**
  * The models the endpoint lists at `GET /models`, newest first, as
  * `openai-compat` catalog entries named by their id. The listing carries no
- * reasoning efforts, so the entries have none and run at the endpoint's
- * default effort. Never fails: logs a warning and serves no models when the
+ * reasoning efforts, so the entries leave `efforts` out. Never fails: logs a warning and serves no models when the
  * endpoint cannot be listed.
  *
  * @since 1.0.0
@@ -128,7 +127,6 @@ export const models: Effect.Effect<
           provider: "openai-compat",
           id: entry.id,
           name: entry.id,
-          efforts: [],
         }),
     )
 }).pipe(

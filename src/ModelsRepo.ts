@@ -51,9 +51,10 @@ export class ModelInfo extends Schema.Class<ModelInfo>(
   id: Schema.String,
   name: Schema.String,
   /**
-   * Reasoning efforts the model accepts; empty when it takes none.
+   * Reasoning efforts the model accepts; empty when it takes none, and
+   * absent when its source does not say.
    */
-  efforts: Schema.Array(ThoughtLevel),
+  efforts: Schema.optionalKey(Schema.Array(ThoughtLevel)),
 }) {}
 
 /**

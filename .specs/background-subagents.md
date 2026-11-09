@@ -6,22 +6,22 @@
 
 ## Overview
 
-`delegate` can start a sub-agent in the background. The sub-agent keeps
+`subagent` can start a sub-agent in the background. The sub-agent keeps
 running after the script that started it ends, while the parent takes more
 turns. Script variables do not carry over between executions, so agents are
-addressed by the ID that `delegate` returns.
+addressed by the ID that `subagent` returns.
 
 ## Script API
 
 ```ts
-delegate({ prompt, background? }): { id, status: "completed" | "running", output? }
+subagent({ prompt, background? }): { id, status: "completed" | "running", output? }
 waitAgents(ids?): Array<{ id, status, output? }>
 messageAgent({ id, message }): { id, status, output? }
 stopAgent(id): { id, status, output? }
 listAgents(): Array<{ id, status, prompt }>
 ```
 
-- `delegate` takes an options object. A bare string is rejected with a
+- `subagent` takes an options object. A bare string is rejected with a
   message showing the new form.
 - Foreground (the default) waits for the agent and returns `completed` with
   its output. A failed foreground agent crashes the script.
@@ -87,4 +87,4 @@ a message for the script.
 The RPC protocol replaces the `Subagent` / `subagentOutput` pair and the
 `TaskComplete` event with a generic `Request` event and a `respond` RPC.
 Requests cover `taskComplete` and all five sub-agent functions; background
-`delegate` requests are answered as soon as the agent has started.
+`subagent` requests are answered as soon as the agent has started.

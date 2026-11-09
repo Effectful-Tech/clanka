@@ -277,7 +277,7 @@ for (const [mode, executorLayer] of Object.entries(executors)) {
                   return Stream.make(toolCall(`await changeDirectory("pkg")`))
                 case 3:
                   return Stream.make(
-                    toolCall(`await delegate({ prompt: "TASK-CHILD" })`),
+                    toolCall(`await subagent({ prompt: "TASK-CHILD" })`),
                   )
                 default:
                   return Stream.fromIterable(text("done"))
@@ -326,7 +326,7 @@ for (const [mode, executorLayer] of Object.entries(executors)) {
           assert.include(
             JSON.stringify(encodePrompt(child!.prompt)),
             "PKG-RULES",
-            "a delegate started after the cd sees pkg's instructions",
+            "a subagent started after the cd sees pkg's instructions",
           )
           const childUpdates = outputs.flatMap((output) =>
             output._tag === "SubagentPart" &&

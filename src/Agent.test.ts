@@ -180,7 +180,7 @@ describe("Agent", () => {
           Stream.fromEffect(
             (script === "done"
               ? onTaskComplete("done")
-              : agentTasks.delegate({
+              : agentTasks.subagent({
                   id: "1",
                   prompt: "TASK-CHILD",
                   background: false,

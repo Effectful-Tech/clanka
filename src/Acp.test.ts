@@ -646,7 +646,7 @@ describe("Acp", () => {
     ),
   )
 
-  it.effect("reports subagents with a delegate prompt preview", () =>
+  it.effect("reports subagents with a subagent prompt preview", () =>
     withStore(
       Effect.scoped(
         Effect.gen(function* () {
@@ -661,14 +661,14 @@ describe("Acp", () => {
                     type: "tool-call",
                     id: "call-1",
                     name: "execute",
-                    params: { script: "await delegate()" },
+                    params: { script: "await subagent()" },
                   })
                 : assistantSays(summary),
             {
               ...executor,
               execute: ({ agentTasks, environment }) =>
                 Stream.fromEffect(
-                  agentTasks.delegate({
+                  agentTasks.subagent({
                     id: "1",
                     prompt,
                     background: false,
@@ -706,13 +706,13 @@ describe("Acp", () => {
           assert.strictEqual(tools[1].sessionUpdate, "tool_call_update")
           assert.strictEqual(tools[1].toolCallId, tools[0].toolCallId)
           assert.strictEqual(tools[1].status, "completed")
-          assert.match(tools[0].title, /^delegate: Inspect the repository/)
+          assert.match(tools[0].title, /^subagent: Inspect the repository/)
           assert.notMatch(tools[0].title, /[\r\n]/)
           assert.strictEqual(
             tools[0].title,
-            "delegate: " + prompt.replace(/\s+/g, " ").slice(0, 120),
+            "subagent: " + prompt.replace(/\s+/g, " ").slice(0, 120),
           )
-          assert.strictEqual(tools[0].title.length, "delegate: ".length + 120)
+          assert.strictEqual(tools[0].title.length, "subagent: ".length + 120)
           assert.deepStrictEqual(tools[1].content, [
             { type: "content", content: { type: "text", text: summary } },
           ])
@@ -763,7 +763,7 @@ describe("Acp", () => {
                   Stream.fromEffect(
                     executions++ === 0
                       ? agentTasks
-                          .delegate({
+                          .subagent({
                             id: "1",
                             prompt: "TASK-CHILD",
                             background: true,

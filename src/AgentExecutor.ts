@@ -158,16 +158,16 @@ export interface ExecuteOptions {
 }
 
 /**
- * The sub-agents of the agent running a script. `delegate` also receives the
+ * The sub-agents of the agent running a script. `subagent` also receives the
  * environment the new agent starts in: the script's directory at the moment
- * `delegate` was called, with an update holding everything that applies to
+ * `subagent` was called, with an update holding everything that applies to
  * it beyond the system prompt.
  *
  * @since 1.0.0
  * @category Models
  */
-export interface ExecuteAgentTasks extends Omit<AgentTasks, "delegate"> {
-  readonly delegate: (options: {
+export interface ExecuteAgentTasks extends Omit<AgentTasks, "subagent"> {
+  readonly subagent: (options: {
     readonly id: string
     readonly prompt: string
     readonly background: boolean
@@ -313,8 +313,8 @@ export interface LocalOptions<Toolkit extends Toolkit.Any = never> {
   readonly limits?: Limits | undefined
   /**
    * Built-in tools to leave out of the sandbox and the type declarations.
-   * Leaving out `delegate` also leaves out `messageAgent`, and leaving out
-   * both `delegate` and `bash` leaves out the task functions.
+   * Leaving out `subagent` also leaves out `messageAgent`, and leaving out
+   * both `subagent` and `bash` leaves out the task functions.
    * Leaving out `fetch` removes the global Fetch API.
    */
   readonly excludeTools?: ReadonlyArray<ExcludableTool> | undefined
@@ -526,10 +526,10 @@ const makeLocalWith = Effect.fnUntraced(function* <
         ...opts.agentTasks,
         // A new agent has only the system prompt, so it gets everything that
         // applies to the directory.
-        delegate: (options) =>
+        subagent: (options) =>
           renderEnvironment(currentEnvironment(), { reset: true }).pipe(
             Effect.flatMap((environment) =>
-              opts.agentTasks.delegate({ ...options, environment }),
+              opts.agentTasks.subagent({ ...options, environment }),
             ),
           ),
       }),
@@ -992,10 +992,10 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
                       request<void>({ _tag: "TaskComplete", summary }),
                     agentId,
                     agentTasks: {
-                      delegate: (options) =>
+                      subagent: (options) =>
                         Effect.orDie(
                           request<Task>({
-                            _tag: "Delegate",
+                            _tag: "Subagent",
                             ...options,
                           }),
                         ),
@@ -1108,7 +1108,7 @@ export const layerRpcServer = <Toolkit extends Toolkit.Any = never>(
  */
 export const AgentRequest = Schema.TaggedUnion({
   TaskComplete: { summary: Schema.String },
-  Delegate: {
+  Subagent: {
     id: Schema.String,
     prompt: Schema.String,
     background: Schema.Boolean,
@@ -1129,7 +1129,7 @@ export const AgentRequest = Schema.TaggedUnion({
 
 /**
  * The client's answer to a `Request`. `Failure` carries a message for the
- * script; a failed foreground `delegate` is raised there as a defect.
+ * script; a failed foreground `subagent` is raised there as a defect.
  *
  * @since 1.0.0
  * @category Rpcs
@@ -1305,8 +1305,8 @@ const handleRequest = (
   switch (request._tag) {
     case "TaskComplete":
       return opts.onTaskComplete(request.summary)
-    case "Delegate":
-      return opts.agentTasks.delegate(request)
+    case "Subagent":
+      return opts.agentTasks.subagent(request)
     case "TaskOutput":
       return opts.agentTasks.taskOutput(request.id)
     case "WaitTasks":
@@ -1380,13 +1380,13 @@ const errorMessage = (error: unknown): string =>
       ? error.message
       : String(error)
 
-// Leaving out `delegate` leaves out `messageAgent`. The task functions
+// Leaving out `subagent` leaves out `messageAgent`. The task functions
 // address both kinds, so they go once neither can be started.
 const excludedToolNames = (
   excludeTools: ReadonlyArray<ExcludableTool> | undefined,
 ): ReadonlySet<string> => {
   const names = new Set<string>(excludeTools)
-  if (names.has("delegate")) {
+  if (names.has("subagent")) {
     names.add("messageAgent")
     if (names.has("bash")) {
       for (const name of ["taskOutput", "waitTasks", "stopTask", "listTasks"]) {

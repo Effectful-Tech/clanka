@@ -59,7 +59,7 @@ export class TaskCompleter extends Context.Service<
 
 /**
  * What a task is: a background `bash` command or a sub-agent started with
- * `delegate`.
+ * `subagent`.
  *
  * @since 1.0.0
  * @category Models
@@ -130,7 +130,7 @@ export interface AgentTasks {
    * it resolves once the agent has finished, and dies if the agent failed.
    * In the background it resolves straight away with `status: "running"`.
    */
-  readonly delegate: (options: {
+  readonly subagent: (options: {
     readonly id: string
     readonly prompt: string
     readonly background: boolean
@@ -184,7 +184,7 @@ export class AgentTaskExecutor extends Context.Service<
  * @category Context
  */
 export const agentTasksUnavailable: AgentTasks = {
-  delegate: () => Effect.die(new Error("Sub-agents are not available here")),
+  subagent: () => Effect.die(new Error("Sub-agents are not available here")),
   taskOutput: () => Effect.fail("Sub-agents are not available here"),
   waitTasks: () => Effect.fail("Sub-agents are not available here"),
   messageAgent: () => Effect.fail("Sub-agents are not available here"),
@@ -387,7 +387,7 @@ export const AgentTools = Toolkit.make(
     success: Schema.String,
     dependencies: [CurrentDirectory],
   }),
-  Tool.make("delegate", {
+  Tool.make("subagent", {
     description:
       "Delegate a task to another software engineer / sub-agent. With `background: true` the sub-agent works in the background, and its result is sent to you when it finishes.",
     parameters: Schema.Struct({
@@ -1174,14 +1174,14 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
 
         return `Success. Updated the following files:\n${out.join("\n")}`
       }, Effect.orDie),
-      delegate: Effect.fn("AgentTools.delegate")(function* (options: unknown) {
-        const { prompt, background = false } = yield* decodeDelegate(options)
-        yield* Effect.logInfo(`Calling "delegate"`).pipe(
+      subagent: Effect.fn("AgentTools.subagent")(function* (options: unknown) {
+        const { prompt, background = false } = yield* decodeSubagent(options)
+        yield* Effect.logInfo(`Calling "subagent"`).pipe(
           Effect.annotateLogs({ background }),
         )
         const id = yield* registerAgentTask()
         const agentTasks = yield* AgentTaskExecutor
-        return yield* agentTasks.delegate({ id, prompt, background })
+        return yield* agentTasks.subagent({ id, prompt, background })
       }),
       messageAgent: Effect.fn("AgentTools.messageAgent")(function* (
         input: unknown,
@@ -1250,9 +1250,9 @@ const decodeParams = <S extends Schema.Decoder<unknown>>(
   return (input: unknown) => Effect.mapError(decode(input), () => usage)
 }
 
-const decodeDelegate = decodeParams(
-  AgentTools.tools.delegate.parametersSchema,
-  'delegate requires an options object, for example: delegate({ prompt: "..." }) or delegate({ prompt: "...", background: true }).',
+const decodeSubagent = decodeParams(
+  AgentTools.tools.subagent.parametersSchema,
+  'subagent requires an options object, for example: subagent({ prompt: "..." }) or subagent({ prompt: "...", background: true }).',
 )
 const decodeMessageAgent = decodeParams(
   AgentTools.tools.messageAgent.parametersSchema,

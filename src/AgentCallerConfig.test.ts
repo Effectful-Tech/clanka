@@ -260,9 +260,9 @@ await taskComplete(result)`,
         const { system, summary } = yield* runAgent({
           mode,
           executor: {
-            excludeTools: ["gh", "webSearch", "fetchMarkdown", "delegate"],
+            excludeTools: ["gh", "webSearch", "fetchMarkdown", "subagent"],
           },
-          script: `const missing = [typeof gh, typeof webSearch, typeof fetchMarkdown, typeof delegate, typeof messageAgent].join(",")
+          script: `const missing = [typeof gh, typeof webSearch, typeof fetchMarkdown, typeof subagent, typeof messageAgent].join(",")
 let call
 try {
   await gh(["pr", "view"])
@@ -278,7 +278,7 @@ await taskComplete(missing + " " + call)`,
         )
         assert.notMatch(
           system,
-          /\b(gh|webSearch|fetchMarkdown|delegate|messageAgent)\b/,
+          /\b(gh|webSearch|fetchMarkdown|subagent|messageAgent)\b/,
         )
         assert.include(system, "declare function readFile(")
       }),
@@ -286,13 +286,13 @@ await taskComplete(missing + " " + call)`,
 
     // The shared task functions address bash and agent tasks, so they stay
     // while either kind can still be started.
-    it.live("the task functions go only when bash and delegate both go", () =>
+    it.live("the task functions go only when bash and subagent both go", () =>
       Effect.gen(function* () {
         const tasks =
           "[typeof taskOutput, typeof waitTasks, typeof stopTask, typeof listTasks].join()"
         const withBash = yield* runAgent({
           mode,
-          executor: { excludeTools: ["delegate"] },
+          executor: { excludeTools: ["subagent"] },
           script: `await taskComplete(${tasks})`,
         })
         assert.strictEqual(
@@ -301,7 +301,7 @@ await taskComplete(missing + " " + call)`,
         )
         const withNeither = yield* runAgent({
           mode,
-          executor: { excludeTools: ["bash", "delegate"] },
+          executor: { excludeTools: ["bash", "subagent"] },
           script: `await taskComplete(${tasks})`,
         })
         assert.strictEqual(
@@ -458,17 +458,21 @@ describe("rpc executor", () => {
 describe("agent", () => {
   it.live("a left-out tool is not mentioned anywhere in the prompt", () =>
     Effect.gen(function* () {
-      // Each is named outside its own declaration: the delegate bullet, the
+      // Each is named outside its own declaration: the subagent bullet, the
       // applyPatch hint and the executor's skills catalog.
       const { system, summary } = yield* runAgent({
         mode: "local",
         executor: { excludeTools: ["waitTasks", "applyPatch", "readFile"] },
         script:
-          "await taskComplete([typeof waitTasks, typeof applyPatch, typeof readFile].join())",
+          "await taskComplete([typeof waitTasks, typeof applyPatch, typeof readFile, typeof subagent, typeof delegate].join())",
       })
-      assert.strictEqual(summary, "undefined,undefined,undefined")
+      assert.strictEqual(
+        summary,
+        "undefined,undefined,undefined,function,undefined",
+      )
       assert.notMatch(system, /\b(waitTasks|applyPatch|readFile)\b/)
-      assert.include(system, "declare function delegate(")
+      assert.include(system, "declare function subagent(")
+      assert.notInclude(system, "declare function delegate(")
     }),
   )
 

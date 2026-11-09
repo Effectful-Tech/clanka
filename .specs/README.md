@@ -9,7 +9,7 @@
   Codex API via the headless device auth flow, using `@effect/ai-openai` as
   the provider layer. Includes token storage via `KeyValueStore`, automatic
   refresh, and a fully wired `LanguageModel` layer.
-- [Background sub-agents](./background-subagents.md) - Run `delegate`
+- [Background sub-agents](./background-subagents.md) - Run `subagent`
   sub-agents in the background and push their results to the parent between
   model turns. Its script API is superseded by Shared tasks.
 - [Background bash commands](./background-bash.md) - Run `bash` commands in

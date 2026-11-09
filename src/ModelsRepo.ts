@@ -23,7 +23,13 @@ import { ThoughtLevel } from "./Acp.ts"
  * @since 1.0.0
  * @category Models
  */
-export const Provider = Schema.Literals(["openai", "copilot", "xai", "claude"])
+export const Provider = Schema.Literals([
+  "openai",
+  "copilot",
+  "xai",
+  "claude",
+  "openai-compat",
+])
 
 /**
  * @since 1.0.0
@@ -52,7 +58,8 @@ export class ModelInfo extends Schema.Class<ModelInfo>(
 
 /**
  * The built-in catalog, served when neither models.dev nor a cached catalog
- * is available.
+ * is available. It has no `openai-compat` model, since that provider's
+ * models depend on the endpoint.
  *
  * @since 1.0.0
  * @category Models

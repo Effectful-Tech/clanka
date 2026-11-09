@@ -16,6 +16,7 @@ import * as Codex from "./Codex.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Copilot from "./Copilot.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
+import * as OpenAiCompat from "./OpenAiCompat.ts"
 import * as Xai from "./Xai.ts"
 
 /**
@@ -87,13 +88,23 @@ const languageModel = (
       return Copilot.model(model, options).pipe(
         Layer.provide(Copilot.layerClient),
       )
+    case "openai-compat":
+      return OpenAiCompat.model(model, options).pipe(
+        Layer.provide(
+          OpenAiCompat.layerClient({
+            apiKey: openai.apiKey,
+            apiUrl: openai.apiUrl,
+          }),
+        ),
+      )
   }
 }
 
 /**
  * The model layer for a provider and model id. `effort` is `null` for models
  * that take no reasoning effort, and `undefined` to keep the provider's
- * default effort. `fastMode` requests the `priority` service tier and is
+ * default effort. `openai` is the client for the `openai` API-key mode and
+ * for the `openai-compat` provider. `fastMode` requests the `priority` service tier and is
  * ignored for providers without fast mode; it also applies to the
  * `auxiliary` models.
  *

@@ -144,6 +144,18 @@ describe("ModelLayer.makeAcp", () => {
     }),
   )
 
+  it.effect(
+    "runs openai-compat models on chat completions, without fast mode",
+    () =>
+      Effect.gen(function* () {
+        const body = yield* requestBody("openai-compat:kimi-k3", "high", true)
+        assert.strictEqual(body.model, "kimi-k3")
+        assert.isArray(body.messages)
+        assert.strictEqual(body.reasoning_effort, "high")
+        assert.isFalse("service_tier" in body)
+      }),
+  )
+
   it("rejects ids that are not <provider>:<model>", () => {
     assert.isTrue(Option.isNone(makeModel("nope", "high")))
   })

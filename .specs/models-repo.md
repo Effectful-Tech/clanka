@@ -20,7 +20,7 @@ refreshing the catalog while the process runs.
 
 ```ts
 class ModelInfo {
-  provider: "openai" | "copilot" | "xai" | "claude"  // clanka provider, as --provider takes it
+  provider: "openai" | "copilot" | "xai" | "claude" | "openai-compat"  // clanka provider, as --provider takes it
   id: string                               // model id as the provider API expects it
   name: string                             // display name
   efforts: ReadonlyArray<Acp.ThoughtLevel> // reasoning efforts the model accepts, [] if none
@@ -106,6 +106,13 @@ a request; an older one is refreshed, and kept if the refresh fails.
   level. `Acp.Options.makeModel` keeps its signature.
 - `ModelsRepo.layerModelsDev()` is provided at the CLI root next to `Kvs` and
   `HttpClientLive`, so the cache lives in `~/.config/clanka`.
+- models.dev does not know `openai-compat` endpoints. When `--api-url` is set,
+  `OpenAiCompat.layerModelsRepo` appends the models the endpoint lists at
+  `GET /models` to the catalog, newest first by `created`, named by their id
+  and with no `efforts`. The endpoint is listed once per process and not
+  cached; a failed listing logs a warning and adds nothing. `fallback` has no
+  `openai-compat` entry, so with no listed models the CLI model prompt asks
+  for a model id instead.
 
 ## Tests
 

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.24.1
+
+### Patch Changes
+
+- [`a99af0e`](https://github.com/Effectful-Tech/clanka/commit/a99af0e7c2cddf230d674dfdfb41441cbc28603a) Thanks [@tim-smart](https://github.com/tim-smart)! - disable source maps
+
 ## 0.24.0
 
 ### Minor Changes

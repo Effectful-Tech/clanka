@@ -17,6 +17,7 @@ import * as Fiber from "effect/Fiber"
 import * as Toolkit from "effect/ai/Toolkit"
 import * as Tool from "effect/ai/Tool"
 import * as Schema from "effect/Schema"
+import * as Scope from "effect/Scope"
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
 import * as FileSystem from "effect/FileSystem"
 import * as Path from "effect/Path"
@@ -581,23 +582,46 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     const commandScope = yield* Effect.scope
     const startCommand = Effect.fnUntraced(function* (
       command: ChildProcess.Command,
+      saveLargeOutput = false,
     ) {
       const { outputChars } = yield* CommandLimits
-      const output = makeOutputBuffer(outputChars)
+      const maxChars = saveLargeOutput ? (outputChars ?? 30_000) : outputChars
+      const output = makeOutputBuffer(maxChars)
+      let total = 0
+      let outputFile: string | undefined
+      const append = Effect.fnUntraced(function* (chunk: string) {
+        if (saveLargeOutput) {
+          if (outputFile !== undefined) {
+            yield* fs.writeFileString(outputFile, chunk, { flag: "a" })
+          } else if (total + chunk.length > maxChars!) {
+            const file = yield* fs
+              .makeTempFileScoped({ prefix: "clanka-bash-" })
+              .pipe(Effect.provideService(Scope.Scope, commandScope))
+            yield* fs.writeFileString(file, output.render() + chunk)
+            outputFile = file
+          }
+        }
+        total += chunk.length
+        output.append(chunk)
+      })
       const fiber = yield* spawner.spawn(command).pipe(
         Effect.flatMap((handle) =>
           handle.all.pipe(
             Stream.decodeText,
-            Stream.runForEach((chunk) =>
-              Effect.sync(() => output.append(chunk)),
-            ),
+            Stream.runForEach(append),
             Effect.andThen(handle.exitCode),
           ),
         ),
         Effect.scoped,
         Effect.forkIn(commandScope),
       )
-      return { fiber, output: output.render }
+      return {
+        fiber,
+        output: () =>
+          outputFile === undefined
+            ? output.render()
+            : `Output was too large. Saved to: ${outputFile}`,
+      }
     })
 
     // Every task started on this executor, bash and agent alike, so both
@@ -605,7 +629,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     // started it.
     const tasks = new Map<string, TaskEntry>()
     let nextTaskId = 1
-    const registerAgentTask = Effect.fnUntraced(function* () {
+    const registerAgentTask = Effect.gen(function* () {
       const id = String(nextTaskId++)
       tasks.set(id, { kind: "agent", id, owner: yield* TaskOwner })
       return id
@@ -883,7 +907,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         })
         const entry = yield* addBashTask(
           options.command,
-          yield* startCommand(cmd),
+          yield* startCommand(cmd, true),
         )
         if (options.background !== true) {
           const exit = yield* awaitCommand(
@@ -1179,7 +1203,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         yield* Effect.logInfo(`Calling "subagent"`).pipe(
           Effect.annotateLogs({ background }),
         )
-        const id = yield* registerAgentTask()
+        const id = yield* registerAgentTask
         const agentTasks = yield* AgentTaskExecutor
         return yield* agentTasks.subagent({ id, prompt, background })
       }),

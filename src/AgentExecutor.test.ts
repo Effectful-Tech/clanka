@@ -1011,7 +1011,7 @@ sleep(100).then(() => console.constructor.constructor("return process")().exit(7
         }).pipe(Effect.timeout("3 seconds"), Effect.provide(executorLayer({}))),
     )
 
-    it.live("keeps the start and end of long bash output", () =>
+    it.live("returns only the file notice for long bash output", () =>
       Effect.gen(function* () {
         const executor = yield* AgentExecutor.AgentExecutor
         const output = yield* executor.executeUnsafe({
@@ -1020,8 +1020,7 @@ sleep(100).then(() => console.constructor.constructor("return process")().exit(7
         })
         const { output: text } = output as { readonly output: string }
         assert.isBelow(text.length, 10_000 + 500)
-        assert.isTrue(text.startsWith("1\n2\n3\n"), "start kept")
-        assert.isTrue(text.trimEnd().endsWith("999999\n1000000"), "end kept")
+        assert.match(text, /^Full output saved to: [^\n]+$/)
       }).pipe(
         Effect.timeout("10 seconds"),
         Effect.provide(executorLayer({ commandOutputChars: 10_000 })),

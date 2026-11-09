@@ -344,7 +344,13 @@ const resultError = (
     case "invalid_request":
       return aiError(new AiError.InvalidRequestError({ description }))
   }
-  // Claude Code has already retried, so nothing here is retryable.
+  // Credential cooldowns can outlast Claude Code's own retries.
+  if (
+    status === 429 ||
+    /Request rejected \(429\)|\brate_limit_error\b/i.test(description)
+  ) {
+    return aiError(new AiError.RateLimitError({ metadata: { description } }))
+  }
   return aiError(
     /prompt is too long/i.test(description)
       ? new AiError.InvalidRequestError({ description })

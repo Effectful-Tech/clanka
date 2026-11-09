@@ -187,7 +187,12 @@ process with no MCP server, and closes it when the step ends.
   the step with an `AiError`: `AuthenticationError` for
   `authentication_failed`, `InvalidRequestError` for `invalid_request` or a
   "prompt is too long" text (so `Compaction.isContextLengthError` matches),
-  else `UnknownError`. None is retryable: Claude Code has already retried.
+  else `UnknownError`. Failed results with HTTP status 429 or the text
+  "Request rejected (429)" or "rate_limit_error" instead become retryable
+  `RateLimitError`s, unless an explicit authentication or invalid-request
+  code takes precedence. Credential cooldowns can outlast Claude Code's own
+  retries; clanka uses its existing retry timing and limits. The original
+  error text is preserved in `metadata.description`.
   "Please run /login" becomes "Run `claude auth login`".
 - An `api_retry` system message is logged at debug level with its attempt,
   max retries, retry delay, error status, error and any `no_response` wait

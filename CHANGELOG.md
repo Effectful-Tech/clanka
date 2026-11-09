@@ -1,5 +1,11 @@
 # clanka
 
+## 0.23.2
+
+### Patch Changes
+
+- [#302](https://github.com/Effectful-Tech/clanka/pull/302) [`ecdc223`](https://github.com/Effectful-Tech/clanka/commit/ecdc223c50da1df9c91c666867cf90eb68719958) Thanks [@tim-smart](https://github.com/tim-smart)! - Show a `taskOutput(id)` call instead of inline output in background task completion messages. Task status and exit codes remain visible, and output is still available on request.
+
 ## 0.23.1
 
 ### Patch Changes

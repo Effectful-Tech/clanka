@@ -610,12 +610,18 @@ try {
           kind: "bash",
           status: "running",
           description: command,
-          output: "early\n",
+          output: 'Task "1" is still running in the background',
         })
         assert.strictEqual(
           yield* waitForLog(environment.cwd, started),
           "start\n",
           "still running after the script ended",
+        )
+        assert.include(
+          yield* runScript(
+            `console.log("OUTPUT:", (await taskOutput("1")).output)`,
+          ),
+          "OUTPUT: early",
         )
         openGate(environment.cwd)
         assert.strictEqual(
@@ -688,7 +694,7 @@ console.log("WAITED:", (await waitTasks({ ids: [task.id] })).map(show).join())`)
         const { environment } = yield* executor.capabilities
         const output = yield* runScript(`
 const task = await bash({
-  command: ${JSON.stringify(gatedCommand(environment.cwd))},
+  command: ${JSON.stringify(`echo early && ${gatedCommand(environment.cwd)}`)},
   background: true,
 })
 const waits = [
@@ -696,8 +702,16 @@ const waits = [
   ...(await waitTasks({ ids: [task.id] })),
   ...(await waitTasks({ ids: [task.id], timeoutMs: 60000 })),
 ]
-console.log("WAITS:", JSON.stringify(waits.map((task) => task.status)))`)
+console.log("WAITS:", JSON.stringify(waits.map((task) => task.status)))
+console.log("OUTPUTS:", JSON.stringify(waits.map((task) => task.output)))`)
         assert.include(output, 'WAITS: ["running","running","running"]')
+        assert.include(
+          output,
+          "OUTPUTS: " +
+            JSON.stringify(
+              Array(3).fill('Task "1" is still running in the background'),
+            ),
+        )
         assert.strictEqual(
           yield* waitForLog(environment.cwd, started),
           "start\n",

@@ -23,7 +23,7 @@ import * as NodePath from "node:path"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import { agentTasksUnavailable, type Task } from "./AgentTools.ts"
 
-// The task a stub `delegate` resolves with once its agent has finished.
+// The task a stub `subagent` resolves with once its agent has finished.
 const completedAgent = (id: string, prompt: string, output: string): Task => ({
   id,
   kind: "agent",
@@ -74,7 +74,7 @@ const withRpc = <A, E, R>(
   )
 
 describe("RPC subagent executor", () => {
-  it.live("routes concurrent delegates to their originating scripts", () =>
+  it.live("routes concurrent subagents to their originating scripts", () =>
     withRpc((executor) =>
       Effect.gen(function* () {
         const { environment } = yield* executor.capabilities
@@ -87,12 +87,12 @@ describe("RPC subagent executor", () => {
                 environment,
                 onEnvironment: () => Effect.void,
                 script:
-                  'console.log("first:" + (await delegate({ prompt: "first" })).output)',
+                  'console.log("first:" + (await subagent({ prompt: "first" })).output)',
                 onTaskComplete: () => Effect.void,
                 onImage: () => Effect.void,
                 agentTasks: {
                   ...agentTasksUnavailable,
-                  delegate: ({ id, prompt }) =>
+                  subagent: ({ id, prompt }) =>
                     Effect.gen(function* () {
                       assert.strictEqual(prompt, "first")
                       yield* Deferred.succeed(firstStarted, undefined)
@@ -107,12 +107,12 @@ describe("RPC subagent executor", () => {
                 environment,
                 onEnvironment: () => Effect.void,
                 script:
-                  'console.log("second:" + (await delegate({ prompt: "second" })).output)',
+                  'console.log("second:" + (await subagent({ prompt: "second" })).output)',
                 onTaskComplete: () => Effect.void,
                 onImage: () => Effect.void,
                 agentTasks: {
                   ...agentTasksUnavailable,
-                  delegate: ({ id, prompt }) =>
+                  subagent: ({ id, prompt }) =>
                     Effect.gen(function* () {
                       assert.strictEqual(prompt, "second")
                       yield* Deferred.succeed(secondStarted, undefined)
@@ -142,12 +142,12 @@ describe("RPC subagent executor", () => {
               environment,
               onEnvironment: () => Effect.void,
               script:
-                'console.log("parent:" + (await delegate({ prompt: "outer" })).output)',
+                'console.log("parent:" + (await subagent({ prompt: "outer" })).output)',
               onTaskComplete: () => Effect.void,
               onImage: () => Effect.void,
               agentTasks: {
                 ...agentTasksUnavailable,
-                delegate: ({ id, prompt }) =>
+                subagent: ({ id, prompt }) =>
                   Effect.gen(function* () {
                     assert.strictEqual(prompt, "outer")
                     const childOutput = yield* executor
@@ -155,12 +155,12 @@ describe("RPC subagent executor", () => {
                         environment,
                         onEnvironment: () => Effect.void,
                         script:
-                          'console.log("child:" + (await delegate({ prompt: "inner" })).output)',
+                          'console.log("child:" + (await subagent({ prompt: "inner" })).output)',
                         onTaskComplete: () => Effect.void,
                         onImage: () => Effect.void,
                         agentTasks: {
                           ...agentTasksUnavailable,
-                          delegate: ({ id: innerId, prompt: innerPrompt }) =>
+                          subagent: ({ id: innerId, prompt: innerPrompt }) =>
                             Effect.sync(() => {
                               assert.strictEqual(innerPrompt, "inner")
                               return completedAgent(
@@ -994,15 +994,15 @@ console.log("MAIN" + "_DONE")`)
             .execute({
               environment,
               onEnvironment: () => Effect.void,
-              // `delegate` never finishes. The worker then exits through
+              // `subagent` never finishes. The worker then exits through
               // the host's `process`, the way a crashed worker would.
               script: `
-delegate({ prompt: "never finishes" })
+subagent({ prompt: "never finishes" })
 sleep(100).then(() => console.constructor.constructor("return process")().exit(7))`,
               onTaskComplete: () => Effect.void,
               agentTasks: {
                 ...agentTasksUnavailable,
-                delegate: () => Effect.never,
+                subagent: () => Effect.never,
               },
               onImage: () => Effect.void,
             })

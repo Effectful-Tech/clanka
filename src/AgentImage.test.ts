@@ -268,11 +268,11 @@ describe("Agent images", () => {
       }),
   )
 
-  it.effect("does not copy image bytes into a delegate prompt", () =>
+  it.effect("does not copy image bytes into a subagent prompt", () =>
     Effect.gen(function* () {
       const executor = makeExecutor(({ agentTasks, environment }) =>
         Stream.fromEffect(
-          agentTasks.delegate({
+          agentTasks.subagent({
             id: "1",
             prompt: "child task: describe the layout",
             background: false,
@@ -292,7 +292,7 @@ describe("Agent images", () => {
         respond: (call, index) => {
           if (index === 0) {
             return Stream.make(
-              toolCall("call-1", 'await delegate("describe the layout")'),
+              toolCall("call-1", 'await subagent("describe the layout")'),
             )
           }
           const isChild = userText(call.prompt).includes("child task")
@@ -305,7 +305,7 @@ describe("Agent images", () => {
       const child = calls.find((call) =>
         userText(call.prompt).includes("child task"),
       )
-      assert.isDefined(child, "the delegate call reached the model")
+      assert.isDefined(child, "the subagent call reached the model")
       assert.strictEqual(fileParts(child!.prompt).length, 0)
       // The parent still has its image.
       assert.strictEqual(fileParts(calls[0]!.prompt).length, 1)

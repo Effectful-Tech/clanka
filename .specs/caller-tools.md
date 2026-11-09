@@ -32,8 +32,8 @@ Agent.layerLocal({ directory, tools?, limits?, excludeTools?, ...Agent.Options }
   built-in except `taskComplete`). A listed tool is not in the sandbox, not in
   `Capabilities.toolsDts`, and not named by the system prompt prose. Calling
   it from a script throws, as any undefined function would.
-- `"delegate"` also removes `waitAgents`, `messageAgent`, `stopAgent` and
-  `listAgents`: they only address agents started by `delegate`.
+- `"subagent"` also removes `waitAgents`, `messageAgent`, `stopAgent` and
+  `listAgents`: they only address agents started by `subagent`.
 - `Capabilities` gains `tools: ReadonlyArray<string>`, the names of the script
   functions the executor offers, so the Agent can gate prompt prose on them.
   It is required: the loop and the executor are upgraded together.
@@ -42,7 +42,7 @@ Agent.layerLocal({ directory, tools?, limits?, excludeTools?, ...Agent.Options }
 
 `SubagentModel` is no longer in the requirements of `Agent.send`. The Agent
 reads it with `Effect.serviceOption`; when it is absent, sub-agents run on the
-parent's model services. A caller that leaves out `delegate` therefore
+parent's model services. A caller that leaves out `subagent` therefore
 provides nothing for sub-agents, and a caller that keeps it may still choose
 to provide `Agent.layerSubagentModel` as before.
 

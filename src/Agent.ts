@@ -620,7 +620,7 @@ export const makeWith = Effect.fnUntraced(function* <
       })
 
     const agentTasks: AgentExecutor.ExecuteAgentTasks = {
-      delegate: Effect.fnUntraced(function* ({
+      subagent: Effect.fnUntraced(function* ({
         id,
         prompt,
         background,
@@ -640,7 +640,7 @@ export const makeWith = Effect.fnUntraced(function* <
         yield* startTurn({
           child,
           label: prompt,
-          prompt: `You have been asked using the "delegate" function to complete the following task. Try to avoid using the "delegate" function yourself unless strictly necessary:
+          prompt: `You have been asked using the "subagent" function to complete the following task. Try to avoid using the "subagent" function yourself unless strictly necessary:
 
 ${prompt}`,
           // The update goes into the child's first prompt.
@@ -1745,8 +1745,8 @@ const when = (condition: boolean, text: string) => (condition ? text : "")
 // model. Only offered functions are named.
 const taskInstructions = (tools: PromptTools): string => {
   const bash = tools.offers("bash")
-  const delegate = tools.offers("delegate")
-  if (!bash && !delegate) return ""
+  const subagent = tools.offers("subagent")
+  if (!bash && !subagent) return ""
   const functions = (
     [
       ["taskOutput", `"taskOutput" reads one`],
@@ -1761,7 +1761,7 @@ const taskInstructions = (tools: PromptTools): string => {
     .filter(([name]) => tools.offers(name))
     .map(([, text]) => text)
   const kinds =
-    bash && delegate
+    bash && subagent
       ? "Background commands and sub-agents are"
       : bash
         ? "Background commands are"
@@ -1805,7 +1805,7 @@ const generateSystemTools = (
 
 When you have fully completed your task, call the "taskComplete" function with the final output.
 Make sure every detail of the task is done before calling "taskComplete".${when(
-    tools.offers("delegate"),
+    tools.offers("subagent"),
     `
 Any sub-agents you started must finish first: "taskComplete" fails while they are running.`,
   )}`,

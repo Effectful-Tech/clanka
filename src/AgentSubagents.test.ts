@@ -29,7 +29,7 @@ import * as Compaction from "./Compaction.ts"
 // Agent tasks: lifetime and completion delivery.
 //
 // These drive the real Agent loop and a real executor, so the model only
-// talks to the script API: `delegate({ prompt, background })`, `waitTasks`,
+// talks to the script API: `subagent({ prompt, background })`, `waitTasks`,
 // `messageAgent`, `stopTask`, `listTasks` and `taskOutput`. One scripted
 // LanguageModel serves every agent; calls are routed by the task marker in
 // each agent's first user message. Task IDs come from the executor's counter,
@@ -159,7 +159,7 @@ const complete = (output: string) =>
 const spawnBackground = (task: string) =>
   toolCall(
     `spawn-${task}`,
-    `const result = await delegate({ prompt: "${task}", background: true })
+    `const result = await subagent({ prompt: "${task}", background: true })
 console.log(JSON.stringify(result))`,
   )
 
@@ -459,7 +459,7 @@ for (const [executorName, executorLayer] of executors) {
                 return Stream.make(
                   toolCall(
                     "too-early",
-                    `await delegate({ prompt: "TASK-CHILD", background: true })
+                    `await subagent({ prompt: "TASK-CHILD", background: true })
 try {
   await taskComplete("too early")
   console.log("ACCEPTED")
@@ -768,7 +768,7 @@ console.log("MESSAGE-VOID:", result === undefined)`,
                     return Stream.make(
                       toolCall(
                         "foreground",
-                        `const result = await delegate({ prompt: "TASK-CHILD" })
+                        `const result = await subagent({ prompt: "TASK-CHILD" })
 console.log(JSON.stringify(result))`,
                       ),
                     )
@@ -834,8 +834,8 @@ await taskComplete("${name.toUpperCase()}:" + pwd.output.trim())`,
                     "spawn",
                     `await bash({ command: "mkdir -p a/one a/two" })
 await changeDirectory("a")
-const one = await delegate({ prompt: "TASK-CHILD-ONE", background: true })
-const two = await delegate({ prompt: "TASK-CHILD-TWO", background: true })
+const one = await subagent({ prompt: "TASK-CHILD-ONE", background: true })
+const two = await subagent({ prompt: "TASK-CHILD-TWO", background: true })
 console.log(JSON.stringify(await waitTasks({ ids: [one.id, two.id] })))
 console.log("ROOT:" + (await bash({ command: "pwd" })).output.trim())`,
                   ),
@@ -868,7 +868,7 @@ console.log("ROOT:" + (await bash({ command: "pwd" })).output.trim())`,
                   toolCall(
                     "mixed",
                     `const bashTask = await bash({ command: "echo BASH-OUT", background: true })
-const agentTask = await delegate({ prompt: "TASK-CHILD", background: true })
+const agentTask = await subagent({ prompt: "TASK-CHILD", background: true })
 const ended = await waitTasks({ ids: [bashTask.id, agentTask.id] })
 console.log(JSON.stringify(ended.map(({ kind, status, output }) => ({ kind, status, output: output.trim() }))))`,
                   ),
@@ -931,7 +931,7 @@ await taskComplete(JSON.stringify({ seen, attempts }))`,
                   toolCall(
                     "spawn",
                     `const server = await bash({ command: "sleep 30", background: true })
-const child = await delegate({ prompt: "TASK-CHILD BASH-ID:" + server.id })
+const child = await subagent({ prompt: "TASK-CHILD BASH-ID:" + server.id })
 console.log("CHILD:" + child.output)
 const mine = await listTasks()
 console.log("ROOT:" + JSON.stringify(mine.map((task) => task.kind + ":" + task.status).sort()))`,
@@ -988,7 +988,7 @@ console.log("ROOT:" + JSON.stringify(mine.map((task) => task.kind + ":" + task.s
                 return Stream.make(
                   toolCall(
                     "wait",
-                    `const child = await delegate({ prompt: "TASK-CHILD", background: true })
+                    `const child = await subagent({ prompt: "TASK-CHILD", background: true })
 const [task] = await waitTasks({ ids: [child.id], timeoutMs: 200 })
 console.log("WAITED:" + task.status)`,
                   ),
@@ -1035,7 +1035,7 @@ console.log("WAITED:" + task.status)`,
                     toolCall(
                       "wait",
                       `const quick = await bash({ command: "echo BASH-OUT", background: true })
-const child = await delegate({ prompt: "TASK-CHILD", background: true })
+const child = await subagent({ prompt: "TASK-CHILD", background: true })
 const slow = await bash({ command: "sleep 30", background: true })
 await waitTasks({ ids: [quick.id, child.id, slow.id] })
 console.log("RETURNED")`,
@@ -1118,8 +1118,8 @@ describe("agent tasks (rpc executor, slow callbacks)", () => {
               return Stream.make(
                 toolCall(
                   "wait",
-                  `const a = await delegate({ prompt: "TASK-CHILD-A", background: true })
-const b = await delegate({ prompt: "TASK-CHILD-B", background: true })
+                  `const a = await subagent({ prompt: "TASK-CHILD-A", background: true })
+const b = await subagent({ prompt: "TASK-CHILD-B", background: true })
 const ended = await waitTasks({ ids: [a.id, b.id] })
 console.log(ended.map((task) => task.output).join(" "))`,
                 ),

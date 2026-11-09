@@ -38,7 +38,7 @@ interface Task {
 
 ```ts
 bash({ command, timeoutMs?, background? }): Task
-delegate({ prompt, background? }): Task
+subagent({ prompt, background? }): Task
 taskOutput(id): Task
 waitTasks({ ids, timeoutMs? }): Array<Task>
 stopTask(id): void
@@ -53,7 +53,7 @@ messageAgent({ id, message }): void
   task is returned. `background: true` returns the task straight away as
   `running`. A foreground command still running at its timeout keeps running
   and is returned as `running` with the output so far.
-- `delegate` in the foreground returns the completed agent task, and a
+- `subagent` in the foreground returns the completed agent task, and a
   failed foreground agent still crashes the script. In the background it
   returns the running agent task.
 - `taskOutput`, `waitTasks`, `stopTask` and `listTasks` take tasks of either
@@ -83,7 +83,7 @@ messageAgent({ id, message }): void
 
 - The executor allocates every ID from one counter, as numeric strings:
   `"1"`, `"2"`, ... Bash tasks and agent tasks never share an ID. The
-  `delegate` handler allocates the ID before it hands the agent to the
+  `subagent` handler allocates the ID before it hands the agent to the
   `AgentTasks` of the script, so CLI "Subagent #3" and ACP `subagent-3` keep
   matching the task ID.
 - Each task belongs to the agent that started it. `ExecuteOptions.agentId`,
@@ -125,7 +125,7 @@ The rules of each kind stay as they were:
 - A final state is reported when a task function returned it: `bash`,
   `taskOutput` that saw the final status, or `waitTasks`. `stopTask` also marks
   the task as reported, without returning its final state.
-  Foreground agent results are reported by `delegate` itself. Reported tasks
+  Foreground agent results are reported by `subagent` itself. Reported tasks
   are not pushed. A bash task that `bash` returns finished is never handed to
   the agent at all, so it emits no `JobComplete` event either. `bash` takes
   one snapshot of a running task before handing it over and returns that
@@ -158,7 +158,7 @@ The rules of each kind stay as they were:
   still running at its timeout as `running`.
 - It describes the `<task>` message only when `Capabilities.taskPushes` is
   set, and otherwise tells the model to check bash tasks with `taskOutput`.
-  The `delegate` bullet and the tool descriptions never name the message,
+  The `subagent` bullet and the tool descriptions never name the message,
   as the executor renders the tool declarations for clients of every
   version. The `bash` description names no task function, so a caller that
   leaves one out never sees it mentioned.
@@ -168,7 +168,7 @@ The rules of each kind stay as they were:
 - `AgentTools.AgentTasks` replaces `Subagents`, and `AgentTaskExecutor`
   replaces `SubagentExecutor`. Its functions only receive IDs of agent tasks:
   the executor resolves bash tasks itself.
-- `ExecuteOptions.agentTasks` replaces `subagents`. Its `delegate` receives
+- `ExecuteOptions.agentTasks` replaces `subagents`. Its `subagent` receives
   the allocated `id` along with `prompt`, `background` and `environment`.
 - `ExecuteOptions.onTask` replaces `onJob` and receives a `TaskHandle`
   (`id`, `kind`, `await`, `claim`), which replaces `BackgroundJob`.
@@ -176,16 +176,16 @@ The rules of each kind stay as they were:
 - `Capabilities.taskPushes` replaces `jobPushes`.
 - RPC: the `Job` part becomes `Task { id, kind }`, `awaitJob` / `claimJob`
   become `awaitTask` / `claimTask`, and `watchJobs` becomes `watchTasks`.
-  The `Delegate` request carries `id`, and the sub-agent requests become
+  The `Subagent` request carries `id`, and the sub-agent requests become
   `TaskOutput`, `WaitTasks`, `MessageAgent`, `StopTask` and `ListTasks`.
 - Clients and executor servers from before this change do not work with
   current ones for sub-agents, so both sides must be upgraded together.
 
 ## Exclusion
 
-- Leaving out `delegate` also leaves out `messageAgent`.
+- Leaving out `subagent` also leaves out `messageAgent`.
 - `taskOutput`, `waitTasks`, `stopTask` and `listTasks` stay while `bash` or
-  `delegate` is offered, and are left out when both are.
+  `subagent` is offered, and are left out when both are.
 
 ## Not included
 

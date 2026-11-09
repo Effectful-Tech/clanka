@@ -934,7 +934,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
           return update(session.id, {
             sessionUpdate: announced ? "tool_call_update" : "tool_call",
             toolCallId: `subagent-${part.id}`,
-            title: `delegate: ${part.prompt.replace(/\s+/g, " ").trim().slice(0, 120)}`,
+            title: `subagent: ${part.prompt.replace(/\s+/g, " ").trim().slice(0, 120)}`,
             kind: "think",
             status: "in_progress",
             rawInput: { prompt: part.prompt },

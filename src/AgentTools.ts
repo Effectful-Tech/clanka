@@ -308,8 +308,7 @@ export class CommandLimits extends Context.Reference<{
  */
 export const makeBashTool = (timeout: Duration.Duration) =>
   Tool.make("bash", {
-    description:
-      "Run a bash command and return a task. Large output is replaced with a temporary-file path to the complete output, available until the executor closes.",
+    description: "Run a bash command and return a task.",
     parameters: Schema.Struct({
       command: Schema.String,
       timeoutMs: Schema.optional(Schema.Finite).annotate({
@@ -621,7 +620,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         output: () =>
           outputFile === undefined
             ? output.render()
-            : `Full output saved to: ${outputFile}`,
+            : `Output was too large. Saved to: ${outputFile}`,
       }
     })
 
@@ -630,7 +629,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     // started it.
     const tasks = new Map<string, TaskEntry>()
     let nextTaskId = 1
-    const registerAgentTask = Effect.fnUntraced(function* () {
+    const registerAgentTask = Effect.gen(function* () {
       const id = String(nextTaskId++)
       tasks.set(id, { kind: "agent", id, owner: yield* TaskOwner })
       return id
@@ -1204,7 +1203,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         yield* Effect.logInfo(`Calling "subagent"`).pipe(
           Effect.annotateLogs({ background }),
         )
-        const id = yield* registerAgentTask()
+        const id = yield* registerAgentTask
         const agentTasks = yield* AgentTaskExecutor
         return yield* agentTasks.subagent({ id, prompt, background })
       }),

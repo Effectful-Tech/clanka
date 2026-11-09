@@ -25,7 +25,7 @@ const withExecutor = <A, E, R>(
   )
 
 const outputPath = (task: Task) => {
-  const match = task.output.match(/Full output saved to: (.+)/)
+  const match = task.output.match(/^Full output saved to: ([^\n]+)$/)
   assert.isNotNull(match)
   return match![1]!
 }
@@ -47,7 +47,6 @@ describe("bash output files", () => {
             params: { command: "printf 123456789; printf stderr >&2" },
           })) as Task
           assert.strictEqual(large.status, "completed")
-          assert.include(large.output, "omitted")
           const fs = yield* FileSystem.FileSystem
           const full = yield* fs.readFileString(outputPath(large))
           assert.include(full, "123456789")

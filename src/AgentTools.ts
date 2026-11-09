@@ -309,7 +309,7 @@ export class CommandLimits extends Context.Reference<{
 export const makeBashTool = (timeout: Duration.Duration) =>
   Tool.make("bash", {
     description:
-      "Run a bash command and return a task. Large output is abbreviated with a temporary-file path to the complete output, available until the executor closes.",
+      "Run a bash command and return a task. Large output is replaced with a temporary-file path to the complete output, available until the executor closes.",
     parameters: Schema.Struct({
       command: Schema.String,
       timeoutMs: Schema.optional(Schema.Finite).annotate({
@@ -618,7 +618,10 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
       )
       return {
         fiber,
-        output: () => output.render(outputFile),
+        output: () =>
+          outputFile === undefined
+            ? output.render()
+            : `Full output saved to: ${outputFile}`,
       }
     })
 
@@ -1401,10 +1404,10 @@ const makeOutputBuffer = (maxChars: number | undefined) => {
         tail = (tail + rest).slice(-tailChars)
       }
     },
-    render(outputFile?: string) {
+    render() {
       const omitted = total - head.length - tail.length
       if (omitted <= 0) return head + tail
-      return `${head}\n\n[... ${omitted} of ${total} chars omitted from the middle of the output ...]\n${outputFile === undefined ? "" : `Full output saved to: ${outputFile}\n`}\n${tail}`
+      return `${head}\n\n[... ${omitted} of ${total} chars omitted from the middle of the output ...]\n\n${tail}`
     },
   }
 }

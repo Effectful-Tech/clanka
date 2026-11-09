@@ -1,5 +1,11 @@
 # clanka
 
+## 0.23.1
+
+### Patch Changes
+
+- [#300](https://github.com/Effectful-Tech/clanka/pull/300) [`2c4de47`](https://github.com/Effectful-Tech/clanka/commit/2c4de473566d1e2831b558ddd372d70bf30195c1) Thanks [@tim-smart](https://github.com/tim-smart)! - Save large bash output to a temporary file and return only a message with the file path. Default to a 30,000-character threshold, respect commandOutputChars overrides, and keep the file available until the executor closes.
+
 ## 0.23.0
 
 ### Minor Changes

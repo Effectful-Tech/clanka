@@ -428,7 +428,7 @@ export const AgentTools = Toolkit.make(
   makeBashTool(defaultBashTimeout),
   Tool.make("run", {
     description:
-      "Run a bash command in the foreground and return its output. After 2 minutes (or the caller's shorter command timeout), return a notice that the task is still running in the background.",
+      "Run a bash command in the foreground and return its output. If it takes longer than 2 minutes it will become a background task.",
     parameters: Schema.String.annotate({ identifier: "command" }),
     success: Schema.String,
     dependencies: [CurrentDirectory],

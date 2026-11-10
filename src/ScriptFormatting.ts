@@ -7,7 +7,10 @@ parser.setLanguage(JavaScript)
 /** Adds display-only line breaks, leaving execution and model history untouched. */
 export const formatScript = (script: string): string => {
   try {
-    const tree = parser.parse(script)
+    const tree = parser.parse(script, undefined, {
+      // Include room for the UTF-16 terminator, even for large file contents.
+      bufferSize: Math.max(32 * 1024, script.length + 1),
+    })
     if (tree.rootNode.hasError) return script
     const breaks = new Set<number>()
     const visit = (node: SyntaxNode): void => {

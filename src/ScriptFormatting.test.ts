@@ -2,6 +2,13 @@ import { describe, expect, it } from "@effect/vitest"
 import { formatScript } from "./ScriptFormatting.ts"
 
 describe("formatScript", () => {
+  it("formats scripts larger than the parser default buffer", () => {
+    const declaration = `const data="${"x".repeat(40_000)}";`
+    expect(formatScript(declaration + "console.log(data);")).toBe(
+      declaration + "\nconsole.log(data);",
+    )
+  })
+
   it("adds line breaks to compact statements and blocks without expanding for headers", () => {
     const input = "let n=0;for(let i=0;i<2;i++){n+=i;}console.log(n);"
     const output = "let n=0;\nfor(let i=0;i<2;i++){\nn+=i;\n}\nconsole.log(n);"

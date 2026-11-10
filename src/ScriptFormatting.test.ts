@@ -2,6 +2,32 @@ import { describe, expect, it } from "@effect/vitest"
 import { formatScript } from "./ScriptFormatting.ts"
 
 describe("formatScript", () => {
+  it("removes separator spaces only at inserted line breaks", () => {
+    const input = [
+      "console.log(await ls('.')); console.log(await readFile({path: 'README.md'}));\t console.log(await readFile({path: 'package.json'}));",
+      'if (true) {  console.log("  literal;  "); /*  comment;  */ console.log(`  template;  `); }',
+      "if (true) {",
+      "  console.log(1);",
+      "\tconsole.log(2);",
+      "}",
+    ].join("\n")
+    const expected = [
+      "console.log(await ls('.'));",
+      "console.log(await readFile({path: 'README.md'}));",
+      "console.log(await readFile({path: 'package.json'}));",
+      "if (true) {",
+      'console.log("  literal;  ");',
+      "/*  comment;  */ console.log(`  template;  `);",
+      "}",
+      "if (true) {",
+      "  console.log(1);",
+      "\tconsole.log(2);",
+      "}",
+    ].join("\n")
+    expect(formatScript(input)).toBe(expected)
+    expect(formatScript(expected)).toBe(expected)
+  })
+
   it("formats scripts larger than the parser default buffer", () => {
     const declaration = `const data="${"x".repeat(40_000)}";`
     expect(formatScript(declaration + "console.log(data);")).toBe(

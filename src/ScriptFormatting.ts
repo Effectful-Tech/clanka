@@ -47,6 +47,8 @@ export const formatScript = (script: string): string => {
       if (/^[ \t]*(?:[\r\n]|$)/.test(rest)) continue
       output += script.slice(start, index) + newline
       start = index
+      // Separators on the original line are not indentation for the new one.
+      while (script[start] === " " || script[start] === "\t") start++
     }
     return output + script.slice(start)
   } catch {

@@ -421,7 +421,8 @@ export const makeWith = Effect.fnUntraced(function* <
       readonly acquire?: boolean
       readonly release?: boolean
     }) {
-      if (!opts.display) {
+      // Accounting must stay on its owner's stream, not the shared display buffer.
+      if (!opts.display || options.part._tag === "Usage") {
         Queue.offerUnsafe(output, options.part)
         return
       }
@@ -533,6 +534,8 @@ export const makeWith = Effect.fnUntraced(function* <
     }) {
       const { child } = options
       const turn = child.turn
+      // Each spawn starts fresh counters, including when a child is resumed.
+      let childUsage: Usage | undefined
       const display = opts.display && !options.background
       const stream = spawn({
         agentId: child.id,
@@ -561,6 +564,26 @@ export const makeWith = Effect.fnUntraced(function* <
         return yield* stream.pipe(
           Stream.runForEachArray((parts) => {
             for (const part of parts) {
+              // Only direct Usage snapshots contribute: nested SubagentParts
+              // are display events already included in the child's totals.
+              if (part._tag === "Usage") {
+                inputTokens += part.inputTokens - (childUsage?.inputTokens ?? 0)
+                outputTokens +=
+                  part.outputTokens - (childUsage?.outputTokens ?? 0)
+                cacheRead += part.cacheRead - (childUsage?.cacheRead ?? 0)
+                cacheWrite += part.cacheWrite - (childUsage?.cacheWrite ?? 0)
+                childUsage = part
+                maybeSend({
+                  agentId: opts.agentId,
+                  part: new Usage({
+                    contextTokens: lastContextTokens ?? 0,
+                    inputTokens,
+                    outputTokens,
+                    cacheRead,
+                    cacheWrite,
+                  }),
+                })
+              }
               switch (part._tag) {
                 case "AgentStart":
                 case "HistoryAppended":

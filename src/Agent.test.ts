@@ -621,6 +621,198 @@ it.layer(localExecutorLayer, { excludeTestServices: true })(
 // --- tests -------------------------------------------------------------------
 
 describe("Agent usage", () => {
+  for (const background of [false, true]) {
+    it.effect(
+      `aggregates nested subagent usage once (background: ${background})`,
+      () =>
+        Effect.gen(function* () {
+          const { exit, outputs } = yield* runAgentCollect({
+            executor: makeExecutor(({ script, environment, agentTasks }) =>
+              Stream.fromEffect(
+                Effect.gen(function* () {
+                  const task = yield* agentTasks.subagent({
+                    id: script,
+                    prompt: "nested task",
+                    background,
+                    environment: new AgentExecutor.EnvironmentUpdate({
+                      environment,
+                      update: Option.none(),
+                    }),
+                  })
+                  yield* agentTasks.waitTasks([task.id], { timeoutMs: 60_000 })
+                  // Reading completion again must not add the child's usage again.
+                  yield* agentTasks.taskOutput(task.id)
+                  if (script === "1") {
+                    yield* agentTasks.messageAgent({
+                      id: task.id,
+                      message: "follow up",
+                    })
+                    yield* agentTasks.waitTasks([task.id], {
+                      timeoutMs: 60_000,
+                    })
+                  }
+                  return "done"
+                }).pipe(Effect.orDie),
+              ),
+            ),
+            respond: (_call, index) => {
+              switch (index) {
+                case 0:
+                  return Stream.make(
+                    toolCall("root", "1"),
+                    finish(100, "tool-calls", { read: 10, write: 1 }),
+                  )
+                case 1:
+                  return Stream.make(
+                    toolCall("child", "2"),
+                    finish(200, "tool-calls", { read: 20, write: 2 }),
+                  )
+                case 2:
+                  return Stream.fromIterable([
+                    ...text("grandchild"),
+                    finish(300, "stop", { read: 30, write: 3 }),
+                  ])
+                case 3:
+                  return Stream.fromIterable([
+                    ...text("child"),
+                    finish(400, "stop", { read: 40, write: 4 }),
+                  ])
+                case 4:
+                  return Stream.fromIterable([
+                    ...text("resumed child"),
+                    finish(50, "stop", { read: 5, write: 1 }),
+                  ])
+                case 5:
+                  return Stream.fromIterable([
+                    ...text("complete"),
+                    finish(500, "stop", { read: 50, write: 5 }),
+                  ])
+                default:
+                  return Stream.die(`unexpected call ${index}`)
+              }
+            },
+          })
+          assert.deepStrictEqual(exit, Exit.succeed("complete"))
+          const usage = outputsOfTag(outputs, "Usage")
+          assert.strictEqual(usage.length, 6)
+          assert.strictEqual(usage.at(-2)?.inputTokens, 1050)
+          // Child context windows must never replace the parent's window.
+          assert.isTrue(
+            usage
+              .slice(0, -1)
+              .every(
+                (part) =>
+                  part.contextTokens === 0 || part.contextTokens === 100,
+              ),
+          )
+          assert.deepStrictEqual(
+            usage.at(-1),
+            new AgentOutput.Usage({
+              contextTokens: 500,
+              inputTokens: 1550,
+              outputTokens: 60,
+              cacheRead: 155,
+              cacheWrite: 16,
+            }),
+          )
+        }),
+    )
+  }
+
+  it.effect(
+    "keeps background sibling usage out of the foreground output buffer",
+    () =>
+      Effect.gen(function* () {
+        const reasoningStarted = yield* Deferred.make<void>()
+        const backgroundDone = yield* Deferred.make<void>()
+        // B completes while A holds the display lock, before A ends its reasoning.
+        const { exit, outputs } = yield* runAgentCollect({
+          executor: makeExecutor(({ environment, agentTasks }) =>
+            Stream.fromEffect(
+              Effect.gen(function* () {
+                const update = new AgentExecutor.EnvironmentUpdate({
+                  environment,
+                  update: Option.none(),
+                })
+                const background = yield* agentTasks.subagent({
+                  id: "1",
+                  prompt: "sibling-b",
+                  background: true,
+                  environment: update,
+                })
+                yield* agentTasks
+                  .waitTasks([background.id], { timeoutMs: 60_000 })
+                  .pipe(
+                    Effect.andThen(Deferred.done(backgroundDone, Exit.void)),
+                    Effect.forkScoped,
+                  )
+                yield* agentTasks.subagent({
+                  id: "2",
+                  prompt: "sibling-a",
+                  background: false,
+                  environment: update,
+                })
+                return "done"
+              }).pipe(Effect.scoped, Effect.orDie),
+            ),
+          ),
+          respond: (_call, index) => {
+            if (index === 0) {
+              return Stream.make(toolCall("root", "siblings"), finish(100))
+            }
+            if (index === 1) {
+              return Stream.fromEffect(Deferred.await(reasoningStarted)).pipe(
+                Stream.flatMap(() =>
+                  Stream.fromIterable([...text("b done"), finish(300, "stop")]),
+                ),
+              )
+            }
+            if (index === 2) {
+              return Stream.make(
+                { type: "reasoning-start", id: "a" } as const,
+                {
+                  type: "reasoning-delta",
+                  id: "a",
+                  delta: "thinking",
+                } as const,
+              ).pipe(
+                Stream.concat(
+                  Stream.fromEffect(
+                    Deferred.done(reasoningStarted, Exit.void).pipe(
+                      Effect.andThen(Deferred.await(backgroundDone)),
+                      Effect.as<Response.StreamPartEncoded>({
+                        type: "reasoning-end",
+                        id: "a",
+                      }),
+                    ),
+                  ),
+                ),
+                Stream.concat(
+                  Stream.fromIterable([...text("a done"), finish(200, "stop")]),
+                ),
+              )
+            }
+            return Stream.fromIterable([
+              ...text("complete"),
+              finish(400, "stop"),
+            ])
+          },
+        })
+        assert.deepStrictEqual(exit, Exit.succeed("complete"))
+        const usage = outputsOfTag(outputs, "Usage")
+        assert.deepStrictEqual(
+          usage.map((part) => [part.inputTokens, part.contextTokens]),
+          [
+            [300, 0],
+            [500, 0],
+            [600, 100],
+            [1000, 400],
+          ],
+        )
+        assert.strictEqual(usage.at(-1)?.outputTokens, 40)
+      }),
+  )
+
   it.effect("accumulates provider cache reads and writes", () =>
     Effect.gen(function* () {
       const { exit, outputs } = yield* runAgentCollect({

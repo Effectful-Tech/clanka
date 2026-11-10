@@ -1,5 +1,11 @@
 # clanka
 
+## 0.25.3
+
+### Patch Changes
+
+- [#318](https://github.com/Effectful-Tech/clanka/pull/318) [`5d37f53`](https://github.com/Effectful-Tech/clanka/commit/5d37f53f8f0415a94eb2d85ddf29f58ed43d3388) Thanks [@tim-smart](https://github.com/tim-smart)! - Add basic line breaks to displayed model-generated scripts without changing execution or model history. Preserve literals and comments, and leave scripts unchanged when they cannot be parsed.
+
 ## 0.25.2
 
 ### Patch Changes

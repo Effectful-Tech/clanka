@@ -426,6 +426,13 @@ export const AgentTools = Toolkit.make(
     dependencies: [CurrentDirectory],
   }),
   makeBashTool(defaultBashTimeout),
+  Tool.make("run", {
+    description:
+      "Run a bash command in the foreground and return its output. If it takes longer than 2 minutes it will become a background task.",
+    parameters: Schema.String.annotate({ identifier: "command" }),
+    success: Schema.String,
+    dependencies: [CurrentDirectory],
+  }),
   Tool.make("taskOutput", {
     description:
       "Return the status and output so far of one of your tasks: a background bash command or a sub-agent.",
@@ -721,6 +728,53 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
       return `Image attached: ${fileName}`
     })
 
+    const bash = Effect.fn("AgentTools.bash")(function* (options: {
+      readonly command: string
+      readonly timeoutMs?: number | undefined
+      readonly background?: boolean | undefined
+    }) {
+      const maxMs = bashTimeoutMs(yield* CommandLimits)
+      const timeoutMs = Math.min(options.timeoutMs ?? maxMs, maxMs)
+      yield* Effect.logInfo(`Calling "bash"`).pipe(
+        Effect.annotateLogs({
+          ...options,
+          timeoutMs,
+        }),
+      )
+      const cwd = yield* CurrentDirectory
+      const cmd = ChildProcess.make("bash", ["-c", options.command], {
+        cwd,
+        stdin: "ignore",
+      })
+      const entry = yield* addBashTask(
+        options.command,
+        yield* startCommand(cmd, true),
+      )
+      if (options.background !== true) {
+        const exit = yield* awaitCommand(
+          entry.command,
+          Duration.millis(timeoutMs),
+        )
+        if (Option.isSome(exit)) {
+          // A finished command is reported here, so it is never pushed.
+          const exitCode = yield* exit.value
+          const task = reportBash(entry)
+          if (exitCode === 0) return task
+          return yield* Effect.die(
+            new Error(
+              `Command failed with exit code ${exitCode}: ${task.output}`,
+            ),
+          )
+        }
+      }
+      // Snapshot the task before yielding to the watcher: the command can
+      // finish while it is being handed over, and its final state must
+      // reach the model only once. A finished task is never handed over.
+      const task = reportBash(entry)
+      if (task.status === "running") yield* watchBashTask(entry)
+      return options.background === true ? task : backgroundRunningOutput(task)
+    }, Effect.orDie)
+
     return AgentToolsWithSearch.of({
       changeDirectory: Effect.fn("AgentTools.changeDirectory")(
         function* (directory) {
@@ -891,50 +945,11 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           import("glob").then((Glob) => Glob.glob(pattern, { cwd })),
         )
       }),
-      bash: Effect.fn("AgentTools.bash")(function* (options) {
-        const maxMs = bashTimeoutMs(yield* CommandLimits)
-        const timeoutMs = Math.min(options.timeoutMs ?? maxMs, maxMs)
-        yield* Effect.logInfo(`Calling "bash"`).pipe(
-          Effect.annotateLogs({
-            ...options,
-            timeoutMs,
-          }),
-        )
-        const cwd = yield* CurrentDirectory
-        const cmd = ChildProcess.make("bash", ["-c", options.command], {
-          cwd,
-          stdin: "ignore",
-        })
-        const entry = yield* addBashTask(
-          options.command,
-          yield* startCommand(cmd, true),
-        )
-        if (options.background !== true) {
-          const exit = yield* awaitCommand(
-            entry.command,
-            Duration.millis(timeoutMs),
-          )
-          if (Option.isSome(exit)) {
-            // A finished command is reported here, so it is never pushed.
-            const exitCode = yield* exit.value
-            const task = reportBash(entry)
-            if (exitCode === 0) return task
-            return yield* Effect.die(
-              new Error(
-                `Command failed with exit code ${exitCode}: ${task.output}`,
-              ),
-            )
-          }
-        }
-        // Snapshot the task before yielding to the watcher: the command can
-        // finish while it is being handed over, and its final state must
-        // reach the model only once. A finished task is never handed over.
-        const task = reportBash(entry)
-        if (task.status === "running") yield* watchBashTask(entry)
-        return options.background === true
-          ? task
-          : backgroundRunningOutput(task)
-      }, Effect.orDie),
+      bash,
+      run: Effect.fn("AgentTools.run")(function* (command) {
+        const task = yield* bash({ command, timeoutMs: 120_000 })
+        return task.output
+      }),
       taskOutput: Effect.fn("AgentTools.taskOutput")(function* (
         input: unknown,
       ) {

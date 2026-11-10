@@ -8,6 +8,7 @@ import * as AgentSkills from "./AgentSkills.ts"
 import * as McpServers from "./McpServers.ts"
 import { ToolkitRenderer } from "./ToolkitRenderer.ts"
 import { stripWrappingCodeFence } from "./ScriptExtraction.ts"
+import { formatScript } from "./ScriptFormatting.ts"
 import type * as Path from "effect/Path"
 import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
 import type * as HttpClient from "effect/http/HttpClient"
@@ -1484,7 +1485,10 @@ ${prompt}`,
     }).pipe(
       Effect.provideService(ScriptExecutor, (script) => {
         maybeSend({ agentId, part: new ScriptStart() })
-        maybeSend({ agentId, part: new ScriptDelta({ delta: script }) })
+        maybeSend({
+          agentId,
+          part: new ScriptDelta({ delta: formatScript(script) }),
+        })
         return executeScript(script)
       }),
       Effect.ensuring(Scope.close(runScope, Exit.void)),

@@ -1,5 +1,11 @@
 # clanka
 
+## 0.24.4
+
+### Patch Changes
+
+- [#311](https://github.com/Effectful-Tech/clanka/pull/311) [`3912bc9`](https://github.com/Effectful-Tech/clanka/commit/3912bc98866c31e6e8192e6940d7a74b10121cb4) Thanks [@effect-bot](https://github.com/effect-bot)! - Include nested subagent token and cache usage in parent totals without double-counting or interrupting streamed reasoning and script output.
+
 ## 0.24.3
 
 ### Patch Changes

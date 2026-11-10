@@ -286,34 +286,45 @@ await taskComplete(missing + " " + call)`,
 
     // The shared task functions address bash and agent tasks, so they stay
     // while either kind can still be started.
-    it.live("the task functions go only when bash and subagent both go", () =>
-      Effect.gen(function* () {
-        const tasks =
-          "[typeof taskOutput, typeof waitTasks, typeof stopTask, typeof listTasks].join()"
-        const withBash = yield* runAgent({
-          mode,
-          executor: { excludeTools: ["subagent"] },
-          script: `await taskComplete(${tasks})`,
-        })
-        assert.strictEqual(
-          withBash.summary,
-          "function,function,function,function",
-        )
-        const withNeither = yield* runAgent({
-          mode,
-          executor: { excludeTools: ["bash", "subagent"] },
-          script: `await taskComplete(${tasks})`,
-        })
-        assert.strictEqual(
-          withNeither.summary,
-          "undefined,undefined,undefined,undefined",
-        )
-        assert.notMatch(
-          withNeither.system,
-          /\b(taskOutput|waitTasks|stopTask|listTasks)\b/,
-        )
-        assert.notInclude(withNeither.system, "<task")
-      }),
+    it.live(
+      "the task functions go only when bash, run and subagent all go",
+      () =>
+        Effect.gen(function* () {
+          const tasks =
+            "[typeof taskOutput, typeof waitTasks, typeof stopTask, typeof listTasks].join()"
+          const withBash = yield* runAgent({
+            mode,
+            executor: { excludeTools: ["subagent"] },
+            script: `await taskComplete(${tasks})`,
+          })
+          assert.strictEqual(
+            withBash.summary,
+            "function,function,function,function",
+          )
+          const withRun = yield* runAgent({
+            mode,
+            executor: { excludeTools: ["bash", "subagent"] },
+            script: `await taskComplete(${tasks})`,
+          })
+          assert.strictEqual(
+            withRun.summary,
+            "function,function,function,function",
+          )
+          const withNeither = yield* runAgent({
+            mode,
+            executor: { excludeTools: ["bash", "run", "subagent"] },
+            script: `await taskComplete(${tasks})`,
+          })
+          assert.strictEqual(
+            withNeither.summary,
+            "undefined,undefined,undefined,undefined",
+          )
+          assert.notMatch(
+            withNeither.system,
+            /\b(taskOutput|waitTasks|stopTask|listTasks)\b/,
+          )
+          assert.notInclude(withNeither.system, "<task")
+        }),
     )
 
     it.live("a caller tool replaces a left-out built-in of the same name", () =>

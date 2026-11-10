@@ -1390,7 +1390,7 @@ const excludedToolNames = (
   const names = new Set<string>(excludeTools)
   if (names.has("subagent")) {
     names.add("messageAgent")
-    if (names.has("bash")) {
+    if (names.has("bash") && names.has("run")) {
       for (const name of ["taskOutput", "waitTasks", "stopTask", "listTasks"]) {
         names.add(name)
       }

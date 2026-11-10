@@ -558,6 +558,44 @@ await sleep(60000)`,
   })
 
   describe(`${mode} executor limits`, () => {
+    it.live("run accepts only a string and returns command output", () =>
+      Effect.gen(function* () {
+        const output = yield* runScript(
+          'console.log("OUTPUT:", JSON.stringify(await run("printf hello"))); try { await run({ command: "echo invalid" }) } catch { console.log("INVALID") }',
+        )
+        assert.include(output, 'OUTPUT: "hello"')
+        assert.include(output, "INVALID")
+      }).pipe(Effect.provide(executorLayer({}))),
+    )
+
+    it.live(
+      "run hands timed-out commands to the background with a string notice",
+      () =>
+        Effect.gen(function* () {
+          const executor = yield* AgentExecutor.AgentExecutor
+          const { environment } = yield* executor.capabilities
+          const output = yield* runScript(
+            `console.log("OUTPUT:", JSON.stringify(await run(${JSON.stringify(gatedCommand(environment.cwd))})))`,
+          )
+          assert.strictEqual(
+            JSON.parse(output.split("OUTPUT:")[1]!),
+            'Task "1" is still running in the background',
+          )
+          assert.strictEqual(
+            yield* waitForLog(environment.cwd, started),
+            "start\n",
+          )
+          openGate(environment.cwd)
+          assert.strictEqual(
+            yield* waitForLog(environment.cwd, finished),
+            "start\nfinish\n",
+          )
+        }).pipe(
+          Effect.timeout("5 seconds"),
+          Effect.provide(executorLayer({ commandTimeout: "300 millis" })),
+        ),
+    )
+
     it.live("runs a bash command in the background", () =>
       Effect.gen(function* () {
         const executor = yield* AgentExecutor.AgentExecutor

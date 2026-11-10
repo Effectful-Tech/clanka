@@ -1,5 +1,11 @@
 # clanka
 
+## 0.25.2
+
+### Patch Changes
+
+- [`19ba330`](https://github.com/Effectful-Tech/clanka/commit/19ba330cb035cd13c5f3b02d0cc3f279007b91c0) Thanks [@tim-smart](https://github.com/tim-smart)! - tweak compaction prompt
+
 ## 0.25.1
 
 ### Patch Changes

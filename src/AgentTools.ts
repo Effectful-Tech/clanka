@@ -370,6 +370,13 @@ export const AgentTools = Toolkit.make(
     success: Schema.NullOr(Schema.String),
     dependencies: [CurrentDirectory, ImageAttacher],
   }),
+  Tool.make("run", {
+    description:
+      "Run a shell command in the foreground and return its output. If it takes longer than 2 minutes it will become a background task.",
+    parameters: Schema.String.annotate({ identifier: "command" }),
+    success: Schema.String,
+    dependencies: [CurrentDirectory],
+  }),
   Tool.make("rg", {
     description: "Search for a pattern in files using ripgrep",
     parameters: Schema.Struct({
@@ -399,23 +406,6 @@ export const AgentTools = Toolkit.make(
     failure: Schema.String,
     dependencies: [AgentTaskExecutor],
   }),
-  Tool.make("messageAgent", {
-    description: "Send a message to one of your sub-agents.",
-    parameters: Schema.Struct({
-      id: Schema.String,
-      message: Schema.String,
-    }),
-    failure: Schema.String,
-    dependencies: [AgentTaskExecutor],
-  }),
-  Tool.make("glob", {
-    description: "Find files matching a glob pattern.",
-    parameters: Schema.String.annotate({
-      identifier: "pattern",
-    }),
-    success: Schema.Array(Schema.String),
-    dependencies: [CurrentDirectory],
-  }),
   Tool.make("gh", {
     description:
       "Use the GitHub CLI to run a command - use this instead of the bash tool.",
@@ -426,51 +416,6 @@ export const AgentTools = Toolkit.make(
     dependencies: [CurrentDirectory],
   }),
   makeBashTool(defaultBashTimeout),
-  Tool.make("run", {
-    description:
-      "Run a bash command in the foreground and return its output. If it takes longer than 2 minutes it will become a background task.",
-    parameters: Schema.String.annotate({ identifier: "command" }),
-    success: Schema.String,
-    dependencies: [CurrentDirectory],
-  }),
-  Tool.make("taskOutput", {
-    description:
-      "Return the status and output so far of one of your tasks: a background bash command or a sub-agent.",
-    parameters: Schema.String.annotate({
-      identifier: "id",
-    }),
-    success: Task,
-    failure: Schema.String,
-    dependencies: [AgentTaskExecutor],
-  }),
-  Tool.make("waitTasks", {
-    description:
-      "Wait until the given tasks have ended and return them, in the order given.",
-    parameters: Schema.Struct({
-      ids: Schema.Array(Schema.String),
-      timeoutMs: Schema.optional(Schema.Finite).annotate({
-        documentation:
-          "How long to wait in ms (default and max: the bash command timeout)",
-      }),
-    }),
-    success: Schema.Array(Task),
-    failure: Schema.String,
-    dependencies: [AgentTaskExecutor],
-  }),
-  Tool.make("stopTask", {
-    description: "Stop one of your tasks.",
-    parameters: Schema.String.annotate({
-      identifier: "id",
-    }),
-    failure: Schema.String,
-    dependencies: [AgentTaskExecutor],
-  }),
-  Tool.make("listTasks", {
-    description: "List the tasks you have started, with their status.",
-    parameters: Schema.Void,
-    success: Schema.Array(Task),
-    dependencies: [AgentTaskExecutor],
-  }),
   Tool.make("applyPatch", {
     description:
       "Add, update or remove multiple files with a git diff / unified diff / wrapped patch.",
@@ -533,6 +478,53 @@ export const AgentTools = Toolkit.make(
     parameters: Schema.Finite.annotate({
       identifier: "ms",
     }),
+  }),
+  Tool.make("taskOutput", {
+    description:
+      "Return the status and output so far of one of your tasks: a background bash command or a sub-agent.",
+    parameters: Schema.String.annotate({
+      identifier: "id",
+    }),
+    success: Task,
+    failure: Schema.String,
+    dependencies: [AgentTaskExecutor],
+  }),
+  Tool.make("waitTasks", {
+    description:
+      "Wait until the given tasks have ended and return them, in the order given.",
+    parameters: Schema.Struct({
+      ids: Schema.Array(Schema.String),
+      timeoutMs: Schema.optional(Schema.Finite).annotate({
+        documentation:
+          "How long to wait in ms (default and max: the bash command timeout)",
+      }),
+    }),
+    success: Schema.Array(Task),
+    failure: Schema.String,
+    dependencies: [AgentTaskExecutor],
+  }),
+  Tool.make("stopTask", {
+    description: "Stop one of your tasks.",
+    parameters: Schema.String.annotate({
+      identifier: "id",
+    }),
+    failure: Schema.String,
+    dependencies: [AgentTaskExecutor],
+  }),
+  Tool.make("listTasks", {
+    description: "List the tasks you have started, with their status.",
+    parameters: Schema.Void,
+    success: Schema.Array(Task),
+    dependencies: [AgentTaskExecutor],
+  }),
+  Tool.make("messageAgent", {
+    description: "Send a message to one of your sub-agents.",
+    parameters: Schema.Struct({
+      id: Schema.String,
+      message: Schema.String,
+    }),
+    failure: Schema.String,
+    dependencies: [AgentTaskExecutor],
   }),
   Tool.make("taskComplete", {
     description:
@@ -935,15 +927,6 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           return output
         }
         return yield* run(args.slice(0, -1).concat("-uu", options.pattern))
-      }),
-      glob: Effect.fn("AgentTools.glob")(function* (pattern) {
-        yield* Effect.logInfo(`Calling "glob"`).pipe(
-          Effect.annotateLogs({ pattern }),
-        )
-        const cwd = yield* CurrentDirectory
-        return yield* Effect.promise(() =>
-          import("glob").then((Glob) => Glob.glob(pattern, { cwd })),
-        )
       }),
       bash,
       run: Effect.fn("AgentTools.run")(function* (command) {

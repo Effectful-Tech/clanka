@@ -21,6 +21,8 @@ import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import { agentTasksUnavailable } from "./AgentTools.ts"
 import * as AgentOutput from "./AgentOutput.ts"
+import * as OutputFormatter from "./OutputFormatter.ts"
+import { stripVTControlCharacters } from "node:util"
 import * as Compaction from "./Compaction.ts"
 
 const capabilities = new AgentExecutor.Capabilities({
@@ -802,6 +804,18 @@ describe("Agent usage", () => {
           ],
         )
         assert.strictEqual(usage.at(-1)?.outputTokens, 40)
+        const formatted = yield* Stream.fromIterable(outputs).pipe(
+          OutputFormatter.pretty(),
+          Stream.runCollect,
+        )
+        assert.include(
+          stripVTControlCharacters(formatted.join("")),
+          "Thinking: thinking\n\n",
+        )
+        assert.include(
+          stripVTControlCharacters(formatted.join("")),
+          "Usage: 0 context / 300 input / 10 output",
+        )
       }),
   )
 

@@ -7,7 +7,12 @@ import * as PubSub from "effect/PubSub"
 import * as Semaphore from "effect/Semaphore"
 import * as Context from "effect/Context"
 import * as Stream from "effect/Stream"
-import type { AgentFinished, Output } from "./AgentOutput.ts"
+import {
+  type AgentFinished,
+  type Output,
+  ReasoningEnd,
+  ScriptEnd,
+} from "./AgentOutput.ts"
 import chalk from "chalk"
 import type * as Prompt from "effect/ai/Prompt"
 import * as Cause from "effect/Cause"
@@ -49,6 +54,7 @@ export const pretty = (options?: {
       : identity
   return (stream) =>
     stream.pipe(
+      deferBlockOutput,
       Stream.map((output) => {
         let prefix = ""
         if (output._tag === "SubagentPart") {
@@ -147,6 +153,54 @@ ${chalk.dim(output.summary)}\n\n`
     )
 }
 
+// Out-of-band updates stay live upstream; presentation waits for an open block.
+const deferBlockOutput = <E, R>(stream: Stream.Stream<Output, E, R>) =>
+  Stream.suspend(() => {
+    let end: ReasoningEnd | ScriptEnd | undefined
+    let pending: Array<Output> = []
+    const flush = () => {
+      const parts = pending
+      pending = []
+      return parts
+    }
+    const finish = () => {
+      const parts = pending.length > 0 && end ? [end, ...flush()] : flush()
+      end = undefined
+      return Stream.fromIterable(parts)
+    }
+    return stream.pipe(
+      Stream.map((output): Array<Output> => {
+        const part = output._tag === "SubagentPart" ? output.part : output
+        switch (part._tag) {
+          case "ReasoningStart":
+            end = new ReasoningEnd()
+            break
+          case "ScriptStart":
+            end = new ScriptEnd()
+            break
+          case "ReasoningEnd":
+          case "ScriptEnd":
+            end = undefined
+            return [output, ...flush()]
+          case "ReasoningDelta":
+          case "ScriptDelta":
+            break
+          default:
+            if (end) {
+              pending.push(output)
+              return []
+            }
+        }
+        return [output]
+      }),
+      Stream.flattenIterable,
+      Stream.catchCause((cause) =>
+        finish().pipe(Stream.concat(Stream.failCause(cause))),
+      ),
+      Stream.concat(Stream.suspend(finish)),
+    )
+  })
+
 const promptToString = (prompt: Prompt.Prompt): string => {
   let textParts: Array<string> = []
   for (const message of prompt.content) {
@@ -206,6 +260,7 @@ export const layerMuxer = (formatter: OutputFormatter) =>
         add(stream) {
           const id = ++agentCount
           return stream.pipe(
+            deferBlockOutput,
             Stream.tap(
               Effect.fnUntraced(function* (part_) {
                 if (currentAgentId === null || id !== currentAgentId) {

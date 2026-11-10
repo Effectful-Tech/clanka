@@ -1691,7 +1691,7 @@ const incompleteResponseError = (description: string) =>
 
 const retryPolicy = Schedule.min([
   Schedule.exponential(100, 1.5),
-  Schedule.spaced(5000),
+  Schedule.spaced({ minutes: 5 }),
 ]).pipe(Schedule.jittered)
 
 const environmentUpdateOpen = "<environment-update>"

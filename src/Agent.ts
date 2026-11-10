@@ -338,6 +338,19 @@ export const makeWith = Effect.fnUntraced(function* <
     let outputTokens = 0
     let cacheRead = 0
     let cacheWrite = 0
+    // Never through the display buffer: it is flushed into the stream of
+    // whichever agent releases it, where these totals would count as its own.
+    const sendUsage = () =>
+      Queue.offerUnsafe(
+        output,
+        new Usage({
+          contextTokens: lastContextTokens ?? 0,
+          inputTokens,
+          outputTokens,
+          cacheRead,
+          cacheWrite,
+        }),
+      )
     const prompt = opts.history
     const mailbox = opts.mailbox
 
@@ -533,6 +546,8 @@ export const makeWith = Effect.fnUntraced(function* <
     }) {
       const { child } = options
       const turn = child.turn
+      // Each spawn starts fresh counters, including when a child is resumed.
+      let childUsage: Usage | undefined
       const display = opts.display && !options.background
       const stream = spawn({
         agentId: child.id,
@@ -561,6 +576,17 @@ export const makeWith = Effect.fnUntraced(function* <
         return yield* stream.pipe(
           Stream.runForEachArray((parts) => {
             for (const part of parts) {
+              // Only direct Usage snapshots contribute: nested SubagentParts
+              // are display events already included in the child's totals.
+              if (part._tag === "Usage") {
+                inputTokens += part.inputTokens - (childUsage?.inputTokens ?? 0)
+                outputTokens +=
+                  part.outputTokens - (childUsage?.outputTokens ?? 0)
+                cacheRead += part.cacheRead - (childUsage?.cacheRead ?? 0)
+                cacheWrite += part.cacheWrite - (childUsage?.cacheWrite ?? 0)
+                childUsage = part
+                sendUsage()
+              }
               switch (part._tag) {
                 case "AgentStart":
                 case "HistoryAppended":
@@ -1304,16 +1330,7 @@ ${prompt}`,
                   if (usage.inputTokens.total !== undefined) {
                     lastContextTokens = usage.inputTokens.total
                     inputTokens += usage.inputTokens.total
-                    maybeSend({
-                      agentId,
-                      part: new Usage({
-                        contextTokens: usage.inputTokens.total,
-                        inputTokens,
-                        outputTokens,
-                        cacheRead,
-                        cacheWrite,
-                      }),
-                    })
+                    sendUsage()
                   }
                   break
                 case "tool-call":

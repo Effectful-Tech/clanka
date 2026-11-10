@@ -1,5 +1,11 @@
 # clanka
 
+## 0.25.0
+
+### Minor Changes
+
+- [#314](https://github.com/Effectful-Tech/clanka/pull/314) [`a6a1043`](https://github.com/Effectful-Tech/clanka/commit/a6a1043e5e41a0200041ac28ca497a52c8ec25f9) Thanks [@tim-smart](https://github.com/tim-smart)! - Add a string-only `run(command)` tool that returns bash output. Commands start in the foreground and move to the background after two minutes (or a shorter caller command limit), returning a still-running notice instead of a Task object.
+
 ## 0.24.5
 
 ### Patch Changes

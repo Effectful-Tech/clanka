@@ -694,16 +694,17 @@ describe("Agent usage", () => {
           })
           assert.deepStrictEqual(exit, Exit.succeed("complete"))
           const usage = outputsOfTag(outputs, "Usage")
-          assert.strictEqual(usage.length, 6)
-          assert.strictEqual(usage.at(-2)?.inputTokens, 1050)
           // Child context windows must never replace the parent's window.
-          assert.isTrue(
-            usage
-              .slice(0, -1)
-              .every(
-                (part) =>
-                  part.contextTokens === 0 || part.contextTokens === 100,
-              ),
+          assert.deepStrictEqual(
+            usage.map((part) => [part.inputTokens, part.contextTokens]),
+            [
+              [300, 0],
+              [500, 0],
+              [900, 0],
+              [950, 0],
+              [1050, 100],
+              [1550, 500],
+            ],
           )
           assert.deepStrictEqual(
             usage.at(-1),
@@ -768,22 +769,13 @@ describe("Agent usage", () => {
               )
             }
             if (index === 2) {
-              return Stream.make(
-                { type: "reasoning-start", id: "a" } as const,
-                {
-                  type: "reasoning-delta",
-                  id: "a",
-                  delta: "thinking",
-                } as const,
-              ).pipe(
+              const [start, delta, end] = reasoning("thinking")
+              return Stream.make(start!, delta!).pipe(
                 Stream.concat(
                   Stream.fromEffect(
                     Deferred.done(reasoningStarted, Exit.void).pipe(
                       Effect.andThen(Deferred.await(backgroundDone)),
-                      Effect.as<Response.StreamPartEncoded>({
-                        type: "reasoning-end",
-                        id: "a",
-                      }),
+                      Effect.as(end!),
                     ),
                   ),
                 ),

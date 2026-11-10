@@ -338,6 +338,19 @@ export const makeWith = Effect.fnUntraced(function* <
     let outputTokens = 0
     let cacheRead = 0
     let cacheWrite = 0
+    // Never through the display buffer: it is flushed into the stream of
+    // whichever agent releases it, where these totals would count as its own.
+    const sendUsage = () =>
+      Queue.offerUnsafe(
+        output,
+        new Usage({
+          contextTokens: lastContextTokens ?? 0,
+          inputTokens,
+          outputTokens,
+          cacheRead,
+          cacheWrite,
+        }),
+      )
     const prompt = opts.history
     const mailbox = opts.mailbox
 
@@ -421,8 +434,7 @@ export const makeWith = Effect.fnUntraced(function* <
       readonly acquire?: boolean
       readonly release?: boolean
     }) {
-      // Accounting must stay on its owner's stream, not the shared display buffer.
-      if (!opts.display || options.part._tag === "Usage") {
+      if (!opts.display) {
         Queue.offerUnsafe(output, options.part)
         return
       }
@@ -573,16 +585,7 @@ export const makeWith = Effect.fnUntraced(function* <
                 cacheRead += part.cacheRead - (childUsage?.cacheRead ?? 0)
                 cacheWrite += part.cacheWrite - (childUsage?.cacheWrite ?? 0)
                 childUsage = part
-                maybeSend({
-                  agentId: opts.agentId,
-                  part: new Usage({
-                    contextTokens: lastContextTokens ?? 0,
-                    inputTokens,
-                    outputTokens,
-                    cacheRead,
-                    cacheWrite,
-                  }),
-                })
+                sendUsage()
               }
               switch (part._tag) {
                 case "AgentStart":
@@ -1327,16 +1330,7 @@ ${prompt}`,
                   if (usage.inputTokens.total !== undefined) {
                     lastContextTokens = usage.inputTokens.total
                     inputTokens += usage.inputTokens.total
-                    maybeSend({
-                      agentId,
-                      part: new Usage({
-                        contextTokens: usage.inputTokens.total,
-                        inputTokens,
-                        outputTokens,
-                        cacheRead,
-                        cacheWrite,
-                      }),
-                    })
+                    sendUsage()
                   }
                   break
                 case "tool-call":

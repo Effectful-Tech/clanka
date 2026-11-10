@@ -1961,3 +1961,39 @@ describe("Agent session restarts", () => {
     }),
   )
 })
+
+it.effect(
+  "formats displayed scripts without changing execution or history",
+  () =>
+    Effect.gen(function* () {
+      const script = "const n=1;console.log(n);"
+      const executed: Array<string> = []
+      const result = yield* runAgentCollect({
+        conversationMode: true,
+        executor: makeExecutor(({ script }) => {
+          executed.push(script)
+          return Stream.empty
+        }),
+        respond: (_call, index) =>
+          Stream.fromIterable(
+            index === 0
+              ? [toolCall("format", script), finish(10)]
+              : text("done"),
+          ),
+      })
+      assert.deepStrictEqual(executed, [script])
+      assert.deepStrictEqual(
+        outputsOfTag(result.outputs, "ScriptDelta").map((part) => part.delta),
+        ["const n=1;\nconsole.log(n);"],
+      )
+      const call = result.history.content
+        .flatMap((message) =>
+          message.role === "assistant" ? message.content : [],
+        )
+        .find((part) => part.type === "tool-call")
+      assert.deepStrictEqual(
+        call?.type === "tool-call" ? call.params : undefined,
+        { script },
+      )
+    }),
+)

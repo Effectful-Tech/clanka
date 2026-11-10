@@ -721,9 +721,7 @@ ${summary}
 
 Write the summary as a compact briefing. Include:
 - The user's goals, and any constraints or preferences they stated
-- What has been done so far: concrete file paths, commands, and their results
-- Key findings and decisions, with the reasons behind them
-- Errors encountered and how they were resolved
+- What has been done so far with any key findings and decisions
 - What remains to be done, in order
 
 Be precise. Prefer exact identifiers (paths, symbols, commands) over prose. Do not include commentary about the summary itself.

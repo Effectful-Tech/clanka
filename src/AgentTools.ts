@@ -372,7 +372,7 @@ export const AgentTools = Toolkit.make(
   }),
   Tool.make("run", {
     description:
-      "Run a shell command in the foreground and return its output. If it takes longer than 2 minutes it will become a background task.",
+      "Run a shell command in the foreground and return its output. If it takes too long it will become a background task.",
     parameters: Schema.String.annotate({ identifier: "command" }),
     success: Schema.String,
     dependencies: [CurrentDirectory],

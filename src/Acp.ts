@@ -3,7 +3,7 @@
  * Agent Client Protocol (ACP) server for clanka.
  *
  * Speaks JSON-RPC 2.0 over stdio so ACP clients (Zed, Multica, ...) can drive
- * an Agent. Sessions are persisted to the KeyValueStore so `session/load`
+ * an Agent. Sessions are persisted to the AcpSessionStore so `session/load`
  * works across processes.
  *
  * @since 1.0.0
@@ -30,9 +30,12 @@ import type * as LanguageModel from "effect/ai/LanguageModel"
 import type * as Model from "effect/ai/Model"
 import * as Prompt from "effect/ai/Prompt"
 import * as HttpClient from "effect/http/HttpClient"
-import * as KeyValueStore from "effect/persistence/KeyValueStore"
+import {
+  AcpSessionStore,
+  SessionRecord,
+  ThoughtLevel,
+} from "./AcpSessionStore.ts"
 import * as Agent from "./Agent.ts"
-import * as AgentExecutor from "./AgentExecutor.ts"
 import type * as AgentOutput from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Image from "./Image.ts"
@@ -117,49 +120,10 @@ export interface Server<R = never> {
 }
 
 /**
- * Reasoning effort levels offered through the ACP `thought_level` config
- * option.
- *
  * @since 1.0.0
  * @category Models
  */
-export const ThoughtLevel = Schema.Literals([
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-])
-
-/**
- * @since 1.0.0
- * @category Models
- */
-export type ThoughtLevel = typeof ThoughtLevel.Type
-
-/**
- * @since 1.0.0
- * @category Models
- */
-export class SessionRecord extends Schema.Class<SessionRecord>(
-  "clanka/Acp/SessionRecord",
-)({
-  cwd: Schema.String,
-  model: Schema.String,
-  thoughtLevel: ThoughtLevel,
-  /**
-   * The session's fast mode setting. It is kept across model switches and
-   * applies while the session model supports fast mode.
-   */
-  fastMode: Schema.optionalKey(Schema.Boolean),
-  history: Prompt.Prompt,
-  /**
-   * The agent's executor environment, such as its working directory.
-   */
-  environment: Schema.optionalKey(AgentExecutor.ExecutionEnvironment),
-}) {}
+export { SessionRecord, ThoughtLevel } from "./AcpSessionStore.ts"
 
 /**
  * @since 1.0.0
@@ -453,9 +417,9 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
 ): Effect.fn.Return<
   Server<RAgent | RModel>,
   never,
-  KeyValueStore.KeyValueStore | Scope.Scope
+  AcpSessionStore | Scope.Scope
 > {
-  const kvs = yield* KeyValueStore.KeyValueStore
+  const store = yield* AcpSessionStore
   const { contextWindow } = yield* Compaction.CompactionConfig
   const size = Number.isFinite(contextWindow)
     ? Math.max(0, Math.round(contextWindow))
@@ -466,10 +430,6 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
   const http = yield* Effect.serviceOption(HttpClient.HttpClient)
   const fs = yield* Effect.serviceOption(FileSystem.FileSystem)
   const path = yield* Effect.serviceOption(Path.Path)
-  const store = KeyValueStore.toSchemaStore(
-    KeyValueStore.prefix(kvs, "session-"),
-    SessionRecord,
-  )
   const scope = yield* Effect.scope
   const sessions = new Map<string, Session>()
 
@@ -1331,7 +1291,7 @@ export const runStdio = <RAgent, RModel>(
 ): Effect.Effect<
   void,
   PlatformError.PlatformError,
-  Stdio.Stdio | KeyValueStore.KeyValueStore | RAgent | RModel
+  Stdio.Stdio | AcpSessionStore | RAgent | RModel
 > =>
   Effect.gen(function* () {
     const stdio = yield* Stdio.Stdio

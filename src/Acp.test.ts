@@ -22,6 +22,7 @@ import * as LanguageModel from "effect/ai/LanguageModel"
 import * as Model from "effect/ai/Model"
 import type * as Response from "effect/ai/Response"
 import * as Acp from "./Acp.ts"
+import * as AcpSessionStore from "./AcpSessionStore.ts"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as Compaction from "./Compaction.ts"
@@ -185,7 +186,9 @@ const withStore = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     Effect.provide(
       Layer.merge(
-        KeyValueStore.layerMemory,
+        AcpSessionStore.layerKeyValueStore.pipe(
+          Layer.provideMerge(KeyValueStore.layerMemory),
+        ),
         Agent.ConversationMode.layer(true),
       ),
     ),
@@ -1194,86 +1197,107 @@ await changeDirectory("sub")`),
 
   // A killed process runs no finalizers, so the next one only has what the
   // store held at that moment.
-  it.live("stores the history a prompt commits before the prompt ends", () =>
-    withStore(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const kvs = yield* KeyValueStore.KeyValueStore
-          const store = KeyValueStore.toSchemaStore(
-            KeyValueStore.prefix(kvs, "session-"),
-            Acp.SessionRecord,
-          )
-          const stores = (sessionId: string, text: string) =>
-            store.get(sessionId).pipe(
-              Effect.map((record) =>
-                JSON.stringify(Option.getOrThrow(record).history).includes(
-                  text,
+  for (const [name, sessionStore] of [
+    ["a KeyValueStore", () => AcpSessionStore.layerKeyValueStore],
+    ["append-only files", AcpSessionStore.layerFileSystem],
+  ] as const) {
+    it.live(
+      `stores the history a prompt commits before the prompt ends, in ${name}`,
+      () =>
+        withStore(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const fs = yield* FileSystem.FileSystem
+              const directory = yield* fs.makeTempDirectoryScoped()
+              // Each server and check gets a store of its own, like a process.
+              const openStore = Layer.build(sessionStore(directory)).pipe(
+                Effect.map((context) =>
+                  Context.get(context, AcpSessionStore.AcpSessionStore),
                 ),
-              ),
-              Effect.repeat({
-                until: (stored) => stored,
-                schedule: Schedule.spaced("10 millis"),
-              }),
-              Effect.timeout("3 seconds"),
-            )
-
-          const script = yield* gatedScript()
-          const secondCall = yield* Deferred.make<void>()
-          let calls = 0
-          // The second model call never answers, so the prompt never ends.
-          const killed = yield* makeServer(
-            () =>
-              calls++ === 0
-                ? callsExecute
-                : Stream.unwrap(
-                    Deferred.succeed(secondCall, undefined).pipe(
-                      Effect.as(Stream.never),
+              )
+              const stores = (sessionId: string, text: string) =>
+                openStore.pipe(
+                  Effect.flatMap((store) => store.get(sessionId)),
+                  Effect.map((record) =>
+                    JSON.stringify(Option.getOrThrow(record).history).includes(
+                      text,
                     ),
                   ),
-            script.executor,
-          )
-          const created = yield* killed.request(1, "session/new", {
-            cwd: "/tmp",
-          })
-          const sessionId: string = created.result.sessionId
-          yield* killed
-            .request(2, "session/prompt", {
-              sessionId,
-              prompt: [{ type: "text", text: "hello" }],
-            })
-            .pipe(Effect.forkScoped)
+                  Effect.repeat({
+                    until: (stored) => stored,
+                    schedule: Schedule.spaced("10 millis"),
+                  }),
+                  Effect.timeout("3 seconds"),
+                )
 
-          yield* Deferred.await(script.started)
-          yield* stores(sessionId, "hello")
+              const script = yield* gatedScript()
+              const secondCall = yield* Deferred.make<void>()
+              let calls = 0
+              // The second model call never answers, so the prompt never ends.
+              const killed = yield* makeServer(
+                () =>
+                  calls++ === 0
+                    ? callsExecute
+                    : Stream.unwrap(
+                        Deferred.succeed(secondCall, undefined).pipe(
+                          Effect.as(Stream.never),
+                        ),
+                      ),
+                script.executor,
+              ).pipe(
+                Effect.provideService(
+                  AcpSessionStore.AcpSessionStore,
+                  yield* openStore,
+                ),
+              )
+              const created = yield* killed.request(1, "session/new", {
+                cwd: "/tmp",
+              })
+              const sessionId: string = created.result.sessionId
+              yield* killed
+                .request(2, "session/prompt", {
+                  sessionId,
+                  prompt: [{ type: "text", text: "hello" }],
+                })
+                .pipe(Effect.forkScoped)
 
-          yield* Deferred.succeed(script.release, undefined)
-          yield* Deferred.await(secondCall)
-          yield* stores(sessionId, "script output")
+              yield* Deferred.await(script.started)
+              yield* stores(sessionId, "hello")
 
-          // A second process takes over while the first is still mid-prompt.
-          let resumed: Prompt.Prompt | undefined
-          const next = yield* makeServer((options) => {
-            resumed = options.prompt
-            return assistantSays("done")
-          })
-          const loaded = yield* next.request(1, "session/load", {
-            sessionId,
-            cwd: "/tmp",
-          })
-          assert.isUndefined(loaded.error)
-          const done = yield* next.request(2, "session/prompt", {
-            sessionId,
-            prompt: [{ type: "text", text: "carry on" }],
-          })
-          assert.deepStrictEqual(done.result, { stopReason: "end_turn" })
-          const sent = JSON.stringify(resumed)
-          assert.include(sent, "hello")
-          assert.include(sent, "script output")
-          assert.include(sent, "carry on")
-        }),
-      ),
-    ),
-  )
+              yield* Deferred.succeed(script.release, undefined)
+              yield* Deferred.await(secondCall)
+              yield* stores(sessionId, "script output")
+
+              // A second process takes over while the first is still mid-prompt.
+              let resumed: Prompt.Prompt | undefined
+              const next = yield* makeServer((options) => {
+                resumed = options.prompt
+                return assistantSays("done")
+              }).pipe(
+                Effect.provideService(
+                  AcpSessionStore.AcpSessionStore,
+                  yield* openStore,
+                ),
+              )
+              const loaded = yield* next.request(1, "session/load", {
+                sessionId,
+                cwd: "/tmp",
+              })
+              assert.isUndefined(loaded.error)
+              const done = yield* next.request(2, "session/prompt", {
+                sessionId,
+                prompt: [{ type: "text", text: "carry on" }],
+              })
+              assert.deepStrictEqual(done.result, { stopReason: "end_turn" })
+              const sent = JSON.stringify(resumed)
+              assert.include(sent, "hello")
+              assert.include(sent, "script output")
+              assert.include(sent, "carry on")
+            }),
+          ),
+        ).pipe(Effect.provide(NodeServices.layer)),
+    )
+  }
 
   it.effect("queues a steer message into the running prompt", () =>
     withStore(

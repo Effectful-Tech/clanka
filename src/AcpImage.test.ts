@@ -20,6 +20,7 @@ import * as HttpClient from "effect/http/HttpClient"
 import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Acp from "./Acp.ts"
+import * as AcpSessionStore from "./AcpSessionStore.ts"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import {
@@ -157,7 +158,9 @@ const withServices = <A, E, R>(
   effect.pipe(
     Effect.provide(
       Layer.mergeAll(
-        KeyValueStore.layerMemory,
+        AcpSessionStore.layerKeyValueStore.pipe(
+          Layer.provideMerge(KeyValueStore.layerMemory),
+        ),
         Agent.ConversationMode.layer(true),
         NodeServices.layer,
         http,
@@ -671,7 +674,9 @@ describe("Acp images", () => {
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
-            KeyValueStore.layerMemory,
+            AcpSessionStore.layerKeyValueStore.pipe(
+              Layer.provideMerge(KeyValueStore.layerMemory),
+            ),
             Agent.ConversationMode.layer(true),
             NodePath.layer,
           ),

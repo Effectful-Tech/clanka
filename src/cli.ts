@@ -9,6 +9,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
 import * as GlobalWebSocket from "./GlobalWebSocket.ts"
 import * as Acp from "./Acp.ts"
+import * as AcpSessionStore from "./AcpSessionStore.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as Agent from "./Agent.ts"
 import * as Compaction from "./Compaction.ts"
@@ -340,18 +341,27 @@ const mcpSummary = (
     )
     .join(", ")}`
 
+const configDirectory = Effect.gen(function* () {
+  const path = yield* Path.Path
+  const configHome = yield* Config.NonEmptyString("XDG_CONFIG_HOME").pipe(
+    Config.orElse(() =>
+      Config.NonEmptyString("HOME").pipe(
+        Config.map((home) => path.join(home, ".config")),
+      ),
+    ),
+  )
+  return path.join(configHome, "clanka")
+})
+
 const Kvs = Layer.unwrap(
+  Effect.map(configDirectory, KeyValueStore.layerFileSystem),
+).pipe(Layer.provide(NodeServices.layer))
+
+const AcpSessions = Layer.unwrap(
   Effect.gen(function* () {
     const path = yield* Path.Path
-
-    const configHome = yield* Config.NonEmptyString("XDG_CONFIG_HOME").pipe(
-      Config.orElse(() =>
-        Config.NonEmptyString("HOME").pipe(
-          Config.map((home) => path.join(home, ".config")),
-        ),
-      ),
-    )
-    return KeyValueStore.layerFileSystem(path.join(configHome, "clanka"))
+    const directory = yield* configDirectory
+    return AcpSessionStore.layerFileSystem(path.join(directory, "sessions"))
   }),
 ).pipe(Layer.provide(NodeServices.layer))
 
@@ -477,6 +487,7 @@ const acp = Command.make("acp", {
   ),
   Command.provide((flags) =>
     Layer.mergeAll(
+      AcpSessions,
       Agent.ConversationMode.layer(false),
       Layer.succeed(Logger.LogToStderr, true),
       DeviceCodeHandler.layerLog,

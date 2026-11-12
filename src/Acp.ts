@@ -3,7 +3,7 @@
  * Agent Client Protocol (ACP) server for clanka.
  *
  * Speaks JSON-RPC 2.0 over stdio so ACP clients (Zed, Multica, ...) can drive
- * an Agent. Sessions are persisted to the KeyValueStore so `session/load`
+ * an Agent. Sessions are persisted to the AcpSessionStore so `session/load`
  * works across processes.
  *
  * @since 1.0.0
@@ -30,9 +30,12 @@ import type * as LanguageModel from "effect/ai/LanguageModel"
 import type * as Model from "effect/ai/Model"
 import * as Prompt from "effect/ai/Prompt"
 import * as HttpClient from "effect/http/HttpClient"
-import * as KeyValueStore from "effect/persistence/KeyValueStore"
+import {
+  AcpSessionStore,
+  SessionRecord,
+  ThoughtLevel,
+} from "./AcpSessionStore.ts"
 import * as Agent from "./Agent.ts"
-import * as AgentExecutor from "./AgentExecutor.ts"
 import type * as AgentOutput from "./AgentOutput.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Image from "./Image.ts"
@@ -117,49 +120,10 @@ export interface Server<R = never> {
 }
 
 /**
- * Reasoning effort levels offered through the ACP `thought_level` config
- * option.
- *
  * @since 1.0.0
  * @category Models
  */
-export const ThoughtLevel = Schema.Literals([
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-])
-
-/**
- * @since 1.0.0
- * @category Models
- */
-export type ThoughtLevel = typeof ThoughtLevel.Type
-
-/**
- * @since 1.0.0
- * @category Models
- */
-export class SessionRecord extends Schema.Class<SessionRecord>(
-  "clanka/Acp/SessionRecord",
-)({
-  cwd: Schema.String,
-  model: Schema.String,
-  thoughtLevel: ThoughtLevel,
-  /**
-   * The session's fast mode setting. It is kept across model switches and
-   * applies while the session model supports fast mode.
-   */
-  fastMode: Schema.optionalKey(Schema.Boolean),
-  history: Prompt.Prompt,
-  /**
-   * The agent's executor environment, such as its working directory.
-   */
-  environment: Schema.optionalKey(AgentExecutor.ExecutionEnvironment),
-}) {}
+export { SessionRecord, ThoughtLevel } from "./AcpSessionStore.ts"
 
 /**
  * @since 1.0.0
@@ -435,6 +399,8 @@ interface Session {
   readonly scope: Scope.Closeable
   /** Failed MCP servers, reported on the first prompt turn. */
   mcpFailures: string | undefined
+  /** The Agent state of the last successful write to the store. */
+  stored: Pick<SessionRecord, "history" | "environment"> | undefined
 }
 
 interface Steer {
@@ -451,9 +417,9 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
 ): Effect.fn.Return<
   Server<RAgent | RModel>,
   never,
-  KeyValueStore.KeyValueStore | Scope.Scope
+  AcpSessionStore | Scope.Scope
 > {
-  const kvs = yield* KeyValueStore.KeyValueStore
+  const store = yield* AcpSessionStore
   const { contextWindow } = yield* Compaction.CompactionConfig
   const size = Number.isFinite(contextWindow)
     ? Math.max(0, Math.round(contextWindow))
@@ -464,10 +430,6 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
   const http = yield* Effect.serviceOption(HttpClient.HttpClient)
   const fs = yield* Effect.serviceOption(FileSystem.FileSystem)
   const path = yield* Effect.serviceOption(Path.Path)
-  const store = KeyValueStore.toSchemaStore(
-    KeyValueStore.prefix(kvs, "session-"),
-    SessionRecord,
-  )
   const scope = yield* Effect.scope
   const sessions = new Map<string, Session>()
 
@@ -562,8 +524,10 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     }
   })
 
-  const persist = (session: Session) =>
-    store
+  const persist = (session: Session) => {
+    const history = session.agent.history.current
+    const environment = session.agent.environment.current
+    return store
       .set(
         session.id,
         new SessionRecord({
@@ -571,15 +535,31 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
           model: session.model,
           thoughtLevel: session.thoughtLevel,
           fastMode: session.fastMode,
-          history: session.agent.history.current,
-          environment: session.agent.environment.current,
+          history,
+          environment,
         }),
       )
       .pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            session.stored = { history, environment }
+          }),
+        ),
         Effect.catch((error) =>
           Effect.logWarning("Failed to persist session", error),
         ),
       )
+  }
+
+  // Stores what the Agent has committed since the last write. Commits made
+  // together are announced one by one, and the first write covers them all.
+  const persistCommitted = (session: Session) =>
+    Effect.suspend(() =>
+      session.stored?.history === session.agent.history.current &&
+      session.stored.environment === session.agent.environment.current
+        ? Effect.void
+        : persist(session),
+    )
 
   const openSession = Effect.fnUntraced(function* (
     id: string,
@@ -626,6 +606,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       announcedSubagents: new Set(),
       scope: sessionScope,
       mcpFailures,
+      stored: undefined,
     }
     sessions.set(id, session)
     return session
@@ -963,6 +944,11 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
             content: [{ type: "content", content: textContent(part.output) }],
           })
         }
+        // Stored as it is committed rather than when the prompt ends, so a
+        // process killed mid-prompt loses only the response in progress.
+        case "HistoryAppended":
+        case "HistoryReplaced":
+          return persistCommitted(session)
         default:
           return Effect.void
       }
@@ -1182,7 +1168,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     )
     const exit = yield* Effect.exit(Fiber.join(session.running))
     session.running = undefined
-    yield* persist(session)
+    yield* persistCommitted(session)
     if (Exit.isSuccess(exit)) return { stopReason: "end_turn" }
     if (Cause.hasInterruptsOnly(exit.cause)) return { stopReason: "cancelled" }
     return yield* toRpcError(exit.cause)
@@ -1305,7 +1291,7 @@ export const runStdio = <RAgent, RModel>(
 ): Effect.Effect<
   void,
   PlatformError.PlatformError,
-  Stdio.Stdio | KeyValueStore.KeyValueStore | RAgent | RModel
+  Stdio.Stdio | AcpSessionStore | RAgent | RModel
 > =>
   Effect.gen(function* () {
     const stdio = yield* Stdio.Stdio

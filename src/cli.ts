@@ -357,7 +357,6 @@ const Kvs = Layer.unwrap(
   Effect.map(configDirectory, KeyValueStore.layerFileSystem),
 ).pipe(Layer.provide(NodeServices.layer))
 
-// Sessions the KeyValueStore holds from earlier versions are still loaded.
 const AcpSessions = Layer.unwrap(
   Effect.gen(function* () {
     const path = yield* Path.Path

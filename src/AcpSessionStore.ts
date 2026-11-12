@@ -95,7 +95,7 @@ export class AcpSessionStore extends Context.Service<
   }
 >()("clanka/AcpSessionStore") {}
 
-const legacyStore = (kvs: KeyValueStore.KeyValueStore) => {
+const keyValueStore = (kvs: KeyValueStore.KeyValueStore) => {
   const store = KeyValueStore.toSchemaStore(
     KeyValueStore.prefix(kvs, "session-"),
     SessionRecord,
@@ -136,13 +136,18 @@ export const layerKeyValueStore: Layer.Layer<
 > = Layer.effect(
   AcpSessionStore,
   Effect.gen(function* () {
-    return legacyStore(yield* KeyValueStore.KeyValueStore)
+    return keyValueStore(yield* KeyValueStore.KeyValueStore)
   }),
 )
 
 // One line of a session file. A file starts with a `Snapshot`, and each
-// `Update` after it holds what changed since the line before.
-const Snapshot = Schema.TaggedStruct("Snapshot", { record: SessionRecord })
+// `Update` after it holds what changed since the line its `parent` names.
+// Every line has a random `id`, encoded last so the end of a file names the
+// line that ends it.
+const Snapshot = Schema.TaggedStruct("Snapshot", {
+  record: SessionRecord,
+  id: Schema.String,
+})
 
 const Update = Schema.TaggedStruct("Update", {
   cwd: Schema.optionalKey(Schema.String),
@@ -152,6 +157,8 @@ const Update = Schema.TaggedStruct("Update", {
   environment: Schema.optionalKey(AgentExecutor.ExecutionEnvironment),
   /** Messages appended to the history. */
   messages: Schema.optionalKey(Schema.Array(Prompt.Message)),
+  parent: Schema.String,
+  id: Schema.String,
 })
 
 const Entry = Schema.Union([Snapshot, Update])
@@ -173,7 +180,7 @@ const applyUpdate = (
   record: SessionRecord,
   update: typeof Update.Type,
 ): SessionRecord => {
-  const { _tag, messages, ...fields } = update
+  const { _tag, messages, parent: _parent, id: _id, ...fields } = update
   return new SessionRecord({
     ...record,
     ...fields,
@@ -190,7 +197,7 @@ const applyUpdate = (
 const diff = (
   previous: SessionRecord,
   next: SessionRecord,
-): Omit<typeof Update.Type, "_tag"> | undefined => {
+): Omit<typeof Update.Type, "_tag" | "parent" | "id"> | undefined => {
   const before = previous.history.content
   const after = next.history.content
   if (
@@ -223,6 +230,8 @@ const encodeLine = (entry: Entry) =>
   )
 
 const newline = 0x0a
+// Enough of the end of a file to hold the `id` of its last line.
+const tailLength = 64
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
@@ -230,17 +239,23 @@ const decoder = new TextDecoder()
  * Stores each session in an append-only file, `<directory>/<id>.jsonl`.
  *
  * The first line is a snapshot of the session, and each later line holds the
- * fields and history messages added since the line before. A write that
- * cannot be expressed as an addition, such as a compacted history, writes a
- * new file and renames it over the old one.
+ * fields and history messages added to the line it names as its parent. A
+ * write that cannot be expressed as an addition, such as a compacted history,
+ * writes a new file and renames it over the old one.
  *
- * A process killed while appending can leave an incomplete last line. Loading
- * ignores it, and the next write replaces the file. So does a write after the
- * file changed in a way this process did not expect, such as another process
- * appending to it.
+ * Loading follows the chain of lines from the snapshot and skips any line
+ * whose parent is not the line before it in the chain, so it always returns a
+ * record exactly as one `set` stored it:
  *
- * Sessions missing from the directory are read from the KeyValueStore, where
- * `layerKeyValueStore` keeps them, and move to a file on their next write.
+ * - A process killed while appending can leave an incomplete last line, which
+ *   loading ignores. The next write replaces the file.
+ * - Writes through one layer are serialized. Across layers and processes
+ *   there is no lock: one process is expected to own a session at a time, as
+ *   when a client kills one process and loads the session in the next. A
+ *   write that finds the file changed since this layer last read or wrote it
+ *   replaces the file with its record, so concurrent writers to one session
+ *   are last-writer-wins, and a write racing another process's write can be
+ *   lost. Their histories are never combined.
  *
  * @since 1.0.0
  * @category Layers
@@ -250,22 +265,27 @@ export const layerFileSystem = (
 ): Layer.Layer<
   AcpSessionStore,
   PlatformError.PlatformError,
-  FileSystem.FileSystem | Path.Path | KeyValueStore.KeyValueStore
+  FileSystem.FileSystem | Path.Path
 > =>
   Layer.effect(
     AcpSessionStore,
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
-      const legacy = legacyStore(yield* KeyValueStore.KeyValueStore)
       yield* fs.makeDirectory(directory, { recursive: true })
       const semaphore = yield* Semaphore.make(1)
 
-      // What this process knows each file to hold: the record its lines add
-      // up to and their length in bytes.
+      // What this layer last read or wrote in each file: the record its chain
+      // adds up to, the id of the chain's last line, and the file's length and
+      // last bytes. A file that is no longer exactly this gets a snapshot.
       const files = new Map<
         string,
-        { readonly record: SessionRecord; readonly size: number }
+        {
+          readonly record: SessionRecord
+          readonly id: string
+          readonly size: number
+          readonly tail: Uint8Array
+        }
       >()
 
       const fileFor = (sessionId: string) =>
@@ -273,7 +293,8 @@ export const layerFileSystem = (
 
       const read = Effect.fnUntraced(function* (sessionId: string) {
         const file = fileFor(sessionId)
-        const bytes = yield* fs.readFile(file).pipe(
+        files.delete(sessionId)
+        const result = yield* fs.readFile(file).pipe(
           Effect.asSome,
           Effect.catchReason(
             "PlatformError",
@@ -282,42 +303,46 @@ export const layerFileSystem = (
           ),
           Effect.mapError(storeError(`Failed to read session ${sessionId}`)),
         )
-        if (Option.isNone(bytes)) {
-          files.delete(sessionId)
-          return yield* legacy.get(sessionId)
-        }
+        if (Option.isNone(result)) return Option.none()
+        const bytes = result.value
         let record: SessionRecord | undefined
-        let size = 0
-        while (size < bytes.value.length) {
-          const end = bytes.value.indexOf(newline, size)
+        let id = ""
+        let start = 0
+        while (start < bytes.length) {
+          const end = bytes.indexOf(newline, start)
           // An incomplete last line: the append writing it was cut short.
           if (end === -1) break
-          const entry = decodeEntry(
-            decoder.decode(bytes.value.subarray(size, end)),
-          )
-          if (
-            entry._tag === "Failure" ||
-            (record === undefined && entry.value._tag !== "Snapshot")
-          ) {
-            break
+          const entry = decodeEntry(decoder.decode(bytes.subarray(start, end)))
+          start = end + 1
+          if (entry._tag === "Failure") continue
+          const line = entry.value
+          if (line._tag === "Snapshot") {
+            if (record !== undefined) continue
+            record = line.record
+          } else {
+            // Written by a process that did not know the file ended here.
+            if (record === undefined || line.parent !== id) continue
+            record = applyUpdate(record, line)
           }
-          record =
-            entry.value._tag === "Snapshot"
-              ? entry.value.record
-              : applyUpdate(record!, entry.value)
-          size = end + 1
+          id = line.id
         }
         if (record === undefined) {
           return yield* new AcpSessionStoreError({
             message: `Session file for ${sessionId} does not start with a snapshot`,
           })
         }
-        if (size < bytes.value.length) {
+        if (start < bytes.length) {
           yield* Effect.logWarning(
             "Ignoring an incomplete end of an ACP session file",
           ).pipe(Effect.annotateLogs({ sessionId, file }))
+        } else {
+          files.set(sessionId, {
+            record,
+            id,
+            size: bytes.length,
+            tail: bytes.slice(-tailLength),
+          })
         }
-        files.set(sessionId, { record, size })
         return Option.some(record)
       })
 
@@ -329,7 +354,9 @@ export const layerFileSystem = (
       ) {
         const file = fileFor(sessionId)
         const temporary = `${file}.${crypto.randomUUID()}.tmp`
-        const bytes = yield* encodeLine(Snapshot.make({ record }))
+        const id = crypto.randomUUID()
+        const bytes = yield* encodeLine(Snapshot.make({ record, id }))
+        files.delete(sessionId)
         yield* fs.writeFile(temporary, bytes).pipe(
           Effect.andThen(fs.rename(temporary, file)),
           Effect.onError(() =>
@@ -337,15 +364,50 @@ export const layerFileSystem = (
           ),
           Effect.mapError(storeError(`Failed to write session ${sessionId}`)),
         )
-        files.set(sessionId, { record, size: bytes.length })
+        files.set(sessionId, {
+          record,
+          id,
+          size: bytes.length,
+          tail: bytes.slice(-tailLength),
+        })
       })
 
-      // The size of the file, when it is what this process last left there.
-      const unchangedSize = (sessionId: string, size: number) =>
-        fs.stat(fileFor(sessionId)).pipe(
-          Effect.map((info) => Number(info.size) === size),
-          Effect.orElseSucceed(() => false),
-        )
+      // Appends `bytes` when the file is still what this layer last left
+      // there: the same length, ending in the same line. Another process
+      // only ever appends to a file, which changes its length, or replaces
+      // it with a snapshot, which ends in a line with a new id.
+      const append = Effect.fnUntraced(
+        function* (
+          sessionId: string,
+          known: { readonly size: number; readonly tail: Uint8Array },
+          bytes: Uint8Array,
+        ) {
+          const handle = yield* fs.open(fileFor(sessionId), { flag: "a+" })
+          const info = yield* handle.stat
+          if (Number(info.size) !== known.size) return false
+          const tail = new Uint8Array(known.tail.length)
+          const read = yield* handle.read(tail, {
+            position: BigInt(known.size - tail.length),
+          })
+          if (
+            read !== tail.length ||
+            tail.some((byte, index) => byte !== known.tail[index])
+          ) {
+            return false
+          }
+          // Forgotten until the append succeeds, so a failed append, which
+          // can leave part of a line, is followed by a snapshot.
+          files.delete(sessionId)
+          yield* handle.writeAll(bytes)
+          return true
+        },
+        Effect.scoped,
+        (effect, sessionId) =>
+          Effect.mapError(
+            effect,
+            storeError(`Failed to write session ${sessionId}`),
+          ),
+      )
 
       const write = Effect.fnUntraced(function* (
         sessionId: string,
@@ -355,22 +417,20 @@ export const layerFileSystem = (
         const changes = known && diff(known.record, record)
         if (known !== undefined && changes !== undefined) {
           if (Object.keys(changes).length === 0) {
-            files.set(sessionId, { record, size: known.size })
+            files.set(sessionId, { ...known, record })
             return
           }
-          if (yield* unchangedSize(sessionId, known.size)) {
-            const bytes = yield* encodeLine(Update.make(changes))
-            // Forgotten until the append succeeds, so a failed append, which
-            // can leave part of a line, is followed by a snapshot.
-            files.delete(sessionId)
-            yield* fs
-              .writeFile(fileFor(sessionId), bytes, { flag: "a" })
-              .pipe(
-                Effect.mapError(
-                  storeError(`Failed to write session ${sessionId}`),
-                ),
-              )
-            files.set(sessionId, { record, size: known.size + bytes.length })
+          const id = crypto.randomUUID()
+          const bytes = yield* encodeLine(
+            Update.make({ ...changes, parent: known.id, id }),
+          )
+          if (yield* append(sessionId, known, bytes)) {
+            files.set(sessionId, {
+              record,
+              id,
+              size: known.size + bytes.length,
+              tail: bytes.slice(-tailLength),
+            })
             return
           }
         }

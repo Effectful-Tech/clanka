@@ -1,13 +1,13 @@
 import { assert, describe, it } from "@effect/vitest"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as Context from "effect/Context"
+import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as Path from "effect/Path"
 import * as Prompt from "effect/ai/Prompt"
-import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as AcpSessionStore from "./AcpSessionStore.ts"
 
 const message = (role: "user" | "assistant", text: string) =>
@@ -56,10 +56,7 @@ const withDirectory = <A, E, R>(
     return yield* f(directory, (sessionId) =>
       path.join(directory, `${sessionId}.jsonl`),
     )
-  }).pipe(
-    Effect.scoped,
-    Effect.provide(Layer.merge(NodeServices.layer, KeyValueStore.layerMemory)),
-  )
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
 
 const lines = Effect.fnUntraced(function* (file: string) {
   const fs = yield* FileSystem.FileSystem
@@ -125,33 +122,81 @@ describe("AcpSessionStore.layerFileSystem", () => {
   )
 
   it.effect(
-    "loads a session the KeyValueStore holds and moves it to a file",
+    "starts over from a file replaced by another process, even at the same size",
     () =>
       withDirectory(
-        Effect.fnUntraced(function* (directory, file) {
-          const fs = yield* FileSystem.FileSystem
-          const legacy = yield* Layer.build(
-            AcpSessionStore.layerKeyValueStore,
-          ).pipe(
-            Effect.map((context) =>
-              Context.get(context, AcpSessionStore.AcpSessionStore),
-            ),
-          )
-          yield* legacy.set("s", record([message("user", "hello")]))
+        Effect.fnUntraced(function* (directory) {
+          const a = yield* openStore(directory)
+          yield* a.set("s", record([message("user", "old")]))
+          const b = yield* openStore(directory)
+          const stale = Option.getOrThrow(yield* b.get("s")).history.content
+          yield* a.set("s", record([message("user", "new")]))
+          yield* b.set("s", record([...stale, message("user", "tail")]))
 
-          const store = yield* openStore(directory)
-          const loaded = yield* store.get("s")
-          assert.deepStrictEqual(texts(loaded), ["hello"])
-          const history = Option.getOrThrow(loaded).history.content
-          yield* store.set(
-            "s",
-            record([...history, message("assistant", "hi")]),
-          )
-
-          assert.isTrue(yield* fs.exists(file("s")))
-          const reloaded = yield* (yield* openStore(directory)).get("s")
-          assert.deepStrictEqual(texts(reloaded), ["hello", "hi"])
+          const loaded = yield* (yield* openStore(directory)).get("s")
+          assert.deepStrictEqual(texts(loaded), ["old", "tail"])
         }),
       ),
+  )
+
+  it.effect("never combines the appends of two racing processes", () =>
+    withDirectory(
+      Effect.fnUntraced(function* (directory) {
+        const fs = yield* FileSystem.FileSystem
+        // Holds every append until both processes are about to append, so
+        // both have checked the file before either writes.
+        const bothChecked = yield* Deferred.make<void>()
+        let appends = 0
+        const racing = FileSystem.FileSystem.of({
+          ...fs,
+          open: (file, options) =>
+            Effect.map(
+              fs.open(file, options),
+              (handle) =>
+                new Proxy(handle, {
+                  get: (target, key) =>
+                    key === "writeAll"
+                      ? (bytes: Uint8Array) =>
+                          Effect.gen(function* () {
+                            if (++appends === 2) {
+                              yield* Deferred.succeed(bothChecked, undefined)
+                            }
+                            yield* Deferred.await(bothChecked)
+                            return yield* target.writeAll(bytes)
+                          })
+                      : Reflect.get(target, key, target),
+                }),
+            ),
+        })
+        const base = [message("user", "base")]
+        yield* (yield* openStore(directory)).set("s", record(base))
+        const a = yield* openStore(directory).pipe(
+          Effect.provideService(FileSystem.FileSystem, racing),
+        )
+        const b = yield* openStore(directory).pipe(
+          Effect.provideService(FileSystem.FileSystem, racing),
+        )
+        const fromA = Option.getOrThrow(yield* a.get("s")).history.content
+        const fromB = Option.getOrThrow(yield* b.get("s")).history.content
+        yield* Effect.all(
+          [
+            a.set("s", record([...fromA, message("user", "A")])),
+            b.set("s", record([...fromB, message("user", "B")])),
+          ],
+          { concurrency: 2 },
+        )
+        assert.strictEqual(appends, 2)
+
+        const loaded = texts(yield* (yield* openStore(directory)).get("s"))
+        assert.oneOf(loaded.join(), ["base,A", "base,B"])
+        // Each process sees the file changed, so its next write is whole.
+        yield* b.set(
+          "s",
+          record([...fromB, message("user", "B"), message("user", "C")]),
+        )
+        const next = yield* (yield* openStore(directory)).get("s")
+        assert.deepStrictEqual(texts(next), ["base", "B", "C"])
+      }),
+    ),
   )
 })

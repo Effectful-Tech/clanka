@@ -1197,10 +1197,22 @@ await changeDirectory("sub")`),
 
   // A killed process runs no finalizers, so the next one only has what the
   // store held at that moment.
-  for (const [name, sessionStore] of [
+  const sessionStores: ReadonlyArray<
+    readonly [
+      string,
+      (
+        directory: string,
+      ) => Layer.Layer<
+        AcpSessionStore.AcpSessionStore,
+        unknown,
+        KeyValueStore.KeyValueStore | FileSystem.FileSystem | Path.Path
+      >,
+    ]
+  > = [
     ["a KeyValueStore", () => AcpSessionStore.layerKeyValueStore],
     ["append-only files", AcpSessionStore.layerFileSystem],
-  ] as const) {
+  ]
+  for (const [name, sessionStore] of sessionStores) {
     it.live(
       `stores the history a prompt commits before the prompt ends, in ${name}`,
       () =>

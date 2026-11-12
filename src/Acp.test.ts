@@ -1192,6 +1192,89 @@ await changeDirectory("sub")`),
     ),
   )
 
+  // A killed process runs no finalizers, so the next one only has what the
+  // store held at that moment.
+  it.live("stores the history a prompt commits before the prompt ends", () =>
+    withStore(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const kvs = yield* KeyValueStore.KeyValueStore
+          const store = KeyValueStore.toSchemaStore(
+            KeyValueStore.prefix(kvs, "session-"),
+            Acp.SessionRecord,
+          )
+          const stores = (sessionId: string, text: string) =>
+            store.get(sessionId).pipe(
+              Effect.map((record) =>
+                JSON.stringify(Option.getOrThrow(record).history).includes(
+                  text,
+                ),
+              ),
+              Effect.repeat({
+                until: (stored) => stored,
+                schedule: Schedule.spaced("10 millis"),
+              }),
+              Effect.timeout("3 seconds"),
+            )
+
+          const script = yield* gatedScript()
+          const secondCall = yield* Deferred.make<void>()
+          let calls = 0
+          // The second model call never answers, so the prompt never ends.
+          const killed = yield* makeServer(
+            () =>
+              calls++ === 0
+                ? callsExecute
+                : Stream.unwrap(
+                    Deferred.succeed(secondCall, undefined).pipe(
+                      Effect.as(Stream.never),
+                    ),
+                  ),
+            script.executor,
+          )
+          const created = yield* killed.request(1, "session/new", {
+            cwd: "/tmp",
+          })
+          const sessionId: string = created.result.sessionId
+          yield* killed
+            .request(2, "session/prompt", {
+              sessionId,
+              prompt: [{ type: "text", text: "hello" }],
+            })
+            .pipe(Effect.forkScoped)
+
+          yield* Deferred.await(script.started)
+          yield* stores(sessionId, "hello")
+
+          yield* Deferred.succeed(script.release, undefined)
+          yield* Deferred.await(secondCall)
+          yield* stores(sessionId, "script output")
+
+          // A second process takes over while the first is still mid-prompt.
+          let resumed: Prompt.Prompt | undefined
+          const next = yield* makeServer((options) => {
+            resumed = options.prompt
+            return assistantSays("done")
+          })
+          const loaded = yield* next.request(1, "session/load", {
+            sessionId,
+            cwd: "/tmp",
+          })
+          assert.isUndefined(loaded.error)
+          const done = yield* next.request(2, "session/prompt", {
+            sessionId,
+            prompt: [{ type: "text", text: "carry on" }],
+          })
+          assert.deepStrictEqual(done.result, { stopReason: "end_turn" })
+          const sent = JSON.stringify(resumed)
+          assert.include(sent, "hello")
+          assert.include(sent, "script output")
+          assert.include(sent, "carry on")
+        }),
+      ),
+    ),
+  )
+
   it.effect("queues a steer message into the running prompt", () =>
     withStore(
       Effect.scoped(

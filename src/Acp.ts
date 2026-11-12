@@ -435,6 +435,8 @@ interface Session {
   readonly scope: Scope.Closeable
   /** Failed MCP servers, reported on the first prompt turn. */
   mcpFailures: string | undefined
+  /** The Agent state of the last successful write to the store. */
+  stored: Pick<SessionRecord, "history" | "environment"> | undefined
 }
 
 interface Steer {
@@ -562,8 +564,10 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     }
   })
 
-  const persist = (session: Session) =>
-    store
+  const persist = (session: Session) => {
+    const history = session.agent.history.current
+    const environment = session.agent.environment.current
+    return store
       .set(
         session.id,
         new SessionRecord({
@@ -571,15 +575,31 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
           model: session.model,
           thoughtLevel: session.thoughtLevel,
           fastMode: session.fastMode,
-          history: session.agent.history.current,
-          environment: session.agent.environment.current,
+          history,
+          environment,
         }),
       )
       .pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            session.stored = { history, environment }
+          }),
+        ),
         Effect.catch((error) =>
           Effect.logWarning("Failed to persist session", error),
         ),
       )
+  }
+
+  // Stores what the Agent has committed since the last write. Commits made
+  // together are announced one by one, and the first write covers them all.
+  const persistCommitted = (session: Session) =>
+    Effect.suspend(() =>
+      session.stored?.history === session.agent.history.current &&
+      session.stored.environment === session.agent.environment.current
+        ? Effect.void
+        : persist(session),
+    )
 
   const openSession = Effect.fnUntraced(function* (
     id: string,
@@ -626,6 +646,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
       announcedSubagents: new Set(),
       scope: sessionScope,
       mcpFailures,
+      stored: undefined,
     }
     sessions.set(id, session)
     return session
@@ -963,6 +984,11 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
             content: [{ type: "content", content: textContent(part.output) }],
           })
         }
+        // Stored as it is committed rather than when the prompt ends, so a
+        // process killed mid-prompt loses only the response in progress.
+        case "HistoryAppended":
+        case "HistoryReplaced":
+          return persistCommitted(session)
         default:
           return Effect.void
       }
@@ -1182,7 +1208,7 @@ export const make = Effect.fnUntraced(function* <RAgent, RModel>(
     )
     const exit = yield* Effect.exit(Fiber.join(session.running))
     session.running = undefined
-    yield* persist(session)
+    yield* persistCommitted(session)
     if (Exit.isSuccess(exit)) return { stopReason: "end_turn" }
     if (Cause.hasInterruptsOnly(exit.cause)) return { stopReason: "cancelled" }
     return yield* toRpcError(exit.cause)

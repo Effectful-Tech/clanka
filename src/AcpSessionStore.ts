@@ -245,17 +245,20 @@ const decoder = new TextDecoder()
  *
  * Loading follows the chain of lines from the snapshot and skips any line
  * whose parent is not the line before it in the chain, so it always returns a
- * record exactly as one `set` stored it:
+ * record exactly as one `set` stored it, never a mix of two:
  *
  * - A process killed while appending can leave an incomplete last line, which
  *   loading ignores. The next write replaces the file.
  * - Writes through one layer are serialized. Across layers and processes
- *   there is no lock: one process is expected to own a session at a time, as
- *   when a client kills one process and loads the session in the next. A
- *   write that finds the file changed since this layer last read or wrote it
- *   replaces the file with its record, so concurrent writers to one session
- *   are last-writer-wins, and a write racing another process's write can be
- *   lost. Their histories are never combined.
+ *   there is no lock, and only one process may write a session at a time, as
+ *   when a client kills one process and loads the session in the next.
+ * - Every write first checks that the file is what this layer last read or
+ *   wrote, and writes a whole snapshot when it is not. A process that takes
+ *   over a session therefore replaces whatever an earlier owner wrote after
+ *   it last loaded the session.
+ * - Writes from processes that do overlap are not ordered: which one a later
+ *   load returns is unspecified, and the others can be lost. The next write
+ *   from each of them is a snapshot.
  *
  * @since 1.0.0
  * @category Layers
@@ -372,7 +375,7 @@ export const layerFileSystem = (
         })
       })
 
-      // Appends `bytes` when the file is still what this layer last left
+      // Appends `bytes`, which may be empty, when the file is still what this layer last left
       // there: the same length, ending in the same line. Another process
       // only ever appends to a file, which changes its length, or replaces
       // it with a snapshot, which ends in a line with a new id.
@@ -395,6 +398,7 @@ export const layerFileSystem = (
           ) {
             return false
           }
+          if (bytes.length === 0) return true
           // Forgotten until the append succeeds, so a failed append, which
           // can leave part of a line, is followed by a snapshot.
           files.delete(sessionId)
@@ -416,22 +420,27 @@ export const layerFileSystem = (
         const known = files.get(sessionId)
         const changes = known && diff(known.record, record)
         if (known !== undefined && changes !== undefined) {
+          // An unchanged record appends nothing, but is still checked
+          // against the file, which another process may have replaced.
           if (Object.keys(changes).length === 0) {
-            files.set(sessionId, { ...known, record })
-            return
-          }
-          const id = crypto.randomUUID()
-          const bytes = yield* encodeLine(
-            Update.make({ ...changes, parent: known.id, id }),
-          )
-          if (yield* append(sessionId, known, bytes)) {
-            files.set(sessionId, {
-              record,
-              id,
-              size: known.size + bytes.length,
-              tail: bytes.slice(-tailLength),
-            })
-            return
+            if (yield* append(sessionId, known, new Uint8Array())) {
+              files.set(sessionId, { ...known, record })
+              return
+            }
+          } else {
+            const id = crypto.randomUUID()
+            const bytes = yield* encodeLine(
+              Update.make({ ...changes, parent: known.id, id }),
+            )
+            if (yield* append(sessionId, known, bytes)) {
+              files.set(sessionId, {
+                record,
+                id,
+                size: known.size + bytes.length,
+                tail: bytes.slice(-tailLength),
+              })
+              return
+            }
           }
         }
         yield* writeSnapshot(sessionId, record)

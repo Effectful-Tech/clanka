@@ -139,6 +139,24 @@ describe("AcpSessionStore.layerFileSystem", () => {
       ),
   )
 
+  it.effect("stores a record again after another process replaced it", () =>
+    withDirectory(
+      Effect.fnUntraced(function* (directory) {
+        const a = yield* openStore(directory)
+        const first = record([message("user", "A")])
+        yield* a.set("s", first)
+        yield* (yield* openStore(directory)).set(
+          "s",
+          record([message("user", "B")]),
+        )
+        yield* a.set("s", first)
+
+        const loaded = yield* (yield* openStore(directory)).get("s")
+        assert.deepStrictEqual(texts(loaded), ["A"])
+      }),
+    ),
+  )
+
   it.effect("never combines the appends of two racing processes", () =>
     withDirectory(
       Effect.fnUntraced(function* (directory) {

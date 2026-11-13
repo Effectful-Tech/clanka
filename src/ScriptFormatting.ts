@@ -6,7 +6,8 @@
 
 type Frame =
   | { readonly type: "block"; readonly start: number; readonly opener: string }
-  | { readonly type: "brace" | "paren" | "bracket" | "template" | "subst" }
+  | { readonly type: "paren"; readonly header: boolean }
+  | { readonly type: "brace" | "bracket" | "template" | "subst" }
 
 // Tokens after which `{` opens a statement block rather than an expression.
 const blockOpeners = new Set([
@@ -15,6 +16,7 @@ const blockOpeners = new Set([
   "{",
   "}",
   ")",
+  ")h",
   "=>",
   "else",
   "try",
@@ -40,6 +42,9 @@ const regexKeywords = new Set([
   "await",
 ])
 
+// Keywords whose parenthesized header is followed by a statement.
+const headerKeywords = new Set(["if", "while", "for", "with"])
+
 // Words that continue the statement a block belongs to.
 const continuations = new Set([
   "else",
@@ -55,7 +60,8 @@ const isWord = (char: string) => /[\w$]/.test(char) || char.charCodeAt(0) > 127
 
 const isSpace = (char: string) => /\s/.test(char)
 
-// `prev` is "" at the start, a punctuator, a word, or "str" for a literal.
+// `prev` is "" at the start, a punctuator, a word, "str" for a literal, or
+// ")h" for the end of a control header, where a statement (maybe a regex) starts.
 const regexAllowed = (prev: string) =>
   prev === "" ||
   regexKeywords.has(prev) ||
@@ -74,9 +80,8 @@ const findBreaks = (script: string): Set<number> | undefined => {
     const type = top()
     return type === undefined || type === "block" || type === "brace"
   }
-  // Skips whitespace and comments, returning the end of a block comment
-  // even when it is unterminated: the main loop reports that.
-  const skipTrivia = (from: number): number => {
+  // Skips whitespace and comments, or returns undefined for an unterminated comment.
+  const skipTrivia = (from: number): number | undefined => {
     let i = from
     while (i < script.length) {
       if (isSpace(script[i]!)) i++
@@ -85,14 +90,15 @@ const findBreaks = (script: string): Set<number> | undefined => {
         i = end === -1 ? script.length : end
       } else if (script.startsWith("/*", i)) {
         const end = script.indexOf("*/", i + 2)
-        i = end === -1 ? script.length : end + 2
+        if (end === -1) return undefined
+        i = end + 2
       } else break
     }
     return i
   }
   const nextToken = (from: number): string => {
     const i = skipTrivia(from)
-    if (i >= script.length) return ""
+    if (i === undefined || i >= script.length) return ""
     if (!isWord(script[i]!)) return script[i]!
     let end = i
     while (end < script.length && isWord(script[end]!)) end++
@@ -116,14 +122,14 @@ const findBreaks = (script: string): Set<number> | undefined => {
       } else i++
       continue
     }
-    if (isSpace(char) || script.startsWith("//", i)) {
-      i = skipTrivia(i)
-      continue
-    }
-    if (script.startsWith("/*", i)) {
-      const end = script.indexOf("*/", i + 2)
-      if (end === -1) return undefined
-      i = end + 2
+    if (
+      isSpace(char) ||
+      script.startsWith("//", i) ||
+      script.startsWith("/*", i)
+    ) {
+      const end = skipTrivia(i)
+      if (end === undefined) return undefined
+      i = end
       continue
     }
     const start = i
@@ -195,13 +201,17 @@ const findBreaks = (script: string): Set<number> | undefined => {
         }
       }
     } else if (char === "(" || char === "[") {
-      stack.push({ type: char === "(" ? "paren" : "bracket" })
+      stack.push(
+        char === "("
+          ? { type: "paren", header: headerKeywords.has(prev) }
+          : { type: "bracket" },
+      )
       prev = char
       i++
     } else if (char === ")" || char === "]") {
-      if (top() !== (char === ")" ? "paren" : "bracket")) return undefined
-      stack.pop()
-      prev = char
+      const frame = stack.pop()
+      if (frame?.type !== (char === ")" ? "paren" : "bracket")) return undefined
+      prev = frame.type === "paren" && frame.header ? ")h" : char
       i++
     } else if (char === ";") {
       if (opaque === 0 && inStatements()) breaks.add(i + 1)

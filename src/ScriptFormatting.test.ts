@@ -64,10 +64,16 @@ describe("formatScript", () => {
     expect(output).toContain("// comment ;{}\n")
     expect(output).toContain("/* comment ;{} */")
     expect(output).toContain("return {value: 1};")
+    expect(formatScript("if (a) /x;y/.test(s);n=a/2;")).toBe(
+      "if (a) /x;y/.test(s);\nn=a/2;",
+    )
   })
 
   it("leaves incomplete scripts and existing whitespace alone", () => {
     expect(formatScript("const x = {;")).toBe("const x = {;")
+    expect(formatScript("const x=1; /* unfinished")).toBe(
+      "const x=1; /* unfinished",
+    )
     const input = "if (true) {\r\n  console.log(1);\r\n}\r\n"
     expect(formatScript(input)).toBe(input)
   })

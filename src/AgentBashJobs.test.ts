@@ -26,8 +26,8 @@ import * as AgentExecutor from "./AgentExecutor.ts"
 // task exits, the next model call gets a user message
 // `<task id="…" kind="bash" status="…" exitCode="…">output retrieval hint</task>`, unless the
 // task was already reported by `stopTask`, `waitTasks` or a `taskOutput` call
-// that saw its final status. Task IDs come from the executor's counter: "1",
-// "2", ...
+// that saw its final status. Task IDs come from the executor's counter: "bash_1",
+// "bash_2", ...
 // =============================================================================
 
 type Respond = (
@@ -158,7 +158,7 @@ const executors = [
 // --- tests -------------------------------------------------------------------
 
 for (const [executorName, executorLayer] of executors) {
-  // Each test gets its own executor, so task IDs start at "1".
+  // Each test gets its own executor, so task IDs start at "bash_1".
   describe(`background bash tasks (${executorName} executor)`, () => {
     it.live(
       "a finished bash task is pushed once with its id, kind, status, exit code and an output retrieval call",
@@ -177,7 +177,7 @@ await sleep(500)`,
               case 1:
                 return execute(
                   "again",
-                  `console.log((await taskOutput("1")).output)`,
+                  `console.log((await taskOutput("bash_1")).output)`,
                 )
               default:
                 return text("done")
@@ -190,7 +190,7 @@ await sleep(500)`,
           assert.strictEqual(pushes.length, 1, "pushed before the next call")
           assert.match(
             pushes[0]!,
-            /^<task id="1" kind="bash" status="failed" exitCode="3">\s*To read the output, call taskOutput\("1"\)\.\s*<\/task>$/,
+            /^<task id="bash_1" kind="bash" status="failed" exitCode="3">\s*To read the output, call taskOutput\("bash_1"\)\.\s*<\/task>$/,
           )
           assert.include(
             JSON.stringify(
@@ -221,11 +221,11 @@ await sleep(500)`,
                   `await bash({ command: "sleep 30", background: true })
 await bash({ command: "echo READ", background: true })
 await bash({ command: "echo UNREAD", background: true })
-await stopTask("1")
-let task = await taskOutput("2")
+await stopTask("bash_1")
+let task = await taskOutput("bash_2")
 while (task.status === "running") {
   await sleep(20)
-  task = await taskOutput("2")
+  task = await taskOutput("bash_2")
 }
 await bash({ command: "echo FOREGROUND" })
 await waitTasks({ ids: [(await bash({ command: "echo WAITED", background: true })).id] })
@@ -243,7 +243,7 @@ console.log("SCRIPT" + "-DONE")`,
           assert.strictEqual(pushes.length, 1)
           assert.match(
             pushes[0]!,
-            /^<task id="3" kind="bash" status="completed" exitCode="0">\s*To read the output, call taskOutput\("3"\)\.\s*<\/task>$/,
+            /^<task id="bash_3" kind="bash" status="completed" exitCode="0">\s*To read the output, call taskOutput\("bash_3"\)\.\s*<\/task>$/,
           )
           assert.include(JSON.stringify(prompts[1]), "SCRIPT-DONE")
         }).pipe(Effect.provide(executorLayer)),

@@ -127,9 +127,10 @@ export type Task = typeof Task.Type
  */
 export interface AgentTasks {
   /**
-   * Start a sub-agent under the id the executor allocated. In the foreground
-   * it resolves once the agent has finished, and dies if the agent failed.
-   * In the background it resolves straight away with `status: "running"`.
+   * Start a sub-agent under the id the executor allocated, of the form
+   * `subagent_<n>`. In the foreground it resolves once the agent has finished,
+   * and dies if the agent failed. In the background it resolves straight away
+   * with `status: "running"`.
    */
   readonly subagent: (options: {
     readonly id: string
@@ -629,7 +630,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     const tasks = new Map<string, TaskEntry>()
     let nextTaskId = 1
     const registerAgentTask = Effect.gen(function* () {
-      const id = String(nextTaskId++)
+      const id = `subagent_${nextTaskId++}`
       tasks.set(id, { kind: "agent", id, owner: yield* TaskOwner })
       return id
     })
@@ -642,7 +643,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     ) {
       const entry: BashEntry = {
         kind: "bash",
-        id: String(nextTaskId++),
+        id: `bash_${nextTaskId++}`,
         owner: yield* TaskOwner,
         description,
         command: { ...command, reported: false },
@@ -1014,7 +1015,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         )
         const agentTasks = yield* AgentTaskExecutor
         return [...bashTasks, ...(yield* agentTasks.listTasks)].toSorted(
-          (a, b) => Number(a.id) - Number(b.id),
+          (a, b) => taskNumber(a.id) - taskNumber(b.id),
         )
       }),
       gh: Effect.fn("AgentTools.gh")(function* (args) {
@@ -1280,23 +1281,27 @@ const decodeSubagent = decodeParams(
 )
 const decodeMessageAgent = decodeParams(
   AgentTools.tools.messageAgent.parametersSchema,
-  'messageAgent requires an options object, for example: messageAgent({ id: "3", message: "..." }).',
+  'messageAgent requires an options object, for example: messageAgent({ id: "subagent_3", message: "..." }).',
 )
 const decodeTaskOutput = decodeParams(
   AgentTools.tools.taskOutput.parametersSchema,
-  'taskOutput requires a task id, for example: taskOutput("1").',
+  'taskOutput requires a task id, for example: taskOutput("bash_1").',
 )
 const decodeWaitTasks = decodeParams(
   AgentTools.tools.waitTasks.parametersSchema,
-  'waitTasks requires an options object, for example: waitTasks({ ids: ["3", "4"] }) or waitTasks({ ids: ["3"], timeoutMs: 60000 }).',
+  'waitTasks requires an options object, for example: waitTasks({ ids: ["subagent_3", "bash_4"] }) or waitTasks({ ids: ["subagent_3"], timeoutMs: 60000 }).',
 )
 
 /** The caller's `bash` timeout, which also bounds `waitTasks`. */
 const bashTimeoutMs = (limits: typeof CommandLimits.Service) =>
   Duration.toMillis(limits.timeout ?? defaultBashTimeout)
+
+/** The counter in a task id such as `bash_3`, which orders tasks by creation. */
+const taskNumber = (id: string) => Number(id.slice(id.indexOf("_") + 1))
+
 const decodeStopTask = decodeParams(
   AgentTools.tools.stopTask.parametersSchema,
-  'stopTask requires a task id, for example: stopTask("1").',
+  'stopTask requires a task id, for example: stopTask("bash_1").',
 )
 
 interface RunningCommand {

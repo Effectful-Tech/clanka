@@ -183,7 +183,7 @@ describe("Agent", () => {
             (script === "done"
               ? onTaskComplete("done")
               : agentTasks.subagent({
-                  id: "1",
+                  id: "subagent_1",
                   prompt: "TASK-CHILD",
                   background: false,
                   environment: new AgentExecutor.EnvironmentUpdate({
@@ -644,7 +644,7 @@ describe("Agent usage", () => {
                   yield* agentTasks.waitTasks([task.id], { timeoutMs: 60_000 })
                   // Reading completion again must not add the child's usage again.
                   yield* agentTasks.taskOutput(task.id)
-                  if (script === "1") {
+                  if (script === "subagent_1") {
                     yield* agentTasks.messageAgent({
                       id: task.id,
                       message: "follow up",
@@ -661,12 +661,12 @@ describe("Agent usage", () => {
               switch (index) {
                 case 0:
                   return Stream.make(
-                    toolCall("root", "1"),
+                    toolCall("root", "subagent_1"),
                     finish(100, "tool-calls", { read: 10, write: 1 }),
                   )
                 case 1:
                   return Stream.make(
-                    toolCall("child", "2"),
+                    toolCall("child", "subagent_2"),
                     finish(200, "tool-calls", { read: 20, write: 2 }),
                   )
                 case 2:
@@ -695,6 +695,10 @@ describe("Agent usage", () => {
             },
           })
           assert.deepStrictEqual(exit, Exit.succeed("complete"))
+          assert.deepStrictEqual(
+            outputsOfTag(outputs, "SubagentStart").map((part) => part.id),
+            [1, 2, 1],
+          )
           const usage = outputsOfTag(outputs, "Usage")
           // Child context windows must never replace the parent's window.
           assert.deepStrictEqual(
@@ -738,7 +742,7 @@ describe("Agent usage", () => {
                   update: Option.none(),
                 })
                 const background = yield* agentTasks.subagent({
-                  id: "1",
+                  id: "subagent_1",
                   prompt: "sibling-b",
                   background: true,
                   environment: update,
@@ -750,7 +754,7 @@ describe("Agent usage", () => {
                     Effect.forkScoped,
                   )
                 yield* agentTasks.subagent({
-                  id: "2",
+                  id: "subagent_2",
                   prompt: "sibling-a",
                   background: false,
                   environment: update,

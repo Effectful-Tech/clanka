@@ -33,7 +33,7 @@ import type { Output } from "./AgentOutput.ts"
 // LanguageModel serves every agent; calls are routed by the task marker in
 // each agent's first user message. Task IDs come from the executor's counter,
 // shared by bash and agent tasks. Each test gets its own executor, so the
-// first task is "1".
+// first task is "subagent_1".
 //
 // Sub-agents always finish with `taskComplete`: with the local executor they
 // currently run outside the parent's ConversationMode, so a text-only turn
@@ -300,7 +300,7 @@ for (const [executorName, executorLayer] of executors) {
                 return Stream.make(
                   toolCall(
                     "read",
-                    `console.log((await taskOutput("1")).output)`,
+                    `console.log((await taskOutput("subagent_1")).output)`,
                   ),
                 )
               case 3:
@@ -316,14 +316,14 @@ for (const [executorName, executorLayer] of executors) {
         assert.strictEqual(root.length, 4)
 
         const started = lastToolResult(root[1]!.prompt)
-        assert.include(started, '"id":"1"')
+        assert.include(started, '"id":"subagent_1"')
         assert.include(started, '"kind":"agent"')
         assert.include(started, '"status":"running"')
         assert.include(started, '"description":"TASK-CHILD"')
 
-        const push = findPush(root[2]!.prompt, "1", "completed")
+        const push = findPush(root[2]!.prompt, "subagent_1", "completed")
         assert.notStrictEqual(push.index, -1, "completion push delivered")
-        assert.include(push.text, 'taskOutput("1")')
+        assert.include(push.text, 'taskOutput("subagent_1")')
         assert.notInclude(push.text, "CHILD-HEAD")
         assert.notInclude(push.text, "CHILD-TAIL")
         assert.include(lastToolResult(root[3]!.prompt), "CHILD-HEAD")
@@ -383,7 +383,8 @@ for (const [executorName, executorLayer] of executors) {
         assert.deepStrictEqual(exit, Exit.succeed("done"))
         const root = calls.filter((call) => call.role === "root")
         const delivery = root.find(
-          (call) => findPush(call.prompt, "1", "completed").index !== -1,
+          (call) =>
+            findPush(call.prompt, "subagent_1", "completed").index !== -1,
         )
         assert.isDefined(delivery, "completion push reached the model")
         const prompt = delivery!.prompt
@@ -403,12 +404,37 @@ for (const [executorName, executorLayer] of executors) {
           "AFTER-SCRIPT-RAN",
           "the tool call after the push still ran",
         )
-        const push = findPush(prompt, "1", "completed")
-        assert.include(push.text, 'taskOutput("1")')
+        const push = findPush(prompt, "subagent_1", "completed")
+        assert.include(push.text, 'taskOutput("subagent_1")')
         assert.isAbove(
           push.index,
           assistantIndex,
           "the push is injected after the response, not into it",
+        )
+      }))
+
+    test("a failed foreground child reports its usable task ID", () =>
+      Effect.gen(function* () {
+        const { exit, calls } = yield* runAgent({
+          conversationMode: true,
+          respond: (call) => {
+            if (call.role === "child") return Stream.fail(invalidRequest)
+            if (call.index === 0) {
+              return Stream.make(
+                toolCall(
+                  "foreground",
+                  'await subagent({ prompt: "TASK-CHILD" })',
+                ),
+              )
+            }
+            return Stream.fromIterable(text("recovered"))
+          },
+        })
+        assert.deepStrictEqual(exit, Exit.succeed("recovered"))
+        const root = calls.filter((call) => call.role === "root")
+        assert.include(
+          lastToolResult(root[1]!.prompt),
+          "Sub-agent subagent_1 failed",
         )
       }))
 
@@ -440,9 +466,9 @@ for (const [executorName, executorLayer] of executors) {
 
         assert.deepStrictEqual(exit, Exit.succeed("recovered"))
         const root = calls.filter((call) => call.role === "root")
-        const push = findPush(root[2]!.prompt, "1", "failed")
+        const push = findPush(root[2]!.prompt, "subagent_1", "failed")
         assert.notStrictEqual(push.index, -1, "failure push delivered")
-        assert.include(push.text, 'taskOutput("1")')
+        assert.include(push.text, 'taskOutput("subagent_1")')
         assert.notInclude(push.text, "rejected")
       }))
 
@@ -479,7 +505,7 @@ try {
                 assert.notInclude(rejected, "ACCEPTED")
                 assert.include(
                   rejected,
-                  'waitTasks({ ids: ["1"] })',
+                  'waitTasks({ ids: ["subagent_1"] })',
                   "quotes the call that waits for the running child",
                 )
                 assert.include(rejected, "stopTask")
@@ -487,7 +513,7 @@ try {
                 return Stream.make(
                   toolCall(
                     "wait",
-                    `const results = await waitTasks({ ids: ["1"] })
+                    `const results = await waitTasks({ ids: ["subagent_1"] })
 console.log(JSON.stringify(results))
 await taskComplete("done")`,
                   ),
@@ -505,7 +531,7 @@ await taskComplete("done")`,
           2,
         )
         const waited = lastToolResult(history)
-        assert.include(waited, '"id":"1"')
+        assert.include(waited, '"id":"subagent_1"')
         assert.include(
           waited,
           '"status":"completed"',
@@ -608,8 +634,8 @@ await taskComplete("done")`,
                       Stream.as(
                         toolCall(
                           "stop",
-                          `console.log("STOP-VOID:", (await stopTask("1")) === undefined)
-console.log(JSON.stringify(await taskOutput("1")))`,
+                          `console.log("STOP-VOID:", (await stopTask("subagent_1")) === undefined)
+console.log(JSON.stringify(await taskOutput("subagent_1")))`,
                         ),
                       ),
                     )
@@ -628,7 +654,7 @@ console.log(JSON.stringify(await taskOutput("1")))`,
         const root = calls.filter((call) => call.role === "root")
         const stopped = lastToolResult(root[2]!.prompt)
         assert.include(stopped, "STOP-VOID: true")
-        assert.include(stopped, '"id":"1"')
+        assert.include(stopped, '"id":"subagent_1"')
         assert.include(stopped, '"status":"stopped"')
         assert.isTrue(
           interruptedBeforeNextTurn,
@@ -661,7 +687,7 @@ console.log(JSON.stringify(await taskOutput("1")))`,
                 Stream.as(
                   toolCall(
                     "message",
-                    `console.log("MESSAGE-VOID:", (await messageAgent({ id: "1", message: "STEER" })) === undefined)`,
+                    `console.log("MESSAGE-VOID:", (await messageAgent({ id: "subagent_1", message: "STEER" })) === undefined)`,
                   ),
                 ),
               )
@@ -713,7 +739,7 @@ console.log(JSON.stringify(await taskOutput("1")))`,
               return Stream.make(
                 toolCall(
                   "message",
-                  `const result = await messageAgent({ id: "1", message: "FOLLOW-UP" })
+                  `const result = await messageAgent({ id: "subagent_1", message: "FOLLOW-UP" })
 console.log("MESSAGE-VOID:", result === undefined)`,
                 ),
               )
@@ -748,9 +774,11 @@ console.log("MESSAGE-VOID:", result === undefined)`,
                 return complete("GRAND-RESULT")
               case "child":
                 if (
-                  findPush(call.prompt, "2", "completed").text.includes(
-                    'taskOutput("2")',
-                  )
+                  findPush(
+                    call.prompt,
+                    "subagent_2",
+                    "completed",
+                  ).text.includes('taskOutput("subagent_2")')
                 ) {
                   return complete("CHILD-DONE")
                 }
@@ -787,12 +815,12 @@ console.log(JSON.stringify(result))`,
         const root = calls.filter((call) => call.role === "root")
         assert.strictEqual(root.length, 2)
         const foreground = lastToolResult(root[1]!.prompt)
-        assert.include(foreground, '"id":"1"')
+        assert.include(foreground, '"id":"subagent_1"')
         assert.include(foreground, '"status":"completed"')
         assert.include(foreground, "CHILD-DONE")
         for (const call of root) {
           assert.isFalse(
-            hasAnyPush(call.prompt, "2"),
+            hasAnyPush(call.prompt, "subagent_2"),
             "the grandchild's push never reaches the root",
           )
         }
@@ -869,10 +897,11 @@ console.log("ROOT:" + (await bash({ command: "pwd" })).output.trim())`,
                 return Stream.make(
                   toolCall(
                     "mixed",
-                    `const bashTask = await bash({ command: "echo BASH-OUT", background: true })
-const agentTask = await subagent({ prompt: "TASK-CHILD", background: true })
+                    `const agentTask = await subagent({ prompt: "TASK-CHILD", background: true })
+const bashTask = await bash({ command: "echo BASH-OUT", background: true })
+console.log("IDS:" + JSON.stringify((await listTasks()).map(task => task.id)))
 const ended = await waitTasks({ ids: [bashTask.id, agentTask.id] })
-console.log(JSON.stringify(ended.map(({ kind, status, output }) => ({ kind, status, output: output.trim() }))))`,
+console.log(JSON.stringify(ended.map(({ id, kind, status, output }) => ({ id, kind, status, output: output.trim() }))))`,
                   ),
                 )
               case 1:
@@ -888,9 +917,23 @@ console.log(JSON.stringify(ended.map(({ kind, status, output }) => ({ kind, stat
         assert.strictEqual(root.length, 2, "no late push wakes the run")
         assert.include(
           lastToolResult(root[1]!.prompt),
+          'IDS:["subagent_1","bash_2"]',
+        )
+        assert.include(
+          lastToolResult(root[1]!.prompt),
           JSON.stringify([
-            { kind: "bash", status: "completed", output: "BASH-OUT" },
-            { kind: "agent", status: "completed", output: "CHILD-OUT" },
+            {
+              id: "bash_2",
+              kind: "bash",
+              status: "completed",
+              output: "BASH-OUT",
+            },
+            {
+              id: "subagent_1",
+              kind: "agent",
+              status: "completed",
+              output: "CHILD-OUT",
+            },
           ]),
         )
         assert.deepStrictEqual(
@@ -1013,15 +1056,15 @@ console.log("OUTPUT:" + task.output)`,
         assert.include(waited, "WAITED:running", "returned at the deadline")
         assert.include(
           waited,
-          'OUTPUT:Task "1" is still running in the background',
+          'OUTPUT:Task "subagent_1" is still running in the background',
         )
         assert.isFalse(childInterrupted, "the deadline does not stop the agent")
         assert.deepStrictEqual(exit, Exit.succeed("done"))
         const root = calls.filter((call) => call.role === "root")
         assert.strictEqual(root.length, 3)
         assert.include(
-          findPush(root[2]!.prompt, "1", "completed").text,
-          'taskOutput("1")',
+          findPush(root[2]!.prompt, "subagent_1", "completed").text,
+          'taskOutput("subagent_1")',
           "its completion is pushed once it ends",
         )
       }))
@@ -1063,15 +1106,15 @@ console.log("RETURNED")`,
           assert.notInclude(result, "RETURNED")
           assert.isTrue(
             pushTexts(root[1]!.prompt).some((push) =>
-              /^<task id="1" kind="bash" status="completed" exitCode="0">\s*To read the output, call taskOutput\("1"\)\.\s*<\/task>$/.test(
+              /^<task id="bash_1" kind="bash" status="completed" exitCode="0">\s*To read the output, call taskOutput\("bash_1"\)\.\s*<\/task>$/.test(
                 push,
               ),
             ),
             "the bash task is pushed",
           )
           assert.include(
-            findPush(root[1]!.prompt, "2", "completed").text,
-            'taskOutput("2")',
+            findPush(root[1]!.prompt, "subagent_2", "completed").text,
+            'taskOutput("subagent_2")',
             "the agent task is pushed",
           )
         }),

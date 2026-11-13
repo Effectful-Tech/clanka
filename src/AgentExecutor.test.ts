@@ -579,7 +579,7 @@ await sleep(60000)`,
           )
           assert.strictEqual(
             JSON.parse(output.split("OUTPUT:")[1]!),
-            'Task "1" is still running in the background',
+            'Task "bash_1" is still running in the background',
           )
           assert.strictEqual(
             yield* waitForLog(environment.cwd, started),
@@ -608,7 +608,7 @@ const task = await bash({
 console.log("RETURNED:", JSON.stringify(task))`)
         const task = JSON.parse(output.split("RETURNED:")[1]!)
         assert.deepStrictEqual(task, {
-          id: "1",
+          id: "bash_1",
           kind: "bash",
           status: "running",
           description: gatedCommand(environment.cwd),
@@ -644,11 +644,11 @@ try {
 }`)
         assert.notInclude(output, "REJECTED:")
         assert.deepStrictEqual(JSON.parse(output.split("RETURNED:")[1]!), {
-          id: "1",
+          id: "bash_1",
           kind: "bash",
           status: "running",
           description: command,
-          output: 'Task "1" is still running in the background',
+          output: 'Task "bash_1" is still running in the background',
         })
         assert.strictEqual(
           yield* waitForLog(environment.cwd, started),
@@ -657,7 +657,7 @@ try {
         )
         assert.include(
           yield* runScript(
-            `console.log("OUTPUT:", (await taskOutput("1")).output)`,
+            `console.log("OUTPUT:", (await taskOutput("bash_1")).output)`,
           ),
           "OUTPUT: early",
         )
@@ -688,7 +688,7 @@ try {
           assert.deepStrictEqual(
             JSON.parse(output.split("OK:")[1]!.split("\n")[0]!),
             {
-              id: "1",
+              id: "bash_1",
               kind: "bash",
               status: "completed",
               description: "echo hi",
@@ -719,7 +719,7 @@ await writeFile({ path: "gate", content: "" })
 console.log("WAITED:", (await waitTasks({ ids: [task.id] })).map(show).join())`)
         assert.include(
           output,
-          'WAITED: {"id":"1","kind":"bash","status":"completed","exitCode":0,"output":"done\\n"}',
+          'WAITED: {"id":"bash_1","kind":"bash","status":"completed","exitCode":0,"output":"done\\n"}',
         )
       }).pipe(Effect.timeout("5 seconds"), Effect.provide(executorLayer({}))),
     )
@@ -747,7 +747,7 @@ console.log("OUTPUTS:", JSON.stringify(waits.map((task) => task.output)))`)
           output,
           "OUTPUTS: " +
             JSON.stringify(
-              Array(3).fill('Task "1" is still running in the background'),
+              Array(3).fill('Task "bash_1" is still running in the background'),
             ),
         )
         assert.strictEqual(
@@ -798,9 +798,9 @@ console.log("RETURNED:", JSON.stringify({ id, kind, status }))`,
           .pipe(Stream.mkString)
         assert.include(
           output,
-          'RETURNED: {"id":"2","kind":"bash","status":"running"}',
+          'RETURNED: {"id":"bash_2","kind":"bash","status":"running"}',
         )
-        assert.deepStrictEqual(watched, ["2"], "only the running task")
+        assert.deepStrictEqual(watched, ["bash_2"], "only the running task")
         assert.deepStrictEqual(claims, [true], "reported once, by the watcher")
       }).pipe(Effect.timeout("5 seconds"), Effect.provide(executorLayer({}))),
     )
@@ -822,21 +822,21 @@ const done = async (id) => {
 }
 await bash({ command: ${JSON.stringify(gatedCommand(environment.cwd))}, background: true })
 await bash({ command: "echo out && exit 3", background: true })
-console.log("RUNNING:", show(await taskOutput("1")))
+console.log("RUNNING:", show(await taskOutput("bash_1")))
 await writeFile({ path: "gate", content: "" })
-console.log("COMPLETED:", show(await done("1")))
-console.log("FAILED:", show(await done("2")))`)
+console.log("COMPLETED:", show(await done("bash_1")))
+console.log("FAILED:", show(await done("bash_2")))`)
         assert.include(
           output,
-          'RUNNING: {"id":"1","kind":"bash","status":"running","output":""}',
+          'RUNNING: {"id":"bash_1","kind":"bash","status":"running","output":""}',
         )
         assert.include(
           output,
-          'COMPLETED: {"id":"1","kind":"bash","status":"completed","exitCode":0,"output":""}',
+          'COMPLETED: {"id":"bash_1","kind":"bash","status":"completed","exitCode":0,"output":""}',
         )
         assert.include(
           output,
-          'FAILED: {"id":"2","kind":"bash","status":"failed","exitCode":3,"output":"out\\n"}',
+          'FAILED: {"id":"bash_2","kind":"bash","status":"failed","exitCode":3,"output":"out\\n"}',
         )
       }).pipe(Effect.timeout("5 seconds"), Effect.provide(executorLayer({}))),
     )
@@ -849,12 +849,12 @@ console.log("FAILED:", show(await done("2")))`)
 const show = ({ id, kind, status }) => JSON.stringify({ id, kind, status })
 await bash({ command: ${JSON.stringify(gatedCommand(environment.cwd))}, background: true })
 try {
-  await messageAgent({ id: "1", message: "hello" })
+  await messageAgent({ id: "bash_1", message: "hello" })
 } catch (error) {
   console.log("MESSAGE-REJECTED:", String(error))
 }
-console.log("STOP-VOID:", (await stopTask("1")) === undefined)
-console.log("STOPPED:", show(await taskOutput("1")))
+console.log("STOP-VOID:", (await stopTask("bash_1")) === undefined)
+console.log("STOPPED:", show(await taskOutput("bash_1")))
 try {
   await stopTask("99")
 } catch (error) {
@@ -867,7 +867,7 @@ try {
         )
         assert.include(
           output,
-          'STOPPED: {"id":"1","kind":"bash","status":"stopped"}',
+          'STOPPED: {"id":"bash_1","kind":"bash","status":"stopped"}',
         )
         assert.include(output, "STOP-VOID: true")
         assert.match(output, /REJECTED:.*No task with id "99".*listTasks\(\)/)

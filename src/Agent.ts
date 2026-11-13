@@ -623,8 +623,8 @@ export const makeWith = Effect.fnUntraced(function* <
       )
     })
 
-    const childTask = ({ id, prompt, turn }: Child): Task => ({
-      id: String(id),
+    const childTask = ({ taskId, prompt, turn }: Child): Task => ({
+      id: taskId,
       kind: "agent",
       status: turn.status,
       description: prompt,
@@ -654,7 +654,8 @@ export const makeWith = Effect.fnUntraced(function* <
         environment,
       }) {
         const child: Child = {
-          id: Number(id),
+          id: Number(id.slice("subagent_".length)),
+          taskId: id,
           taskOwner: crypto.randomUUID(),
           prompt,
           history: MutableRef.make(Prompt.empty),
@@ -740,7 +741,7 @@ ${prompt}`,
       Effect.suspend(() => {
         const running = runningChildren()
         if (running.length > 0) {
-          const ids = running.map((child) => String(child.id))
+          const ids = running.map((child) => child.taskId)
           const quoted = ids.map((id) => JSON.stringify(id)).join(", ")
           return Effect.fail(
             `taskComplete was rejected: sub-agents ${quoted} are still running. Call waitTasks({ ids: ${JSON.stringify(ids)} }) to wait for them, or stopTask(id) to stop them, before calling taskComplete.`,
@@ -1640,7 +1641,8 @@ To read the output, call taskOutput(${JSON.stringify(task.id)}).
 }
 
 interface Child {
-  /** The task id, as a number for output events. */
+  readonly taskId: string
+  /** The numeric task sequence for output events. */
   readonly id: number
   /** The agent's own owner id for the tasks it starts. */
   readonly taskOwner: string

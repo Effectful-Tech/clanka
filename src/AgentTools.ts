@@ -629,7 +629,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     const tasks = new Map<string, TaskEntry>()
     let nextTaskId = 1
     const registerAgentTask = Effect.gen(function* () {
-      const id = String(nextTaskId++)
+      const id = `subagent_${nextTaskId++}`
       tasks.set(id, { kind: "agent", id, owner: yield* TaskOwner })
       return id
     })
@@ -642,7 +642,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
     ) {
       const entry: BashEntry = {
         kind: "bash",
-        id: String(nextTaskId++),
+        id: `bash_${nextTaskId++}`,
         owner: yield* TaskOwner,
         description,
         command: { ...command, reported: false },
@@ -1014,7 +1014,9 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         )
         const agentTasks = yield* AgentTaskExecutor
         return [...bashTasks, ...(yield* agentTasks.listTasks)].toSorted(
-          (a, b) => Number(a.id) - Number(b.id),
+          (a, b) =>
+            Number(a.id.slice(a.id.lastIndexOf("_") + 1)) -
+            Number(b.id.slice(b.id.lastIndexOf("_") + 1)),
         )
       }),
       gh: Effect.fn("AgentTools.gh")(function* (args) {

@@ -25,10 +25,6 @@ export default defineConfig({
     onlyBundle: false,
     neverBundle: [
       // These packages locate native binaries or WASM relative to their own files.
-      "tree-sitter",
-      "tree-sitter-javascript",
-      "tree-sitter-typescript",
-      "sqlite-vec",
       "@silvia-odwyer/photon-node",
       "@vscode/ripgrep",
       // Optional: the claude provider loads it on first use.

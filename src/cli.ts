@@ -29,7 +29,6 @@ import * as Config from "effect/Config"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Option from "effect/Option"
 import type * as Redacted from "effect/Redacted"
-import { OpenAiClient, OpenAiEmbeddingModel } from "@effect/ai-openai"
 import * as DeviceCodeHandler from "./DeviceCodeHandler.ts"
 import packageJson from "../package.json" with { type: "json" }
 
@@ -242,14 +241,6 @@ const fast = Flag.Boolean("fast").pipe(
   ),
 )
 
-const semantic = Flag.Directory("search").pipe(
-  Flag.withDescription(
-    "Directory for semantic search data (uses OPENAI_API_KEY env var)",
-  ),
-  Flag.withAlias("s"),
-  Flag.optional,
-)
-
 const prompt = Flag.String("prompt").pipe(
   Flag.withDescription("Pass a prompt in non-interactive mode"),
   Flag.optional,
@@ -365,42 +356,6 @@ const AcpSessions = Layer.unwrap(
   }),
 ).pipe(Layer.provide(NodeServices.layer))
 
-const Search = (directory: string) =>
-  Layer.unwrap(
-    Effect.gen(function* () {
-      const apiKey = yield* Config.Redacted("OPENAI_API_KEY").pipe(
-        Config.option,
-      )
-
-      if (Option.isNone(apiKey)) {
-        yield* Effect.logWarning("OPENAI_API_KEY is not set")
-        return Layer.empty
-      }
-
-      const path = yield* Path.Path
-
-      const SemanticSearch = yield* Effect.promise(
-        () => import("./SemanticSearch.ts"),
-      )
-
-      return SemanticSearch.layer({
-        directory: process.cwd(),
-        database: path.join(directory, "search.sqlite"),
-      }).pipe(
-        Layer.provide(
-          OpenAiEmbeddingModel.model("text-embedding-3-small", {
-            dimensions: 1536,
-          }),
-        ),
-        Layer.provide(
-          OpenAiClient.layer({
-            apiKey: apiKey.value,
-          }),
-        ),
-      )
-    }),
-  ).pipe(Layer.provide([NodeServices.layer, HttpClientLive]))
-
 const acpModel = Flag.String("model").pipe(
   Flag.withAlias("m"),
   Flag.withDescription(
@@ -502,7 +457,6 @@ Command.make("clanka", {
   fetch,
   model,
   fast,
-  semantic,
   prompt,
   compaction,
   compactionThreshold,
@@ -518,7 +472,6 @@ Command.make("clanka", {
       provider,
       model: modelRaw,
       fast,
-      semantic,
       prompt: nonInteractivePrompt,
       apiKey,
       apiUrl,
@@ -587,15 +540,7 @@ Command.make("clanka", {
           Agent.layerLocal({
             directory: process.cwd(),
             excludeTools: flags.fetch ? [] : ["fetch"],
-          }).pipe(
-            Layer.provide(
-              Option.match(semantic, {
-                onNone: () => Layer.empty,
-                onSome: Search,
-              }),
-            ),
-            Layer.provideMerge(McpServers.layer(mcpServers)),
-          ),
+          }).pipe(Layer.provideMerge(McpServers.layer(mcpServers))),
           Model,
         ]),
       )

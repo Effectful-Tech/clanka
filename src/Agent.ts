@@ -1813,10 +1813,6 @@ const generateSystemTools = (
   ` Read line ranges with "startLine" / "endLine" instead of whole files.`,
 )} Slice or filter large results before printing them.
 - Use top level await.${when(
-  tools.offers("search") && tools.offers("rg"),
-  `
-- Prefer using the "search" function over "rg", unless you are targeting specific files or patterns.`,
-)}${when(
   tools.offers("bash"),
   `
 - Avoid passing scripts into the "bash" function, and instead write javascript.`,

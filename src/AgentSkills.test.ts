@@ -529,7 +529,6 @@ describe("AgentSkills", () => {
         seen: [],
       }),
       instructions: Option.none(),
-      supportsSearch: false,
       tools: [],
     })
     assert.deepStrictEqual(capabilities.skills, [])
@@ -879,7 +878,6 @@ const makeExecutor = (skills: ReadonlyArray<AgentSkills.Skill>) =>
           seen: [],
         }),
         instructions: Option.none(),
-        supportsSearch: false,
         tools: [],
         skills,
       }),

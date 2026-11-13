@@ -42,6 +42,14 @@ describe("formatScript", () => {
     expect(formatScript(output)).toBe(output)
   })
 
+  it("breaks statement blocks but not the expressions around them", () => {
+    const input = "const a=b/2;if(a){x()}else{y()}run(function(){go();});"
+    const output =
+      "const a=b/2;\nif(a){\nx()\n}else{\ny()\n}\nrun(function(){\ngo();\n});"
+    expect(formatScript(input)).toBe(output)
+    expect(formatScript(output)).toBe(output)
+  })
+
   it("preserves literals, comments, and line-sensitive expressions", () => {
     const input = [
       `const text="😀;{}";const re=/[;{}]/g;`,
@@ -56,10 +64,22 @@ describe("formatScript", () => {
     expect(output).toContain("// comment ;{}\n")
     expect(output).toContain("/* comment ;{} */")
     expect(output).toContain("return {value: 1};")
+    expect(formatScript("n=a.in/2;re=/x;y/;")).toBe("n=a.in/2;\nre=/x;y/;")
+    // A slash after ")" may start a regex or divide, so nothing is changed.
+    for (const input of [
+      "if (a) /x;y/.test(s);n=1;",
+      "for await (const x of []) /x;y/.test(s);n=1;",
+      "n=obj.with()/2;re=/x;y/;",
+    ]) {
+      expect(formatScript(input)).toBe(input)
+    }
   })
 
   it("leaves incomplete scripts and existing whitespace alone", () => {
     expect(formatScript("const x = {;")).toBe("const x = {;")
+    expect(formatScript("const x=1; /* unfinished")).toBe(
+      "const x=1; /* unfinished",
+    )
     const input = "if (true) {\r\n  console.log(1);\r\n}\r\n"
     expect(formatScript(input)).toBe(input)
   })

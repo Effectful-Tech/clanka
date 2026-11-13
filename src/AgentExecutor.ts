@@ -13,7 +13,6 @@ import {
   agentTasksUnavailable,
   AgentToolHandlers,
   AgentTools,
-  AgentToolsWithSearch,
   CommandLimits,
   CurrentDirectory,
   defaultBashTimeout,
@@ -61,7 +60,6 @@ import * as RpcGroup from "effect/rpc/RpcGroup"
 import * as Rpc from "effect/rpc/Rpc"
 import * as Predicate from "effect/Predicate"
 import * as Result from "effect/Result"
-import { SemanticSearch } from "./SemanticSearch/Service.ts"
 import { preprocessScript } from "./ScriptPreprocessing.ts"
 import * as References from "effect/References"
 
@@ -239,7 +237,6 @@ export class Capabilities extends Schema.Class<Capabilities>("Capabilities")({
    * The startup AGENTS.md as rendered for the system prompt, with its path.
    */
   instructions: Schema.Option(Schema.String),
-  supportsSearch: Schema.Boolean,
   /**
    * The environment of an agent's first script.
    */
@@ -326,7 +323,7 @@ type LocalServices<Toolkit> =
   | ToolkitRenderer
   | FileSystem.FileSystem
   | Path.Path
-  | Tool.HandlersFor<typeof AgentToolsWithSearch.tools>
+  | Tool.HandlersFor<typeof AgentTools.tools>
   | Exclude<
       Toolkit extends Toolkit.Toolkit<infer T>
         ? Tool.HandlersFor<T> | Tool.HandlerServices<T[keyof T]>
@@ -405,18 +402,16 @@ const makeLocalWith = Effect.fnUntraced(function* <
   )
   const excluded = excludedToolNames(options.excludeTools)
   const offersFetch = !excluded.has("fetch")
-  const search = yield* Effect.serviceOption(SemanticSearch)
   const BuiltInTools = Toolkit.make(
     ...Object.values(
       Toolkit.merge(
-        Option.isSome(search) ? AgentToolsWithSearch : AgentTools,
+        AgentTools,
         // Same tool id, so the handler is unchanged. Only the description,
         // which states the timeout, differs.
         Toolkit.make(makeBashTool(commandLimits.timeout ?? defaultBashTimeout)),
       ).tools as Record<string, Tool.Any>,
     ).filter((tool) => !excluded.has(tool.name)),
-  ) as unknown as typeof AgentToolsWithSearch
-  const hasSearch = "search" in BuiltInTools.tools
+  ) as unknown as typeof AgentTools
   const AllTools = Toolkit.merge(
     BuiltInTools,
     (options.tools as unknown as Toolkit.Toolkit<{}>) ?? Toolkit.empty,
@@ -541,9 +536,6 @@ const makeLocalWith = Effect.fnUntraced(function* <
       Context.add(CommandLimits, commandLimits),
       Context.add(Console.Console, console),
       Context.add(References.CurrentLogAnnotations, {}),
-      Option.isSome(search)
-        ? Context.add(SemanticSearch, search.value)
-        : identity,
     )
 
     // The script runs in its own worker thread, so a script that is busy in
@@ -689,7 +681,6 @@ const makeLocalWith = Effect.fnUntraced(function* <
           Option.fromNullishOr(startup.instructions.at(-1)),
           AgentEnvironment.renderInstructions,
         ),
-        supportsSearch: hasSearch,
         environment: new ExecutionEnvironment({
           cwd: startupDirectory,
           baseline: [
@@ -730,9 +721,6 @@ const makeLocalWith = Effect.fnUntraced(function* <
           Context.add(ImageAttacher, () => Effect.void),
           Context.add(CommandLimits, commandLimits),
           Context.add(References.CurrentLogAnnotations, {}),
-          Option.isSome(search)
-            ? Context.add(SemanticSearch, search.value)
-            : identity,
         )
 
         const encodeSuccess = Schema.encodeUnknownEffect(
@@ -1351,7 +1339,7 @@ const withBuiltInHandlers = <A, E, R>(
 ): Effect.Effect<
   A,
   E,
-  | Exclude<R, Tool.HandlersFor<typeof AgentToolsWithSearch.tools>>
+  | Exclude<R, Tool.HandlersFor<typeof AgentTools.tools>>
   | Scope.Scope
   | FileSystem.FileSystem
   | Path.Path

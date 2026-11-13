@@ -808,7 +808,6 @@ describe("ClaudeAgent.model", () => {
               seen: [],
             }),
             instructions: Option.none(),
-            supportsSearch: false,
             tools: [],
             skills: [],
           }),

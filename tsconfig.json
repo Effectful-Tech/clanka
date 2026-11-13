@@ -36,11 +36,7 @@
     "plugins": [
       {
         "name": "@effect/language-service",
-        "namespaceImportPackages": [
-          "effect",
-          "@effect/platform-node",
-          "@effect/sql-sqlite-node"
-        ],
+        "namespaceImportPackages": ["effect", "@effect/platform-node"],
         "diagnosticSeverity": {
           "unstableApiUsage": "off",
           "experimentalApiUsage": "off",

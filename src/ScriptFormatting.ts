@@ -6,8 +6,7 @@
 
 type Frame =
   | { readonly type: "block"; readonly start: number; readonly opener: string }
-  | { readonly type: "paren"; readonly header: boolean }
-  | { readonly type: "brace" | "bracket" | "template" | "subst" }
+  | { readonly type: "brace" | "paren" | "bracket" | "template" | "subst" }
 
 // Tokens after which `{` opens a statement block rather than an expression.
 const blockOpeners = new Set([
@@ -16,7 +15,6 @@ const blockOpeners = new Set([
   "{",
   "}",
   ")",
-  ")h",
   "=>",
   "else",
   "try",
@@ -42,9 +40,6 @@ const regexKeywords = new Set([
   "await",
 ])
 
-// Keywords whose parenthesized header is followed by a statement.
-const headerKeywords = new Set(["if", "while", "for", "with"])
-
 // Words that continue the statement a block belongs to.
 const continuations = new Set([
   "else",
@@ -60,12 +55,12 @@ const isWord = (char: string) => /[\w$]/.test(char) || char.charCodeAt(0) > 127
 
 const isSpace = (char: string) => /\s/.test(char)
 
-// `prev` is "" at the start, a punctuator, a word, "str" for a literal, or
-// ")h" for the end of a control header, where a statement (maybe a regex) starts.
+// `prev` is "" at the start, a punctuator, a word, "id" for a property name,
+// or "str" for a literal. After ")" a slash is not decided here: see below.
 const regexAllowed = (prev: string) =>
   prev === "" ||
   regexKeywords.has(prev) ||
-  (!isWord(prev[0]!) && ![")", "]", "}o", "++", "--"].includes(prev))
+  (!isWord(prev[0]!) && !["]", "}o", "++", "--"].includes(prev))
 
 /** Returns the positions of statement boundaries, or undefined if the script cannot be scanned. */
 const findBreaks = (script: string): Set<number> | undefined => {
@@ -146,6 +141,11 @@ const findBreaks = (script: string): Set<number> | undefined => {
       opaque++
       i++
       continue
+    } else if (char === "/" && prev === ")") {
+      // After a control header such as `if (x)` it starts a regex, after a
+      // call or a parenthesized expression it divides. Telling these apart
+      // needs a parser, so leave the script unchanged.
+      return undefined
     } else if (char === "/" && regexAllowed(prev)) {
       let inClass = false
       i++
@@ -160,7 +160,8 @@ const findBreaks = (script: string): Set<number> | undefined => {
       prev = "str"
     } else if (isWord(char)) {
       while (i < script.length && isWord(script[i]!)) i++
-      prev = script.slice(start, i)
+      // A name after "." is a property, even when it is spelled like a keyword.
+      prev = prev === "." ? "id" : script.slice(start, i)
     } else if (char === "{") {
       if (blockOpeners.has(prev)) {
         stack.push({ type: "block", start: i, opener: prev })
@@ -201,17 +202,13 @@ const findBreaks = (script: string): Set<number> | undefined => {
         }
       }
     } else if (char === "(" || char === "[") {
-      stack.push(
-        char === "("
-          ? { type: "paren", header: headerKeywords.has(prev) }
-          : { type: "bracket" },
-      )
+      stack.push({ type: char === "(" ? "paren" : "bracket" })
       prev = char
       i++
     } else if (char === ")" || char === "]") {
-      const frame = stack.pop()
-      if (frame?.type !== (char === ")" ? "paren" : "bracket")) return undefined
-      prev = frame.type === "paren" && frame.header ? ")h" : char
+      if (top() !== (char === ")" ? "paren" : "bracket")) return undefined
+      stack.pop()
+      prev = char
       i++
     } else if (char === ";") {
       if (opaque === 0 && inStatements()) breaks.add(i + 1)

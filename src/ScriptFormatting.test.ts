@@ -64,9 +64,15 @@ describe("formatScript", () => {
     expect(output).toContain("// comment ;{}\n")
     expect(output).toContain("/* comment ;{} */")
     expect(output).toContain("return {value: 1};")
-    expect(formatScript("if (a) /x;y/.test(s);n=a/2;")).toBe(
-      "if (a) /x;y/.test(s);\nn=a/2;",
-    )
+    expect(formatScript("n=a.in/2;re=/x;y/;")).toBe("n=a.in/2;\nre=/x;y/;")
+    // A slash after ")" may start a regex or divide, so nothing is changed.
+    for (const input of [
+      "if (a) /x;y/.test(s);n=1;",
+      "for await (const x of []) /x;y/.test(s);n=1;",
+      "n=obj.with()/2;re=/x;y/;",
+    ]) {
+      expect(formatScript(input)).toBe(input)
+    }
   })
 
   it("leaves incomplete scripts and existing whitespace alone", () => {

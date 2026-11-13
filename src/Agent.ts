@@ -654,9 +654,7 @@ export const makeWith = Effect.fnUntraced(function* <
         environment,
       }) {
         const child: Child = {
-          id: Number(
-            id.startsWith("subagent_") ? id.slice("subagent_".length) : id,
-          ),
+          id: Number(id.slice("subagent_".length)),
           taskId: id,
           taskOwner: crypto.randomUUID(),
           prompt,

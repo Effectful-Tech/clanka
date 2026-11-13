@@ -672,7 +672,7 @@ describe("Acp", () => {
               execute: ({ agentTasks, environment }) =>
                 Stream.fromEffect(
                   agentTasks.subagent({
-                    id: "1",
+                    id: "subagent_1",
                     prompt,
                     background: false,
                     environment: new AgentExecutor.EnvironmentUpdate({
@@ -771,7 +771,7 @@ describe("Acp", () => {
                     executions++ === 0
                       ? agentTasks
                           .subagent({
-                            id: "1",
+                            id: "subagent_1",
                             prompt: "TASK-CHILD",
                             background: true,
                             environment: new AgentExecutor.EnvironmentUpdate({

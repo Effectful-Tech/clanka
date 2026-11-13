@@ -26,9 +26,8 @@ The ACP server accepts the same options:
 clanka acp --model openai/gpt-6-astra/medium --api-url https://gateway.example.com/v1
 ```
 
-These options configure the chat model, including subagents. Semantic search
-continues to use `OPENAI_API_KEY` and the default OpenAI embeddings endpoint.
-Setting only `OPENAI_API_KEY` does not enable API-key mode for chat.
+These options configure the chat model, including subagents. Setting only
+`OPENAI_API_KEY` does not enable API-key mode for chat.
 
 ## OpenAI-compatible endpoints
 

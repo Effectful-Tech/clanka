@@ -28,7 +28,6 @@ import * as Array from "effect/Array"
 import * as Data from "effect/Data"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
-import * as SemanticSearch from "./SemanticSearch/Service.ts"
 import * as Image from "./Image.ts"
 
 /**
@@ -538,24 +537,6 @@ export const AgentTools = Toolkit.make(
   }),
 )
 
-const SearchTool = Toolkit.make(
-  Tool.make("search", {
-    description:
-      "Semantic code search - you just need to describe what you are looking for",
-    parameters: Schema.String.annotate({
-      identifier: "query",
-    }),
-    success: Schema.String,
-    dependencies: [SemanticSearch.SemanticSearch],
-  }),
-)
-
-/**
- * @since 1.0.0
- * @category Toolkit
- */
-export const AgentToolsWithSearch = Toolkit.merge(SearchTool, AgentTools)
-
 /**
  * A built-in tool a caller can leave out. `taskComplete` always stays.
  *
@@ -563,13 +544,13 @@ export const AgentToolsWithSearch = Toolkit.merge(SearchTool, AgentTools)
  * @category Toolkit
  */
 export type ExcludableTool =
-  Exclude<keyof typeof AgentToolsWithSearch.tools, "taskComplete"> | "fetch"
+  Exclude<keyof typeof AgentTools.tools, "taskComplete"> | "fetch"
 
 /**
  * @since 1.0.0
  * @category Toolkit
  */
-export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
+export const AgentToolHandlersNoDeps = AgentTools.toLayer(
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const fs = yield* FileSystem.FileSystem
@@ -768,7 +749,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
       return options.background === true ? task : backgroundRunningOutput(task)
     }, Effect.orDie)
 
-    return AgentToolsWithSearch.of({
+    return AgentTools.of({
       changeDirectory: Effect.fn("AgentTools.changeDirectory")(
         function* (directory) {
           yield* Effect.logInfo(`Calling "changeDirectory"`).pipe(
@@ -840,7 +821,6 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         yield* typeof options.content === "string"
           ? fs.writeFileString(path, options.content)
           : fs.writeFile(path, options.content)
-        yield* SemanticSearch.maybeUpdateFile(path)
       }, Effect.orDie),
       removeFile: Effect.fn("AgentTools.removeFile")(function* (path) {
         yield* Effect.logInfo(`Calling "removeFile"`).pipe(
@@ -849,7 +829,6 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         const cwd = yield* CurrentDirectory
         const absolutePath = pathService.resolve(cwd, path)
         yield* fs.remove(absolutePath, { force: true })
-        yield* SemanticSearch.maybeRemoveFile(absolutePath)
       }, Effect.orDie),
       renameFile: Effect.fn("AgentTools.renameFile")(function* (options) {
         yield* Effect.logInfo(`Calling "renameFile"`).pipe(
@@ -862,8 +841,6 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
           recursive: true,
         })
         yield* fs.rename(from, to)
-        yield* SemanticSearch.maybeRemoveFile(from)
-        yield* SemanticSearch.maybeUpdateFile(to)
       }, Effect.orDie),
       ls: Effect.fn("AgentTools.ls")(function* (directory) {
         yield* Effect.logInfo(`Calling "ls"`).pipe(
@@ -873,16 +850,6 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
         return yield* fs
           .readDirectory(pathService.resolve(cwd, directory))
           .pipe(Effect.orDie)
-      }),
-      search: Effect.fn("AgentTools.search")(function* (query) {
-        yield* Effect.logInfo(`Calling "search"`).pipe(
-          Effect.annotateLogs({ query }),
-        )
-        const ss = yield* SemanticSearch.SemanticSearch
-        return yield* ss.search({
-          query,
-          limit: 5,
-        })
       }),
       rg: Effect.fn("AgentTools.rg")(function* (options) {
         yield* Effect.logInfo(`Calling "rg"`).pipe(Effect.annotateLogs(options))
@@ -1176,7 +1143,6 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
                 recursive: true,
               })
               yield* fs.writeFileString(step.path, step.next)
-              yield* SemanticSearch.maybeUpdateFile(step.path)
               break
             }
             case "move": {
@@ -1185,13 +1151,10 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
               })
               yield* fs.writeFileString(step.movePath, step.next)
               yield* fs.remove(step.path)
-              yield* SemanticSearch.maybeRemoveFile(step.path)
-              yield* SemanticSearch.maybeUpdateFile(step.movePath)
               break
             }
             case "delete": {
               yield* fs.remove(step.path)
-              yield* SemanticSearch.maybeRemoveFile(step.path)
               break
             }
           }
@@ -1244,7 +1207,7 @@ export const AgentToolHandlersNoDeps = AgentToolsWithSearch.toLayer(
  * @category Layers
  */
 export const AgentToolHandlers: Layer.Layer<
-  Tool.HandlersFor<typeof AgentToolsWithSearch.tools>,
+  Tool.HandlersFor<typeof AgentTools.tools>,
   never,
   | FileSystem.FileSystem
   | Path.Path

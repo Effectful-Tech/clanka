@@ -583,7 +583,6 @@ describe("executor capabilities", () => {
             seen: [],
           }),
           instructions: Option.none(),
-          supportsSearch: false,
           tools: ["readFile"],
           skills: [],
         }),

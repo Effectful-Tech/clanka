@@ -44,7 +44,6 @@ const capabilities = new AgentExecutor.Capabilities({
     seen: [],
   }),
   instructions: Option.none(),
-  supportsSearch: false,
   tools: [],
   skills: [],
 })

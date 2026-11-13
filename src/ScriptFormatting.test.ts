@@ -42,6 +42,14 @@ describe("formatScript", () => {
     expect(formatScript(output)).toBe(output)
   })
 
+  it("breaks statement blocks but not the expressions around them", () => {
+    const input = "const a=b/2;if(a){x()}else{y()}run(function(){go();});"
+    const output =
+      "const a=b/2;\nif(a){\nx()\n}else{\ny()\n}\nrun(function(){\ngo();\n});"
+    expect(formatScript(input)).toBe(output)
+    expect(formatScript(output)).toBe(output)
+  })
+
   it("preserves literals, comments, and line-sensitive expressions", () => {
     const input = [
       `const text="😀;{}";const re=/[;{}]/g;`,

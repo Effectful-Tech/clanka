@@ -1,5 +1,11 @@
 # clanka
 
+## 0.26.1
+
+### Patch Changes
+
+- [#322](https://github.com/Effectful-Tech/clanka/pull/322) [`567c481`](https://github.com/Effectful-Tech/clanka/commit/567c481ff48af30bbab17feb925a94cab9bed60c) Thanks [@tim-smart](https://github.com/tim-smart)! - Prefix task IDs with `bash_` or `subagent_` so their type is visible in tool results and completion notifications. Numeric task IDs are no longer supported: custom executors must allocate sub-agent IDs as `subagent_<n>`, and both sides of an RPC executor must be upgraded together.
+
 ## 0.26.0
 
 ### Minor Changes

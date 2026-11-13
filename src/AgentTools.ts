@@ -1282,15 +1282,15 @@ const decodeSubagent = decodeParams(
 )
 const decodeMessageAgent = decodeParams(
   AgentTools.tools.messageAgent.parametersSchema,
-  'messageAgent requires an options object, for example: messageAgent({ id: "3", message: "..." }).',
+  'messageAgent requires an options object, for example: messageAgent({ id: "subagent_3", message: "..." }).',
 )
 const decodeTaskOutput = decodeParams(
   AgentTools.tools.taskOutput.parametersSchema,
-  'taskOutput requires a task id, for example: taskOutput("1").',
+  'taskOutput requires a task id, for example: taskOutput("bash_1").',
 )
 const decodeWaitTasks = decodeParams(
   AgentTools.tools.waitTasks.parametersSchema,
-  'waitTasks requires an options object, for example: waitTasks({ ids: ["3", "4"] }) or waitTasks({ ids: ["3"], timeoutMs: 60000 }).',
+  'waitTasks requires an options object, for example: waitTasks({ ids: ["subagent_3", "bash_4"] }) or waitTasks({ ids: ["subagent_3"], timeoutMs: 60000 }).',
 )
 
 /** The caller's `bash` timeout, which also bounds `waitTasks`. */
@@ -1298,7 +1298,7 @@ const bashTimeoutMs = (limits: typeof CommandLimits.Service) =>
   Duration.toMillis(limits.timeout ?? defaultBashTimeout)
 const decodeStopTask = decodeParams(
   AgentTools.tools.stopTask.parametersSchema,
-  'stopTask requires a task id, for example: stopTask("1").',
+  'stopTask requires a task id, for example: stopTask("bash_1").',
 )
 
 interface RunningCommand {

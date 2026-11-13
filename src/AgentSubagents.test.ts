@@ -413,6 +413,31 @@ for (const [executorName, executorLayer] of executors) {
         )
       }))
 
+    test("a failed foreground child reports its usable task ID", () =>
+      Effect.gen(function* () {
+        const { exit, calls } = yield* runAgent({
+          conversationMode: true,
+          respond: (call) => {
+            if (call.role === "child") return Stream.fail(invalidRequest)
+            if (call.index === 0) {
+              return Stream.make(
+                toolCall(
+                  "foreground",
+                  'await subagent({ prompt: "TASK-CHILD" })',
+                ),
+              )
+            }
+            return Stream.fromIterable(text("recovered"))
+          },
+        })
+        assert.deepStrictEqual(exit, Exit.succeed("recovered"))
+        const root = calls.filter((call) => call.role === "root")
+        assert.include(
+          lastToolResult(root[1]!.prompt),
+          "Sub-agent subagent_1 failed",
+        )
+      }))
+
     test("a failed background child is pushed as failed and the parent keeps going", () =>
       Effect.gen(function* () {
         const childRelease = Latch.makeUnsafe(false)

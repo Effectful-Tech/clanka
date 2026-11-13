@@ -695,6 +695,10 @@ describe("Agent usage", () => {
             },
           })
           assert.deepStrictEqual(exit, Exit.succeed("complete"))
+          assert.deepStrictEqual(
+            outputsOfTag(outputs, "SubagentStart").map((part) => part.id),
+            [1, 2, 1],
+          )
           const usage = outputsOfTag(outputs, "Usage")
           // Child context windows must never replace the parent's window.
           assert.deepStrictEqual(

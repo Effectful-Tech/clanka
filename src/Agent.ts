@@ -654,7 +654,9 @@ export const makeWith = Effect.fnUntraced(function* <
         environment,
       }) {
         const child: Child = {
-          id: Number(id.slice("subagent_".length)),
+          id: Number(
+            id.startsWith("subagent_") ? id.slice("subagent_".length) : id,
+          ),
           taskId: id,
           taskOwner: crypto.randomUUID(),
           prompt,
@@ -686,7 +688,7 @@ ${prompt}`,
         if (turn.status !== "completed") {
           return yield* Effect.die(
             new Error(
-              `Sub-agent ${child.id} ${turn.status}${turn.output ? `: ${turn.output}` : ""}`,
+              `Sub-agent ${child.taskId} ${turn.status}${turn.output ? `: ${turn.output}` : ""}`,
             ),
           )
         }

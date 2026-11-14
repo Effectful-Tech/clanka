@@ -1,5 +1,13 @@
 # clanka
 
+## 0.28.0
+
+### Minor Changes
+
+- [#326](https://github.com/Effectful-Tech/clanka/pull/326) [`28d4058`](https://github.com/Effectful-Tech/clanka/commit/28d4058b060e79c8e289d393f815895d52f10b47) Thanks [@tim-smart](https://github.com/tim-smart)! - `McpServers.layer` takes an optional second argument that picks an OAuth provider for each HTTP server.
+
+  The function receives the server's name and HTTP config, and returns an `OAuthClientProvider` from `@modelcontextprotocol/sdk/client/auth.js`, or `undefined`. The provider goes to the SDK transport as `authProvider`, which sends its token as a bearer token and calls it when the server answers 401. If the provider throws, for example from `redirectToAuthorization`, the server is `Failed` with that error, or the tool call fails with it. Static headers are still sent. Servers without a provider work as before.
+
 ## 0.27.0
 
 ### Minor Changes

@@ -98,11 +98,17 @@ export const makeFakeServer = (options: {
  * - `endSession` answers every later request with 404, as a server does for
  *   a session it has ended. `afterEnd` lists those requests as
  *   `"<HTTP method> <JSON-RPC method>"`.
+ * - `authorize`, when given, answers 401 to a request whose `Authorization`
+ *   header it rejects, and 404 to any other path, so OAuth discovery finds no
+ *   metadata.
  */
 export const listenHttp = async (
   server: Server,
   path = "/mcp",
-  options: { readonly resumable?: boolean } = {},
+  options: {
+    readonly resumable?: boolean
+    readonly authorize?: (authorization: string | undefined) => boolean
+  } = {},
 ): Promise<{
   readonly url: string
   readonly authorization: ReadonlyArray<string | undefined>
@@ -123,6 +129,16 @@ export const listenHttp = async (
   let ended = false
   const http = Http.createServer((request, response) => {
     authorization.push(request.headers.authorization)
+    if (options.authorize !== undefined) {
+      if (new URL(request.url ?? "/", "http://localhost").pathname !== path) {
+        response.writeHead(404).end()
+        return
+      }
+      if (!options.authorize(request.headers.authorization)) {
+        response.writeHead(401, { "www-authenticate": "Bearer" }).end()
+        return
+      }
+    }
     if (!ended) {
       void transport.handleRequest(request, response)
       return

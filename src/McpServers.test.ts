@@ -21,6 +21,7 @@ import * as Toolkit from "effect/ai/Toolkit"
 import * as RpcClient from "effect/rpc/RpcClient"
 import * as RpcSerialization from "effect/rpc/RpcSerialization"
 import * as RpcServer from "effect/rpc/RpcServer"
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
@@ -340,6 +341,33 @@ await taskComplete(JSON.stringify({ first, second: await attempt(mcp.remote.ping
       ["POST tools/call"],
     )
   }).pipe(Effect.scoped)
+
+// An OAuth provider holding `token`, if any. Starting a login records the
+// authorization URL and throws `loginError`, as a caller that cannot open a
+// browser does.
+const oauth = (options: {
+  readonly token?: string
+  readonly loginError: string
+}) => {
+  const logins: Array<URL> = []
+  const provider: OAuthClientProvider = {
+    redirectUrl: "http://127.0.0.1/callback",
+    clientMetadata: { redirect_uris: ["http://127.0.0.1/callback"] },
+    clientInformation: () => ({ client_id: "clanka-test" }),
+    tokens: () =>
+      options.token === undefined
+        ? undefined
+        : { access_token: options.token, token_type: "Bearer" },
+    saveTokens: () => {},
+    saveCodeVerifier: () => {},
+    codeVerifier: () => "verifier",
+    redirectToAuthorization: (url) => {
+      logins.push(url)
+      throw new Error(options.loginError)
+    },
+  }
+  return { provider, logins }
+}
 
 // --- lifecycle and prompt ----------------------------------------------------
 
@@ -1045,6 +1073,176 @@ console.log(await mcp.fake.screenshot({}))`
       for (const header of remote.authorization) {
         assert.strictEqual(header, "Bearer secret")
       }
+    }).pipe(Effect.scoped),
+  )
+
+  // --- OAuth -------------------------------------------------------------------
+
+  it.live("http servers are sent the OAuth provider's token", () =>
+    Effect.gen(function* () {
+      const remote = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          listenHttp(makeFakeServer({ tools: named("ping") }), "/mcp", {
+            authorize: (header) => header === "Bearer good",
+          }),
+        ),
+        (remote) => Effect.promise(remote.close),
+      )
+      const { provider, logins } = oauth({
+        token: "good",
+        loginError: "login required",
+      })
+      const asked: Array<string> = []
+      const { summary, status } = yield* Effect.gen(function* () {
+        const { summary } = yield* runAgent({
+          script: "await taskComplete(await mcp.remote.ping({}))",
+        })
+        return { summary, status: yield* currentStatus }
+      }).pipe(
+        Effect.provide(
+          McpServers.layer(
+            { remote: { type: "http", url: remote.url } },
+            (name, config) => {
+              asked.push(`${name} ${config.url}`)
+              return provider
+            },
+          ),
+        ),
+      )
+      assert.strictEqual(summary, "ping")
+      assert.strictEqual(status["remote"]?._tag, "Connected")
+      assert.deepStrictEqual(asked, [`remote ${remote.url}`])
+      assert.isEmpty(logins)
+      assert.isNotEmpty(remote.authorization)
+      for (const header of remote.authorization) {
+        assert.strictEqual(header, "Bearer good")
+      }
+    }).pipe(Effect.scoped),
+  )
+
+  it.live(
+    "a login the provider cannot start fails the server with its error",
+    () =>
+      Effect.gen(function* () {
+        const remote = yield* Effect.acquireRelease(
+          Effect.promise(() =>
+            listenHttp(makeFakeServer({ tools: named("ping") }), "/mcp", {
+              authorize: () => false,
+            }),
+          ),
+          (remote) => Effect.promise(remote.close),
+        )
+        const { provider, logins } = oauth({
+          loginError: "remote needs login\nopen the browser to continue",
+        })
+        const { system, status } = yield* Effect.gen(function* () {
+          const { system } = yield* runAgent({
+            script: "await taskComplete(typeof mcp)",
+          })
+          return { system, status: yield* currentStatus }
+        }).pipe(
+          Effect.provide(
+            McpServers.layer(
+              { remote: { type: "http", url: remote.url } },
+              () => provider,
+            ),
+          ),
+        )
+        assert.strictEqual(
+          failure(status, "remote"),
+          "remote needs login\nopen the browser to continue",
+        )
+        // The prompt shows the first line.
+        assert.include(
+          system,
+          "- remote: failed to connect: remote needs login",
+        )
+        assert.notInclude(system, "open the browser")
+        assert.strictEqual(logins.length, 1)
+        assert.strictEqual(logins[0]!.pathname, "/authorize")
+      }).pipe(Effect.scoped),
+  )
+
+  it.live(
+    "a token rejected during a call fails the call with the provider's error",
+    () =>
+      Effect.gen(function* () {
+        let revoked = false
+        const remote = yield* Effect.acquireRelease(
+          Effect.promise(() =>
+            listenHttp(
+              makeFakeServer({
+                tools: [
+                  { name: "ping", call: () => text("pong") },
+                  {
+                    name: "revoke",
+                    call: () => {
+                      revoked = true
+                      return text("revoked")
+                    },
+                  },
+                ],
+              }),
+              "/mcp",
+              { authorize: (header) => header === "Bearer good" && !revoked },
+            ),
+          ),
+          (remote) => Effect.promise(remote.close),
+        )
+        const other = yield* Effect.acquireRelease(
+          Effect.promise(() =>
+            listenHttp(makeFakeServer({ tools: named("ping") })),
+          ),
+          (other) => Effect.promise(other.close),
+        )
+        const { provider, logins } = oauth({
+          token: "good",
+          loginError: "remote needs login",
+        })
+        const { summary, status } = yield* Effect.gen(function* () {
+          const { summary } = yield* runAgent({
+            script: `${attempt}
+await mcp.remote.revoke({})
+const remote = await attempt(mcp.remote.ping({}))
+await taskComplete(JSON.stringify({ remote, other: await attempt(mcp.other.ping({})) }))`,
+          })
+          return { summary, status: yield* currentStatus }
+        }).pipe(
+          Effect.provide(
+            McpServers.layer(
+              {
+                remote: { type: "http", url: remote.url },
+                other: { type: "http", url: other.url },
+              },
+              (name) => (name === "remote" ? provider : undefined),
+            ),
+          ),
+        )
+        assert.deepStrictEqual(JSON.parse(summary), {
+          remote: "ERR mcp.remote.ping: remote needs login",
+          other: "ping",
+        })
+        assert.strictEqual(logins.length, 1)
+        assert.strictEqual(status["other"]?._tag, "Connected")
+      }).pipe(Effect.scoped),
+  )
+
+  it.live("without an OAuth provider a 401 fails the server", () =>
+    Effect.gen(function* () {
+      const remote = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          listenHttp(makeFakeServer({ tools: named("ping") }), "/mcp", {
+            authorize: () => false,
+          }),
+        ),
+        (remote) => Effect.promise(remote.close),
+      )
+      const status = yield* currentStatus.pipe(
+        Effect.provide(
+          McpServers.layer({ remote: { type: "http", url: remote.url } }),
+        ),
+      )
+      assert.include(failure(status, "remote"), "Streamable HTTP error")
     }).pipe(Effect.scoped),
   )
 })

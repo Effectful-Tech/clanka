@@ -9,6 +9,7 @@
  */
 import * as NodePath from "node:path"
 import type { Readable } from "node:stream"
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import {
@@ -85,6 +86,26 @@ export const HttpServerConfig = Schema.Struct({
   connectTimeout: Schema.optionalKey(Timeout),
   callTimeout: Schema.optionalKey(Timeout),
 })
+
+/**
+ * @since 1.0.0
+ * @category Config
+ */
+export type HttpServerConfig = typeof HttpServerConfig.Type
+
+/**
+ * Chooses the OAuth provider for an HTTP server, or none. The provider is
+ * passed to the SDK transport, which sends its token and calls it when the
+ * server answers 401. An error the provider throws fails the connection or
+ * the tool call with its message.
+ *
+ * @since 1.0.0
+ * @category Config
+ */
+export type AuthProviderFor = (
+  name: string,
+  config: HttpServerConfig,
+) => OAuthClientProvider | undefined
 
 /**
  * @since 1.0.0
@@ -202,14 +223,20 @@ export class McpServers extends Context.Service<
  * Connects every server when built and closes them with its scope. A server
  * that cannot connect is `Failed`; building the layer never fails.
  *
+ * `authProvider` is called once for each HTTP server, when the layer is
+ * built.
+ *
  * @since 1.0.0
  * @category Layers
  */
 export const layer = (
   config: Readonly<Record<string, ServerEntry>>,
+  authProvider?: AuthProviderFor | undefined,
 ): Layer.Layer<McpServers> =>
   fromEntries(
-    Object.entries(config).map(([name, entry]) => toEntry(name, entry)),
+    Object.entries(config).map(([name, entry]) =>
+      toEntry(name, entry, authProvider),
+    ),
   )
 
 /**
@@ -318,7 +345,11 @@ type Entry =
     }
   | { readonly name: string; readonly error: string }
 
-const toEntry = (name: string, entry: ServerEntry): Entry => {
+const toEntry = (
+  name: string,
+  entry: ServerEntry,
+  authProvider: AuthProviderFor | undefined,
+): Entry => {
   switch (entry.type) {
     case "unavailable":
       return { name, error: entry.error }
@@ -348,6 +379,7 @@ const toEntry = (name: string, entry: ServerEntry): Entry => {
           transport: new HttpTransport(
             new URL(entry.url),
             unwrapRecord(entry.headers),
+            authProvider?.(name, entry),
           ) as Transport,
           stderr: undefined,
         }),
@@ -365,7 +397,11 @@ const toEntry = (name: string, entry: ServerEntry): Entry => {
 class HttpTransport extends StreamableHTTPClientTransport {
   readonly reconnection: { maxRetries: number }
 
-  constructor(url: URL, headers: Record<string, string>) {
+  constructor(
+    url: URL,
+    headers: Record<string, string>,
+    authProvider: OAuthClientProvider | undefined,
+  ) {
     // The SDK defaults.
     const reconnection = {
       initialReconnectionDelay: 1000,
@@ -373,7 +409,11 @@ class HttpTransport extends StreamableHTTPClientTransport {
       reconnectionDelayGrowFactor: 1.5,
       maxRetries: 2,
     }
-    super(url, { requestInit: { headers }, reconnectionOptions: reconnection })
+    super(url, {
+      requestInit: { headers },
+      reconnectionOptions: reconnection,
+      ...(authProvider === undefined ? {} : { authProvider }),
+    })
     this.reconnection = reconnection
   }
 

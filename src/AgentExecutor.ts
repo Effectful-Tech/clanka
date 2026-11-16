@@ -1576,6 +1576,8 @@ function runScriptWorker(load: (id: string) => unknown): void {
       inspectOptions: { colors: false, compact: true, breakLength: Infinity },
     }),
     ...(data.offersFetch ? { fetch } : {}),
+    AbortSignal,
+    AbortController,
     process: undefined,
   }
   // MCP tools are named "<server>.<tool>" and bound as `mcp[server][tool]`.

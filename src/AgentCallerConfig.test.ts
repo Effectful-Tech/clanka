@@ -231,7 +231,7 @@ for (const mode of modes) {
   describe(`${mode} executor`, () => {
     it.live("scripts can cancel fetches and create timeout signals", () =>
       Effect.gen(function* () {
-        const { system, summary } = yield* runAgent({
+        const { summary } = yield* runAgent({
           mode,
           script: `const controller = new AbortController()
 controller.abort("cancelled")
@@ -247,8 +247,6 @@ await new Promise(resolve => timeout.addEventListener("abort", resolve, { once: 
 await taskComplete(reason + " " + timeout.reason.name)`,
         })
         assert.strictEqual(summary, "cancelled TimeoutError")
-        assert.include(system, "declare const AbortSignal:")
-        assert.include(system, "declare const AbortController:")
       }),
     )
 

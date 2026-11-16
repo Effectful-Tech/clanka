@@ -419,6 +419,7 @@ const makeLocalWith = Effect.fnUntraced(function* <
   const tools = yield* AllTools
   const toolsDts = [
     renderer.render(AllTools),
+    "/** Create signals for cancelling asynchronous operations. */\ndeclare const AbortSignal: typeof globalThis.AbortSignal\ndeclare const AbortController: typeof globalThis.AbortController",
     offersFetch
       ? "/** The global Fetch API available for making HTTP requests. */\ndeclare const fetch: typeof globalThis.fetch"
       : "",
@@ -1576,6 +1577,8 @@ function runScriptWorker(load: (id: string) => unknown): void {
       inspectOptions: { colors: false, compact: true, breakLength: Infinity },
     }),
     ...(data.offersFetch ? { fetch } : {}),
+    AbortSignal,
+    AbortController,
     process: undefined,
   }
   // MCP tools are named "<server>.<tool>" and bound as `mcp[server][tool]`.

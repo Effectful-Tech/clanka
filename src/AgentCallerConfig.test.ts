@@ -229,6 +229,29 @@ const execute = (
 // Where the RPC executor takes its own path.
 for (const mode of modes) {
   describe(`${mode} executor`, () => {
+    it.live("scripts can cancel fetches and create timeout signals", () =>
+      Effect.gen(function* () {
+        const { system, summary } = yield* runAgent({
+          mode,
+          script: `const controller = new AbortController()
+controller.abort("cancelled")
+const signal = AbortSignal.any([controller.signal, AbortSignal.abort("other")])
+let reason
+try {
+  await fetch("data:text/plain,hello", { signal })
+} catch (error) {
+  reason = error
+}
+const timeout = AbortSignal.timeout(1)
+await new Promise(resolve => timeout.addEventListener("abort", resolve, { once: true }))
+await taskComplete(reason + " " + timeout.reason.name)`,
+        })
+        assert.strictEqual(summary, "cancelled TimeoutError")
+        assert.include(system, "declare const AbortSignal:")
+        assert.include(system, "declare const AbortController:")
+      }),
+    )
+
     it.live("fetch is available by default and can be left out", () =>
       Effect.gen(function* () {
         const enabled = yield* runAgent({

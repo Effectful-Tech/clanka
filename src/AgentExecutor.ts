@@ -1578,6 +1578,8 @@ function runScriptWorker(load: (id: string) => unknown): void {
     ...(data.offersFetch ? { fetch } : {}),
     AbortSignal,
     AbortController,
+    TextEncoder,
+    TextDecoder,
     process: undefined,
   }
   // MCP tools are named "<server>.<tool>" and bound as `mcp[server][tool]`.

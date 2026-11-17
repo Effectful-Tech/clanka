@@ -229,6 +229,22 @@ const execute = (
 // Where the RPC executor takes its own path.
 for (const mode of modes) {
   describe(`${mode} executor`, () => {
+    it.live("scripts can encode and decode text without type docs", () =>
+      Effect.gen(function* () {
+        const { summary, system } = yield* runAgent({
+          mode,
+          script: `const bytes = new TextEncoder().encode("héllo 🌍")
+const decoded = new TextDecoder().decode(bytes)
+await taskComplete(JSON.stringify({ bytes: Array.from(bytes), decoded }))`,
+        })
+        assert.deepStrictEqual(JSON.parse(summary), {
+          bytes: [104, 195, 169, 108, 108, 111, 32, 240, 159, 140, 141],
+          decoded: "héllo 🌍",
+        })
+        assert.notMatch(system, /TextEncoder|TextDecoder/)
+      }),
+    )
+
     it.live("scripts can cancel fetches and create timeout signals", () =>
       Effect.gen(function* () {
         const { summary } = yield* runAgent({

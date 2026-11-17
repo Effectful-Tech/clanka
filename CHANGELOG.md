@@ -1,5 +1,11 @@
 # clanka
 
+## 0.28.2
+
+### Patch Changes
+
+- [#330](https://github.com/Effectful-Tech/clanka/pull/330) [`d1b5d13`](https://github.com/Effectful-Tech/clanka/commit/d1b5d13da462d1172384619f3e499512d3164219) Thanks [@tim-smart](https://github.com/tim-smart)! - Expose TextEncoder and TextDecoder in scripts without adding type docs to the prompt.
+
 ## 0.28.1
 
 ### Patch Changes

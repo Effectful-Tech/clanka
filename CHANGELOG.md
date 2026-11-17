@@ -1,5 +1,11 @@
 # clanka
 
+## 0.28.1
+
+### Patch Changes
+
+- [#328](https://github.com/Effectful-Tech/clanka/pull/328) [`eb420e3`](https://github.com/Effectful-Tech/clanka/commit/eb420e301f6460d11e4f0caae4cb734113eb5236) Thanks [@tim-smart](https://github.com/tim-smart)! - Expose AbortSignal and AbortController in scripts, including timeout and combined signals for cancelling fetch requests.
+
 ## 0.28.0
 
 ### Minor Changes

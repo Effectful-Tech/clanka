@@ -102,7 +102,7 @@ export const Task = Schema.Struct({
   }),
   kind: TaskKind,
   status: TaskStatus,
-  /** The bash command, or the sub-agent's prompt. */
+  /** The description supplied when the task was started. */
   description: Schema.String,
   /** Output so far, a background-running notice after a timeout, or the final output/error. */
   output: Schema.String,
@@ -134,6 +134,7 @@ export interface AgentTasks {
   readonly subagent: (options: {
     readonly id: string
     readonly prompt: string
+    readonly description: string
     readonly background: boolean
   }) => Effect.Effect<Task>
   /**
@@ -311,6 +312,9 @@ export const makeBashTool = (timeout: Duration.Duration) =>
     description: "Run a bash command and return a task.",
     parameters: Schema.Struct({
       command: Schema.String,
+      description: Schema.String.annotate({
+        description: "What the command is doing",
+      }),
       timeoutMs: Schema.optional(Schema.Finite).annotate({
         documentation: `How long to wait in ms before moving the task to the background (default and max: ${Duration.toMillis(timeout)})`,
       }),
@@ -400,6 +404,9 @@ export const AgentTools = Toolkit.make(
       "Delegate a task to another software engineer / sub-agent. With `background: true` the sub-agent works in the background, and its result is sent to you when it finishes.",
     parameters: Schema.Struct({
       prompt: Schema.String,
+      description: Schema.String.annotate({
+        description: "What the subagent is doing",
+      }),
       background: Schema.optional(Schema.Boolean),
     }),
     success: Task,
@@ -702,11 +709,8 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
       return `Image attached: ${fileName}`
     })
 
-    const bash = Effect.fn("AgentTools.bash")(function* (options: {
-      readonly command: string
-      readonly timeoutMs?: number | undefined
-      readonly background?: boolean | undefined
-    }) {
+    const bash = Effect.fn("AgentTools.bash")(function* (input: unknown) {
+      const options = yield* decodeBash(input)
       const maxMs = bashTimeoutMs(yield* CommandLimits)
       const timeoutMs = Math.min(options.timeoutMs ?? maxMs, maxMs)
       yield* Effect.logInfo(`Calling "bash"`).pipe(
@@ -721,7 +725,7 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
         stdin: "ignore",
       })
       const entry = yield* addBashTask(
-        options.command,
+        options.description,
         yield* startCommand(cmd, true),
       )
       if (options.background !== true) {
@@ -898,7 +902,11 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
       }),
       bash,
       run: Effect.fn("AgentTools.run")(function* (command) {
-        const task = yield* bash({ command, timeoutMs: 120_000 })
+        const task = yield* bash({
+          command,
+          description: "",
+          timeoutMs: 120_000,
+        })
         return task.output
       }),
       taskOutput: Effect.fn("AgentTools.taskOutput")(function* (
@@ -1163,13 +1171,22 @@ export const AgentToolHandlersNoDeps = AgentTools.toLayer(
         return `Success. Updated the following files:\n${out.join("\n")}`
       }, Effect.orDie),
       subagent: Effect.fn("AgentTools.subagent")(function* (options: unknown) {
-        const { prompt, background = false } = yield* decodeSubagent(options)
+        const {
+          prompt,
+          description,
+          background = false,
+        } = yield* decodeSubagent(options)
         yield* Effect.logInfo(`Calling "subagent"`).pipe(
           Effect.annotateLogs({ background }),
         )
         const id = yield* registerAgentTask
         const agentTasks = yield* AgentTaskExecutor
-        return yield* agentTasks.subagent({ id, prompt, background })
+        return yield* agentTasks.subagent({
+          id,
+          prompt,
+          background,
+          description,
+        })
       }),
       messageAgent: Effect.fn("AgentTools.messageAgent")(function* (
         input: unknown,
@@ -1238,9 +1255,13 @@ const decodeParams = <S extends Schema.Decoder<unknown>>(
   return (input: unknown) => Effect.mapError(decode(input), () => usage)
 }
 
+const decodeBash = decodeParams(
+  AgentTools.tools.bash.parametersSchema,
+  'bash requires an options object, for example: bash({ command: "...", description: "..." }).',
+)
 const decodeSubagent = decodeParams(
   AgentTools.tools.subagent.parametersSchema,
-  'subagent requires an options object, for example: subagent({ prompt: "..." }) or subagent({ prompt: "...", background: true }).',
+  'subagent requires an options object, for example: subagent({ prompt: "...", description: "...", background: true }).',
 )
 const decodeMessageAgent = decodeParams(
   AgentTools.tools.messageAgent.parametersSchema,

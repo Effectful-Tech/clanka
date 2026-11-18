@@ -182,6 +182,7 @@ describe("Agent", () => {
             (script === "done"
               ? onTaskComplete("done")
               : agentTasks.subagent({
+                  description: "Handle child request",
                   id: "subagent_1",
                   prompt: "TASK-CHILD",
                   background: false,
@@ -632,6 +633,7 @@ describe("Agent usage", () => {
               Stream.fromEffect(
                 Effect.gen(function* () {
                   const task = yield* agentTasks.subagent({
+                    description: "Handle child request",
                     id: script,
                     prompt: "nested task",
                     background,
@@ -741,6 +743,7 @@ describe("Agent usage", () => {
                   update: Option.none(),
                 })
                 const background = yield* agentTasks.subagent({
+                  description: "Handle child request",
                   id: "subagent_1",
                   prompt: "sibling-b",
                   background: true,
@@ -753,6 +756,7 @@ describe("Agent usage", () => {
                     Effect.forkScoped,
                   )
                 yield* agentTasks.subagent({
+                  description: "Handle child request",
                   id: "subagent_2",
                   prompt: "sibling-a",
                   background: false,

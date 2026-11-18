@@ -168,6 +168,7 @@ export interface ExecuteAgentTasks extends Omit<AgentTasks, "subagent"> {
   readonly subagent: (options: {
     readonly id: string
     readonly prompt: string
+    readonly description: string
     readonly background: boolean
     readonly environment: EnvironmentUpdate
   }) => Effect.Effect<Task>
@@ -1101,6 +1102,7 @@ export const AgentRequest = Schema.TaggedUnion({
   Subagent: {
     id: Schema.String,
     prompt: Schema.String,
+    description: Schema.String,
     background: Schema.Boolean,
     environment: EnvironmentUpdate,
   },

@@ -24,11 +24,15 @@ import * as AgentExecutor from "./AgentExecutor.ts"
 import { agentTasksUnavailable, type Task } from "./AgentTools.ts"
 
 // The task a stub `subagent` resolves with once its agent has finished.
-const completedAgent = (id: string, prompt: string, output: string): Task => ({
+const completedAgent = (
+  id: string,
+  description: string,
+  output: string,
+): Task => ({
   id,
   kind: "agent",
   status: "completed",
-  description: prompt,
+  description,
   output,
 })
 
@@ -87,17 +91,17 @@ describe("RPC subagent executor", () => {
                 environment,
                 onEnvironment: () => Effect.void,
                 script:
-                  'console.log("first:" + (await subagent({ prompt: "first" })).output)',
+                  'console.log("first:" + (await subagent({ description: "Handle child request", prompt: "first" })).output)',
                 onTaskComplete: () => Effect.void,
                 onImage: () => Effect.void,
                 agentTasks: {
                   ...agentTasksUnavailable,
-                  subagent: ({ id, prompt }) =>
+                  subagent: ({ id, prompt, description }) =>
                     Effect.gen(function* () {
                       assert.strictEqual(prompt, "first")
                       yield* Deferred.succeed(firstStarted, undefined)
                       yield* Deferred.await(secondStarted)
-                      return completedAgent(id, prompt, "first-output")
+                      return completedAgent(id, description, "first-output")
                     }),
                 },
               })
@@ -107,17 +111,17 @@ describe("RPC subagent executor", () => {
                 environment,
                 onEnvironment: () => Effect.void,
                 script:
-                  'console.log("second:" + (await subagent({ prompt: "second" })).output)',
+                  'console.log("second:" + (await subagent({ description: "Handle child request", prompt: "second" })).output)',
                 onTaskComplete: () => Effect.void,
                 onImage: () => Effect.void,
                 agentTasks: {
                   ...agentTasksUnavailable,
-                  subagent: ({ id, prompt }) =>
+                  subagent: ({ id, prompt, description }) =>
                     Effect.gen(function* () {
                       assert.strictEqual(prompt, "second")
                       yield* Deferred.succeed(secondStarted, undefined)
                       yield* Deferred.await(firstStarted)
-                      return completedAgent(id, prompt, "second-output")
+                      return completedAgent(id, description, "second-output")
                     }),
                 },
               })
@@ -142,12 +146,12 @@ describe("RPC subagent executor", () => {
               environment,
               onEnvironment: () => Effect.void,
               script:
-                'console.log("parent:" + (await subagent({ prompt: "outer" })).output)',
+                'console.log("parent:" + (await subagent({ description: "Handle child request", prompt: "outer" })).output)',
               onTaskComplete: () => Effect.void,
               onImage: () => Effect.void,
               agentTasks: {
                 ...agentTasksUnavailable,
-                subagent: ({ id, prompt }) =>
+                subagent: ({ id, prompt, description }) =>
                   Effect.gen(function* () {
                     assert.strictEqual(prompt, "outer")
                     const childOutput = yield* executor
@@ -155,17 +159,21 @@ describe("RPC subagent executor", () => {
                         environment,
                         onEnvironment: () => Effect.void,
                         script:
-                          'console.log("child:" + (await subagent({ prompt: "inner" })).output)',
+                          'console.log("child:" + (await subagent({ description: "Handle child request", prompt: "inner" })).output)',
                         onTaskComplete: () => Effect.void,
                         onImage: () => Effect.void,
                         agentTasks: {
                           ...agentTasksUnavailable,
-                          subagent: ({ id: innerId, prompt: innerPrompt }) =>
+                          subagent: ({
+                            id: innerId,
+                            prompt: innerPrompt,
+                            description: innerDescription,
+                          }) =>
                             Effect.sync(() => {
                               assert.strictEqual(innerPrompt, "inner")
                               return completedAgent(
                                 innerId,
-                                innerPrompt,
+                                innerDescription,
                                 "inner-output",
                               )
                             }),
@@ -177,7 +185,7 @@ describe("RPC subagent executor", () => {
                     )
                     return completedAgent(
                       id,
-                      prompt,
+                      description,
                       childOutput.join("").trim().split("\n").at(-1)!,
                     )
                   }),
@@ -558,6 +566,19 @@ await sleep(60000)`,
   })
 
   describe(`${mode} executor limits`, () => {
+    it.live("rejects bash and subagent calls without descriptions", () =>
+      Effect.gen(function* () {
+        const output = yield* runScript(`for (const [name, start] of [
+  ["bash", () => bash({ command: "true" })],
+  ["subagent", () => subagent({ prompt: "child" })],
+]) {
+  try { await start() } catch (error) { console.log(name + ":" + String(error)) }
+}`)
+        assert.match(output, /bash:.*description/)
+        assert.match(output, /subagent:.*description/)
+      }).pipe(Effect.provide(executorLayer({}))),
+    )
+
     it.live("run accepts only a string and returns command output", () =>
       Effect.gen(function* () {
         const output = yield* runScript(
@@ -581,6 +602,12 @@ await sleep(60000)`,
             JSON.parse(output.split("OUTPUT:")[1]!),
             'Task "bash_1" is still running in the background',
           )
+          assert.include(
+            yield* runScript(
+              'console.log("DESCRIPTION:" + JSON.stringify((await taskOutput("bash_1")).description))',
+            ),
+            'DESCRIPTION:""',
+          )
           assert.strictEqual(
             yield* waitForLog(environment.cwd, started),
             "start\n",
@@ -602,6 +629,7 @@ await sleep(60000)`,
         const { environment } = yield* executor.capabilities
         const output = yield* runScript(`
 const task = await bash({
+  description: "Wait for test signal",
   command: ${JSON.stringify(gatedCommand(environment.cwd))},
   background: true,
 })
@@ -611,7 +639,7 @@ console.log("RETURNED:", JSON.stringify(task))`)
           id: "bash_1",
           kind: "bash",
           status: "running",
-          description: gatedCommand(environment.cwd),
+          description: "Wait for test signal",
           output: "",
         })
         assert.strictEqual(
@@ -635,6 +663,7 @@ console.log("RETURNED:", JSON.stringify(task))`)
         const output = yield* runScript(`
 try {
   const result = await bash({
+    description: "Wait for test signal",
     command: ${JSON.stringify(command)},
     timeoutMs: 60000,
   })
@@ -647,7 +676,7 @@ try {
           id: "bash_1",
           kind: "bash",
           status: "running",
-          description: command,
+          description: "Wait for test signal",
           output: 'Task "bash_1" is still running in the background',
         })
         assert.strictEqual(
@@ -680,8 +709,8 @@ try {
         Effect.gen(function* () {
           const output = yield* runScript(`
 try {
-  console.log("OK:", JSON.stringify(await bash({ command: "echo hi" })))
-  console.log("RETURNED:", JSON.stringify(await bash({ command: "echo out && exit 3" })))
+  console.log("OK:", JSON.stringify(await bash({ description: "Print greeting", command: "echo hi" })))
+  console.log("RETURNED:", JSON.stringify(await bash({ description: "Simulate failure", command: "echo out && exit 3" })))
 } catch (error) {
   console.log("REJECTED:", String(error))
 }`)
@@ -691,7 +720,7 @@ try {
               id: "bash_1",
               kind: "bash",
               status: "completed",
-              description: "echo hi",
+              description: "Print greeting",
               output: "hi\n",
               exitCode: 0,
             },
@@ -712,6 +741,7 @@ try {
 const show = ({ id, kind, status, exitCode, output }) =>
   JSON.stringify({ id, kind, status, exitCode, output })
 const task = await bash({
+  description: "Wait for test signal",
   command: ${JSON.stringify(`${gatedCommand(environment.cwd)} && echo done`)},
   background: true,
 })
@@ -732,6 +762,7 @@ console.log("WAITED:", (await waitTasks({ ids: [task.id] })).map(show).join())`)
         const { environment } = yield* executor.capabilities
         const output = yield* runScript(`
 const task = await bash({
+  description: "Wait for test signal",
   command: ${JSON.stringify(`echo early && ${gatedCommand(environment.cwd)}`)},
   background: true,
 })
@@ -782,8 +813,8 @@ console.log("OUTPUTS:", JSON.stringify(waits.map((task) => task.output)))`)
             environment,
             onEnvironment: () => Effect.void,
             script: `
-await bash({ command: "true" })
-const { id, kind, status } = await bash({ command: "true", background: true })
+await bash({ description: "Check shell status", command: "true" })
+const { id, kind, status } = await bash({ description: "Check shell status", command: "true", background: true })
 console.log("RETURNED:", JSON.stringify({ id, kind, status }))`,
             onTaskComplete: () => Effect.void,
             agentTasks: agentTasksUnavailable,
@@ -820,8 +851,8 @@ const done = async (id) => {
   }
   return task
 }
-await bash({ command: ${JSON.stringify(gatedCommand(environment.cwd))}, background: true })
-await bash({ command: "echo out && exit 3", background: true })
+await bash({ description: "Wait for test signal", command: ${JSON.stringify(gatedCommand(environment.cwd))}, background: true })
+await bash({ description: "Simulate failure", command: "echo out && exit 3", background: true })
 console.log("RUNNING:", show(await taskOutput("bash_1")))
 await writeFile({ path: "gate", content: "" })
 console.log("COMPLETED:", show(await done("bash_1")))
@@ -847,7 +878,7 @@ console.log("FAILED:", show(await done("bash_2")))`)
         const { environment } = yield* executor.capabilities
         const output = yield* runScript(`
 const show = ({ id, kind, status }) => JSON.stringify({ id, kind, status })
-await bash({ command: ${JSON.stringify(gatedCommand(environment.cwd))}, background: true })
+await bash({ description: "Wait for test signal", command: ${JSON.stringify(gatedCommand(environment.cwd))}, background: true })
 try {
   await messageAgent({ id: "bash_1", message: "hello" })
 } catch (error) {
@@ -890,7 +921,7 @@ try {
           const executor = yield* AgentExecutor.AgentExecutor
           const { environment } = yield* executor.capabilities
           const fiber = yield* runScript(
-            `await bash({ command: ${JSON.stringify(gatedCommand(environment.cwd))} })`,
+            `await bash({ description: "Wait for test signal", command: ${JSON.stringify(gatedCommand(environment.cwd))} })`,
           ).pipe(Effect.forkScoped)
           yield* waitForLog(environment.cwd, started)
           yield* Fiber.interrupt(fiber)
@@ -914,7 +945,7 @@ try {
         const fs = yield* FileSystem.FileSystem
         const directory = yield* fs.makeTempDirectoryScoped()
         yield* runScript(
-          `await bash({ command: ${JSON.stringify(gatedCommand(directory))}, background: true })`,
+          `await bash({ description: "Wait for test signal", command: ${JSON.stringify(gatedCommand(directory))}, background: true })`,
         ).pipe(
           Effect.andThen(waitForLog(directory, started)),
           Effect.provide(executorLayer({})),
@@ -1049,7 +1080,7 @@ console.log("MAIN" + "_DONE")`)
               // `subagent` never finishes. The worker then exits through
               // the host's `process`, the way a crashed worker would.
               script: `
-subagent({ prompt: "never finishes" })
+subagent({ description: "Handle child request", prompt: "never finishes" })
 sleep(100).then(() => console.constructor.constructor("return process")().exit(7))`,
               onTaskComplete: () => Effect.void,
               agentTasks: {
@@ -1068,7 +1099,10 @@ sleep(100).then(() => console.constructor.constructor("return process")().exit(7
         const executor = yield* AgentExecutor.AgentExecutor
         const output = yield* executor.executeUnsafe({
           tool: "bash",
-          params: { command: "seq 1 1000000" },
+          params: {
+            command: "seq 1 1000000",
+            description: "Generate long output",
+          },
         })
         const { output: text } = output as { readonly output: string }
         assert.isBelow(text.length, 10_000 + 500)

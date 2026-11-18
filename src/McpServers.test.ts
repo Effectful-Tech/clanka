@@ -881,7 +881,7 @@ await taskComplete(JSON.stringify({ crashed, after: await attempt(mcp.fake.echo(
                 return "await taskComplete(await mcp.fake.ping({}))"
               }
               return call.index === 0
-                ? `const child = await subagent({ prompt: "TASK-CHILD" })
+                ? `const child = await subagent({ description: "Handle child request", prompt: "TASK-CHILD" })
 console.log(JSON.stringify(child))
 console.log(await mcp.fake.screenshot({}))`
                 : 'await taskComplete("done")'

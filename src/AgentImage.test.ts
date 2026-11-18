@@ -272,6 +272,7 @@ describe("Agent images", () => {
       const executor = makeExecutor(({ agentTasks, environment }) =>
         Stream.fromEffect(
           agentTasks.subagent({
+            description: "Handle child request",
             id: "subagent_1",
             prompt: "child task: describe the layout",
             background: false,

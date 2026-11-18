@@ -671,6 +671,7 @@ describe("Acp", () => {
               execute: ({ agentTasks, environment }) =>
                 Stream.fromEffect(
                   agentTasks.subagent({
+                    description: "Handle child request",
                     id: "subagent_1",
                     prompt,
                     background: false,
@@ -770,6 +771,7 @@ describe("Acp", () => {
                     executions++ === 0
                       ? agentTasks
                           .subagent({
+                            description: "Handle child request",
                             id: "subagent_1",
                             prompt: "TASK-CHILD",
                             background: true,
@@ -1035,7 +1037,7 @@ describe("Acp", () => {
         const sessionId = yield* Effect.scoped(
           Effect.gen(function* () {
             const server = yield* makeServer(
-              runsScript(`await bash({ command: "mkdir sub" })
+              runsScript(`await bash({ description: "Create test directories", command: "mkdir sub" })
 await changeDirectory("sub")`),
               yield* localExecutor(cwd),
             )
@@ -1053,7 +1055,7 @@ await changeDirectory("sub")`),
           Effect.gen(function* () {
             const server = yield* makeServer(
               runsScript(
-                `console.log("PWD:" + (await bash({ command: "pwd" })).output.trim())`,
+                `console.log("PWD:" + (await bash({ description: "Locate working directory", command: "pwd" })).output.trim())`,
               ),
               yield* localExecutor(cwd),
             )

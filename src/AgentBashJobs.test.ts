@@ -171,7 +171,7 @@ for (const [executorName, executorLayer] of executors) {
                 // next model call.
                 return execute(
                   "start",
-                  `await bash({ command: "echo JOB-OUTPUT && exit 3", background: true })
+                  `await bash({ description: "Simulate failure", command: "echo JOB-OUTPUT && exit 3", background: true })
 await sleep(500)`,
                 )
               case 1:
@@ -218,17 +218,17 @@ await sleep(500)`,
                 // Task 3 is never read, so it is the only push.
                 return execute(
                   "start",
-                  `await bash({ command: "sleep 30", background: true })
-await bash({ command: "echo READ", background: true })
-await bash({ command: "echo UNREAD", background: true })
+                  `await bash({ description: "Keep server running", command: "sleep 30", background: true })
+await bash({ description: "Print test output", command: "echo READ", background: true })
+await bash({ description: "Print test output", command: "echo UNREAD", background: true })
 await stopTask("bash_1")
 let task = await taskOutput("bash_2")
 while (task.status === "running") {
   await sleep(20)
   task = await taskOutput("bash_2")
 }
-await bash({ command: "echo FOREGROUND" })
-await waitTasks({ ids: [(await bash({ command: "echo WAITED", background: true })).id] })
+await bash({ description: "Print test output", command: "echo FOREGROUND" })
+await waitTasks({ ids: [(await bash({ description: "Print test output", command: "echo WAITED", background: true })).id] })
 await sleep(500)
 console.log("SCRIPT" + "-DONE")`,
                 )
@@ -259,7 +259,7 @@ console.log("SCRIPT" + "-DONE")`,
             index === 0
               ? execute(
                   "start",
-                  `await bash({ command: "sleep 30", background: true })`,
+                  `await bash({ description: "Keep server running", command: "sleep 30", background: true })`,
                 )
               : text("idle"),
           )
@@ -270,7 +270,7 @@ console.log("SCRIPT" + "-DONE")`,
             index === 0
               ? execute(
                   "complete",
-                  `await bash({ command: "sleep 30", background: true })
+                  `await bash({ description: "Keep server running", command: "sleep 30", background: true })
 await taskComplete("done")`,
                 )
               : text("taskComplete was rejected"),
@@ -329,7 +329,7 @@ describe("background bash tasks across versions", () => {
       const { environment } = yield* client.capabilities()
       const parts = yield* client
         .execute({
-          script: `await bash({ command: "true", background: true })`,
+          script: `await bash({ description: "Check shell status", command: "true", background: true })`,
           environment,
           loopTools: [],
         })

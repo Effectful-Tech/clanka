@@ -623,11 +623,11 @@ export const makeWith = Effect.fnUntraced(function* <
       )
     })
 
-    const childTask = ({ taskId, prompt, turn }: Child): Task => ({
+    const childTask = ({ taskId, description, turn }: Child): Task => ({
       id: taskId,
       kind: "agent",
       status: turn.status,
-      description: prompt,
+      description,
       output: turn.output ?? "",
     })
     // A final status returned to the script is not pushed as well.
@@ -650,6 +650,7 @@ export const makeWith = Effect.fnUntraced(function* <
       subagent: Effect.fnUntraced(function* ({
         id,
         prompt,
+        description,
         background,
         environment,
       }) {
@@ -657,7 +658,7 @@ export const makeWith = Effect.fnUntraced(function* <
           id: Number(id.slice("subagent_".length)),
           taskId: id,
           taskOwner: crypto.randomUUID(),
-          prompt,
+          description,
           history: MutableRef.make(Prompt.empty),
           environment: MutableRef.make(environment.environment),
           mailbox: makeMailbox(),
@@ -1646,7 +1647,7 @@ interface Child {
   readonly id: number
   /** The agent's own owner id for the tasks it starts. */
   readonly taskOwner: string
-  readonly prompt: string
+  readonly description: string
   /** Kept for the whole run so `messageAgent` can resume the agent. */
   readonly history: MutableRef.MutableRef<Prompt.Prompt>
   /** Starts as a copy of the parent's at the moment it was delegated. */

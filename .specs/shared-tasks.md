@@ -20,7 +20,7 @@ interface Task {
   id: string
   kind: "bash" | "agent"
   status: "running" | "completed" | "failed" | "stopped"
-  /** The bash command, or the sub-agent's prompt. */
+  /** The caller-supplied description, or an empty string for run. */
   description: string
   /** Output so far while running; the final output, or the error, once ended. */
   output: string
@@ -37,8 +37,8 @@ interface Task {
 ## Script API
 
 ```ts
-bash({ command, timeoutMs?, background? }): Task
-subagent({ prompt, background? }): Task
+bash({ command, description, timeoutMs?, background? }): Task
+subagent({ prompt, description, background? }): Task
 taskOutput(id): Task
 waitTasks({ ids, timeoutMs? }): Array<Task>
 stopTask(id): void

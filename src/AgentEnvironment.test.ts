@@ -277,7 +277,9 @@ for (const [mode, executorLayer] of Object.entries(executors)) {
                   return Stream.make(toolCall(`await changeDirectory("pkg")`))
                 case 3:
                   return Stream.make(
-                    toolCall(`await subagent({ prompt: "TASK-CHILD" })`),
+                    toolCall(
+                      `await subagent({ description: "Handle child request", prompt: "TASK-CHILD" })`,
+                    ),
                   )
                 default:
                   return Stream.fromIterable(text("done"))

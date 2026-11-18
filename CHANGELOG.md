@@ -1,5 +1,11 @@
 # clanka
 
+## 0.28.3
+
+### Patch Changes
+
+- [`c434c81`](https://github.com/Effectful-Tech/clanka/commit/c434c81cfa0a093d3ed3a79ff171018e0f97a279) Thanks [@tim-smart](https://github.com/tim-smart)! - Require a custom description when starting a `bash` or `subagent` task and return it in task details. Tasks started by `run` use an empty description.
+
 ## 0.28.2
 
 ### Patch Changes

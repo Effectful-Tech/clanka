@@ -64,11 +64,11 @@ subscription:
    clanka acp --model antigravity/gemini-3-flash/low
    ```
 
-2. On first use clanka prints a Google sign-in URL (in `clanka acp`, as a
-   warning on stderr) and listens on `http://localhost:51121` for the
-   redirect. Open the URL in a browser on the same machine and sign in. On a
-   remote machine, forward the port first, for example
-   `ssh -L 51121:localhost:51121 host`.
+2. On first use clanka prints a Google sign-in URL and prompts for an
+   authorization code. Open the URL in a browser, sign in, and paste the
+   code back into the terminal. `clanka acp` does not prompt for sign-in, so
+   sign in once from a terminal with `clanka --provider antigravity` before
+   using Antigravity models in ACP.
 3. clanka finds the account's Cloud Code project, or sets one up on the
    account's default tier, and stores the tokens and project in its
    key-value store. Later runs refresh the token without a browser.

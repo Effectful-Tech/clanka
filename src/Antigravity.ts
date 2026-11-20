@@ -283,7 +283,7 @@ export class AntigravityClient extends Context.Service<
   })
 
   /**
-   * Signs in on first use, through `OAuthCallback`, and keeps the tokens in
+   * Signs in on first use, through `AuthCodeHandler`, and keeps the tokens in
    * the `KeyValueStore`.
    */
   static readonly layer = Layer.effect(

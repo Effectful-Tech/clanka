@@ -16,13 +16,12 @@ several Google accounts.
 ## Library
 
 ```ts
-// OAuthCallback
-class OAuthCallback {
-  receive(options: { url: string; redirectUri: string }):
-    Effect<URLSearchParams, OAuthCallbackError>
+// AuthCodeHandler
+class AuthCodeHandler {
+  request(options: { url: string }): Effect<string, AuthCodeHandlerError>
 }
-layerLoopback(notify: (url: string) => Effect<void>): Layer<OAuthCallback>
-layerConsole, layerLog: Layer<OAuthCallback>
+layerPrompt: Layer<AuthCodeHandler, never, Prompt.Environment>
+layerUnavailable: Layer<AuthCodeHandler>
 
 // AntigravityAuth
 class TokenData { access; refresh; expires; project }
@@ -30,14 +29,14 @@ class AntigravityAuth {
   get: Effect<TokenData, AntigravityAuthError>
   authenticate: Effect<TokenData, AntigravityAuthError>
   logout: Effect<void>
-  static layer: Layer<AntigravityAuth, never, HttpClient | KeyValueStore | OAuthCallback>
+  static layer: Layer<AntigravityAuth, never, HttpClient | KeyValueStore | AuthCodeHandler>
 }
 
 // Antigravity
 class AntigravityClient {
   streamGenerateContent(options: { model; request: GenerateContentRequest }):
     Stream<GenerateContentChunk, AiError>
-  static layer: Layer<AntigravityClient, never, HttpClient | KeyValueStore | OAuthCallback>
+  static layer: Layer<AntigravityClient, never, HttpClient | KeyValueStore | AuthCodeHandler>
 }
 class MaxOutputTokens extends Context.Reference<number | undefined>
 model(model: string, options?: { reasoning?: { effort?: string } | null } & AgentModelConfig):
@@ -46,21 +45,20 @@ model(model: string, options?: { reasoning?: { effort?: string } | null } & Agen
 
 ## Sign-in
 
-- `layerLoopback` listens on the redirect URI's host and port, shows the
-  authorization URL through `notify`, answers 404 to requests without a
-  `code` or `error` on the redirect path, and returns the first
-  redirect's query. It gives up after five minutes. The CLI shows the URL on
-  the console; `clanka acp` logs it as a warning, since stdout carries ACP.
-- `AntigravityAuth` signs in as the Antigravity CLI (`agy`) does: its
+- `layerPrompt` prints the authorization URL and reads the pasted code with
+  `Prompt.String`, turning a quit (Ctrl-C) into `AuthCodeHandlerError`. When
+  stdin is not a terminal it fails immediately with instructions to sign in
+  from an interactive terminal. `clanka acp` uses `layerUnavailable`, which
+  always fails with the same instructions, because ACP owns stdin and stdout.
+- `AntigravityAuth` signs in as the Antigravity CLI (`agy`) does in full: its
   Google OAuth client, `/o/oauth2/auth`, its scopes (including `openid`),
-  S256 PKCE, `access_type=offline`, `prompt=consent` and a random `state`
-  it checks. `CLANKA_ANTIGRAVITY_CLIENT_ID` and
-  `CLANKA_ANTIGRAVITY_CLIENT_SECRET`, read through the `ConfigProvider` of
-  its layer when signing in or refreshing, name another client.
-- The redirect is the one difference. `agy` redirects to
-  `https://antigravity.google/oauth-callback` and asks for a pasted code,
-  which `clanka acp` cannot do while it owns stdin and stdout, so clanka
-  keeps the loopback redirect `http://localhost:51121/oauth-callback`.
+  S256 PKCE, `access_type=offline`, `prompt=consent`, a random `state`, and
+  redirect URI `https://antigravity.google/oauth-callback`. The callback page
+  shows only the authorization code, so `state` is sent without comparing it
+  on return; the pasted code is trimmed and rejected when empty.
+  `CLANKA_ANTIGRAVITY_CLIENT_ID` and `CLANKA_ANTIGRAVITY_CLIENT_SECRET`, read
+  through the `ConfigProvider` of its layer when signing in or refreshing,
+  name another client.
 - After the code exchange it calls `loadCodeAssist`. The project is the
   first of `cloudaicompanionProject`, `projectId` and `project` that is
   set, as an id or `{ id }`; `onboardUser` responses are read the same

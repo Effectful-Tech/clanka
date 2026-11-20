@@ -17,13 +17,13 @@ import type * as Socket from "effect/socket/Socket"
 import { ThoughtLevel } from "./Acp.ts"
 import * as Agent from "./Agent.ts"
 import * as Antigravity from "./Antigravity.ts"
+import type { AuthCodeHandler } from "./AuthCodeHandler.ts"
 import * as ClaudeAgent from "./ClaudeAgent.ts"
 import * as Codex from "./Codex.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Copilot from "./Copilot.ts"
 import type { DeviceCodeHandler } from "./DeviceCodeHandler.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
-import type { OAuthCallback } from "./OAuthCallback.ts"
 import * as OpenAiCompat from "./OpenAiCompat.ts"
 import * as Xai from "./Xai.ts"
 
@@ -74,7 +74,7 @@ const languageModel = (
   LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName,
   never,
   | DeviceCodeHandler
-  | OAuthCallback
+  | AuthCodeHandler
   | HttpClient.HttpClient
   | KeyValueStore.KeyValueStore
   | Socket.WebSocketConstructor

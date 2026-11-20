@@ -17,8 +17,8 @@ import {
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Antigravity from "./Antigravity.ts"
 import { AntigravityAuth, TokenData, toTokenStore } from "./AntigravityAuth.ts"
+import { AuthCodeHandler } from "./AuthCodeHandler.ts"
 import * as Compaction from "./Compaction.ts"
-import { OAuthCallback } from "./OAuthCallback.ts"
 
 const sse = (events: ReadonlyArray<unknown>) =>
   events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")
@@ -52,8 +52,8 @@ const bodyText = (request: HttpClientRequest.HttpClientRequest) => {
   return new TextDecoder().decode(request.body.body)
 }
 
-const noSignIn: OAuthCallback["Service"] = {
-  receive: () => Effect.die("Must not sign in"),
+const noSignIn: AuthCodeHandler["Service"] = {
+  request: () => Effect.die("Must not sign in"),
 }
 
 const seedToken = (
@@ -113,7 +113,7 @@ const setupModel = (response: () => Response) => {
     Layer.merge(
       Antigravity.model(model, options).pipe(
         Layer.provide(Antigravity.layerClient),
-        Layer.provide([http.layer, Layer.succeed(OAuthCallback, noSignIn)]),
+        Layer.provide([http.layer, Layer.succeed(AuthCodeHandler, noSignIn)]),
         Layer.provide(seedToken()),
         Layer.provide(KeyValueStore.layerMemory),
       ),
@@ -122,25 +122,20 @@ const setupModel = (response: () => Response) => {
   return { ...http, layer }
 }
 
-const signIn = () => {
+const signIn = (code = "auth-code") => {
   const urls: Array<URL> = []
-  const callback: OAuthCallback["Service"] = {
-    receive: ({ url, redirectUri }) =>
+  const handler: AuthCodeHandler["Service"] = {
+    request: ({ url }) =>
       Effect.sync(() => {
-        assert.strictEqual(redirectUri, "http://localhost:51121/oauth-callback")
-        const parsed = new URL(url)
-        urls.push(parsed)
-        return new URLSearchParams({
-          code: "auth-code",
-          state: parsed.searchParams.get("state")!,
-        })
+        urls.push(new URL(url))
+        return code
       }),
   }
-  return { urls, callback }
+  return { urls, handler }
 }
 
 const setupAuth = (
-  callback: OAuthCallback["Service"],
+  handler: AuthCodeHandler["Service"],
   options: {
     readonly loadCodeAssist?: unknown
     readonly tokenErrors?: ReadonlyArray<unknown>
@@ -175,7 +170,7 @@ const setupAuth = (
     })
   })
   const layer = AntigravityAuth.layer.pipe(
-    Layer.provide([http.layer, Layer.succeed(OAuthCallback, callback)]),
+    Layer.provide([http.layer, Layer.succeed(AuthCodeHandler, handler)]),
     Layer.provide(
       ConfigProvider.layer(ConfigProvider.fromEnv({ env: options.env ?? {} })),
     ),
@@ -502,11 +497,11 @@ describe("Antigravity provider", () => {
 
 describe("AntigravityAuth", () => {
   it.effect(
-    "signs in through the browser with PKCE, onboards, and reuses the stored token",
+    "signs in with a pasted code and PKCE, onboards, and reuses the stored token",
     () =>
       Effect.gen(function* () {
-        const browser = signIn()
-        const onboard = setupAuth(browser.callback)
+        const browser = signIn("  auth-code \n")
+        const onboard = setupAuth(browser.handler)
         const token = yield* AntigravityAuth.use((auth) => auth.get).pipe(
           Effect.provide(onboard.layer),
         )
@@ -514,12 +509,19 @@ describe("AntigravityAuth", () => {
         const exchange = new URLSearchParams(bodyText(onboard.requests[0]!))
         const clientId =
           "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+        const redirectUri = "https://antigravity.google/oauth-callback"
         assert.strictEqual(
           `${authUrl.origin}${authUrl.pathname}`,
           "https://accounts.google.com/o/oauth2/auth",
         )
         assert.strictEqual(authUrl.searchParams.get("client_id"), clientId)
+        assert.strictEqual(
+          authUrl.searchParams.get("redirect_uri"),
+          redirectUri,
+        )
+        assert.isNotEmpty(authUrl.searchParams.get("state"))
         assert.strictEqual(exchange.get("client_id"), clientId)
+        assert.strictEqual(exchange.get("redirect_uri"), redirectUri)
         assert.isNotEmpty(exchange.get("client_secret"))
         assert.sameMembers(
           authUrl.searchParams.get("scope")?.split(" ") ?? [],
@@ -572,7 +574,7 @@ describe("AntigravityAuth", () => {
     () =>
       Effect.gen(function* () {
         const browser = signIn()
-        const http = setupAuth(browser.callback, {
+        const http = setupAuth(browser.handler, {
           loadCodeAssist: { projectId: { id: "existing-project" } },
           env: {
             CLANKA_ANTIGRAVITY_CLIENT_ID: "custom-id",
@@ -595,6 +597,18 @@ describe("AntigravityAuth", () => {
           "v1internal:loadCodeAssist",
         ])
       }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  )
+
+  it.effect("rejects a blank authorization code", () =>
+    Effect.gen(function* () {
+      const http = setupAuth(signIn("   ").handler)
+      const failure = yield* AntigravityAuth.use((auth) => auth.get).pipe(
+        Effect.provide(http.layer),
+        Effect.flip,
+      )
+      assert.strictEqual(failure.reason, "LoginFailed")
+      assert.lengthOf(http.requests, 0)
+    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   )
 
   it.effect(

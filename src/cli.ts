@@ -29,8 +29,8 @@ import * as Config from "effect/Config"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Option from "effect/Option"
 import type * as Redacted from "effect/Redacted"
+import * as AuthCodeHandler from "./AuthCodeHandler.ts"
 import * as DeviceCodeHandler from "./DeviceCodeHandler.ts"
-import * as OAuthCallback from "./OAuthCallback.ts"
 import packageJson from "../package.json" with { type: "json" }
 
 // `--reported-version` replaces the version clanka reports, for `--version`
@@ -429,7 +429,7 @@ const acp = Command.make("acp", {
       Agent.ConversationMode.layer(false),
       Layer.succeed(Logger.LogToStderr, true),
       DeviceCodeHandler.layerLog,
-      OAuthCallback.layerLog,
+      AuthCodeHandler.layerUnavailable,
       compactionConfig(flags),
       openAiCompatModels(flags),
     ),
@@ -549,7 +549,7 @@ Command.make("clanka", {
     ),
     GlobalWebSocket.layerWebSocketConstructor,
     DeviceCodeHandler.layerConsole,
-    OAuthCallback.layerConsole,
+    AuthCodeHandler.layerPrompt.pipe(Layer.provide(NodeServices.layer)),
   ]),
   NodeRuntime.runMain,
 )

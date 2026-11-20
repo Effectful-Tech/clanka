@@ -82,7 +82,7 @@ export * as DeviceCodeHandler from "./DeviceCodeHandler.ts"
 /**
  * @since 1.0.0
  */
-export * as OAuthCallback from "./OAuthCallback.ts"
+export * as AuthCodeHandler from "./AuthCodeHandler.ts"
 
 /**
  * @since 1.0.0

@@ -22,7 +22,7 @@ import type * as HttpClientError from "effect/http/HttpClientError"
 import * as HttpClientRequest from "effect/http/HttpClientRequest"
 import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
-import { OAuthCallback } from "./OAuthCallback.ts"
+import { AuthCodeHandler } from "./AuthCodeHandler.ts"
 
 // The OAuth client of the Antigravity CLI, overridable via environment.
 const DEFAULT_CLIENT_ID =
@@ -48,9 +48,7 @@ const SCOPES = [
 ]
 const AUTH_URL = "https://accounts.google.com/o/oauth2/auth"
 const TOKEN_URL = "https://oauth2.googleapis.com/token"
-// Loopback redirect works in both CLI and ACP modes without reading stdin
-// (unlike agy's headless paste-code flow).
-const REDIRECT_URI = "http://localhost:51121/oauth-callback"
+const REDIRECT_URI = "https://antigravity.google/oauth-callback"
 const DEFAULT_TOKEN_EXPIRY_SECONDS = 3600
 const IDE_VERSION = "2.29.0"
 
@@ -167,7 +165,7 @@ export class AntigravityAuth extends Context.Service<
   }
 >()("clanka/AntigravityAuth") {
   static readonly make = Effect.gen(function* () {
-    const callback = yield* OAuthCallback
+    const authCode = yield* AuthCodeHandler
     const tokenStore = toTokenStore(yield* KeyValueStore.KeyValueStore)
     const httpClient = (yield* HttpClient.HttpClient).pipe(
       HttpClient.mapRequest(
@@ -306,15 +304,21 @@ export class AntigravityAuth extends Context.Service<
         scope: SCOPES.join(" "),
         state,
       }).toString()
-      const params = yield* callback.receive({
-        url: url.toString(),
-        redirectUri: REDIRECT_URI,
-      })
-      const code = params.get("code")
-      if (params.get("state") !== state || code === null) {
+      const rawCode = yield* authCode.request({ url: url.toString() }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new AntigravityAuthError({
+              reason: "LoginFailed",
+              message: cause.message,
+              cause,
+            }),
+        ),
+      )
+      const code = rawCode.trim()
+      if (code === "") {
         return yield* new AntigravityAuthError({
           reason: "LoginFailed",
-          message: `Google sign-in failed: ${params.get("error") ?? "invalid state"}`,
+          message: "Google sign-in failed: empty authorization code",
         })
       }
       const token = yield* requestToken(client, {

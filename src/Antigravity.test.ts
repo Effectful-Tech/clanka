@@ -365,13 +365,7 @@ describe("Antigravity provider", () => {
         })
         assert.deepStrictEqual(http.body(2).request.contents[1], {
           role: "model",
-          parts: [
-            {
-              ...calls[0],
-              thoughtSignature: "skip_thought_signature_validator",
-            },
-            calls[1],
-          ],
+          parts: calls,
         })
       }),
   )

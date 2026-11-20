@@ -80,9 +80,13 @@ model(model: string, options?: { reasoning?: { effort?: string } | null } & Agen
 - Leading system messages become `systemInstruction`; later ones are user
   text. Roles map to `user` / `model`, and consecutive turns of one role are
   merged.
-- Tool calls are `functionCall` parts with their thought signature. When
-  the first tool call of a model turn has none, it gets
-  `skip_thought_signature_validator`; later parallel calls stay unsigned. Tool results are
+- Tool calls are `functionCall` parts with their thought signature. For a
+  non-Claude model, when the first tool call of a model turn has none, it
+  gets `skip_thought_signature_validator`; later parallel calls stay
+  unsigned.
+- For a Claude model, only reasoning parts with non-blank text carry a
+  signature. Text and tool calls are sent unsigned and get no sentinel, as
+  CLIProxyAPI's Claude signature sanitizer sends them. Tool results are
   `functionResponse` parts whose `response.result` is always a string.
 - Signatures come back as `metadata.antigravity` `{ thoughtSignature, model }`
   on reasoning, text and tool-call parts. They are replayed only to a model

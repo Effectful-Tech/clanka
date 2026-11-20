@@ -509,15 +509,24 @@ const assistantParts = (
   part: Prompt.AssistantMessagePart,
   model: string,
 ): Array<Part> => {
+  // Claude takes signatures on thinking only, like CLIProxyAPI sends them.
+  const claude = family(model) === "claude"
   const thoughtSignature = signature(part.options, model)
+  const callSignature = claude ? undefined : thoughtSignature
   switch (part.type) {
     case "text":
-      return part.text === "" && thoughtSignature === undefined
+      return part.text === "" && callSignature === undefined
         ? []
-        : [{ text: part.text, ...(thoughtSignature && { thoughtSignature }) }]
+        : [
+            {
+              text: part.text,
+              ...(callSignature && { thoughtSignature: callSignature }),
+            },
+          ]
     case "reasoning":
       // Thoughts are replayed only with the signature that vouches for them.
-      return thoughtSignature === undefined
+      return thoughtSignature === undefined ||
+        (claude && part.text.trim() === "")
         ? []
         : [{ text: part.text, thought: true, thoughtSignature }]
     case "tool-call":
@@ -526,7 +535,7 @@ const assistantParts = (
         : [
             {
               functionCall: { id: part.id, name: part.name, args: part.params },
-              ...(thoughtSignature && { thoughtSignature }),
+              ...(callSignature && { thoughtSignature: callSignature }),
             },
           ]
     default:
@@ -595,9 +604,10 @@ const toContents = (prompt: Prompt.Prompt, model: string) => {
         break
     }
   }
-  // Cloud Code checks the signature of the first tool call of a turn only.
-  // Parallel calls after it stay unsigned, as the model sent them.
-  for (const content of contents) {
+  // Gemini checks the signature of the first tool call of a turn only.
+  // Parallel calls after it stay unsigned, as the model sent them. Claude
+  // tool calls are never signed.
+  for (const content of family(model) === "claude" ? [] : contents) {
     if (content.role !== "model") continue
     const index = content.parts.findIndex((part) => part.functionCall)
     const first = content.parts[index]

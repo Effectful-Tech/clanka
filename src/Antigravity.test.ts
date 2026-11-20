@@ -189,7 +189,10 @@ describe("Antigravity provider", () => {
           () =>
             new Response(
               sse([
-                sseEvent([{ text: "Listing files.", thought: true }]),
+                sseEvent([
+                  { text: "Listing files.", thought: true },
+                  { text: "", thought: true, thoughtSignature: "sig-1" },
+                ]),
                 sseEvent([{ text: "Running ls." }]),
                 sseEvent(
                   [
@@ -332,6 +335,17 @@ describe("Antigravity provider", () => {
             output: { total: 25, text: 20, reasoning: 5 },
           },
         )
+
+        yield* LanguageModel.generateText({
+          prompt: Prompt.fromResponseParts(response.content),
+          toolkit: Tools,
+          disableToolCallResolution: true,
+        }).pipe(Effect.provide(http.layer("gemini-3-flash")))
+        assert.deepStrictEqual(http.json(1).request.contents[0]?.parts[0], {
+          text: "Listing files.",
+          thought: true,
+          thoughtSignature: "sig-1",
+        })
       }),
   )
 

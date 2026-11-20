@@ -1,5 +1,11 @@
 # clanka
 
+## 0.29.0
+
+### Minor Changes
+
+- [#333](https://github.com/Effectful-Tech/clanka/pull/333) [`8cfb5bf`](https://github.com/Effectful-Tech/clanka/commit/8cfb5bf8335132e2ccea5c248cc8c8ac30fc302d) Thanks [@tim-smart](https://github.com/tim-smart)! - Add an `antigravity` provider that runs the Gemini, Claude and GPT-OSS models of a Google Antigravity subscription, signing in by pasting the authorization code from the browser.
+
 ## 0.28.3
 
 ### Patch Changes

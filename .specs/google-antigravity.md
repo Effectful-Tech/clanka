@@ -140,9 +140,11 @@ are capped.
   `isInternal`): internal and malformed entries are skipped, `efforts` is
   omitted, and the models are sorted by name.
 - `layerModelsRepo` appends those models to `ModelsRepo`, cached on first use,
-  only when a token is already stored in the `KeyValueStore`; otherwise it
-  makes no requests, and fetch failures log a warning and leave the catalog
-  unchanged.
+  only when a token is already stored in the `KeyValueStore`; client
+  construction is deferred until that lookup succeeds, and the whole lookup
+  (including token refresh) is bounded to 15 seconds. Missing or unreadable
+  tokens make no requests, and any failure or timeout logs a warning and
+  leaves the catalog unchanged.
 - `clanka --provider antigravity` without `--model` calls
   `AntigravityClient.models` (signing in first if needed), skips the effort
   prompt because `efforts` is omitted, and falls back to a typed

@@ -406,8 +406,10 @@ export const layerClient = AntigravityClient.layer
 /**
  * The `ModelsRepo` in context followed by the account's Antigravity models,
  * fetched once on first use when a token is already stored in the
- * `KeyValueStore`. Leaves the catalog unchanged when no token is stored or
- * when the fetch fails.
+ * `KeyValueStore`. Defers client construction until that token lookup
+ * succeeds and bounds the whole lookup (including token refresh) to 15
+ * seconds. Leaves the catalog unchanged when no token is stored, the store
+ * cannot be read, or the lookup fails or times out.
  *
  * @since 1.0.0
  * @category Layers
@@ -423,17 +425,26 @@ export const layerModelsRepo: Layer.Layer<
   ModelsRepo.ModelsRepo,
   Effect.gen(function* () {
     const repo = yield* ModelsRepo.ModelsRepo
+    const context = yield* Effect.context<
+      HttpClient.HttpClient | KeyValueStore.KeyValueStore | AuthCodeHandler
+    >()
     const tokenStore = toTokenStore(yield* KeyValueStore.KeyValueStore)
-    const client = yield* AntigravityClient
+    const clientLayer = layerClient.pipe(
+      Layer.provide(Layer.succeedContext(context)),
+    )
     const listed = yield* Effect.cached(
       tokenStore.get("token").pipe(
         Effect.flatMap(
           Option.match({
             onNone: () =>
               Effect.succeed<ReadonlyArray<ModelsRepo.ModelInfo>>([]),
-            onSome: () => client.models,
+            onSome: () =>
+              AntigravityClient.use((client) => client.models).pipe(
+                Effect.provide(clientLayer),
+              ),
           }),
         ),
+        Effect.timeout("15 seconds"),
         Effect.catch((error) =>
           Effect.logWarning(
             "Failed to list the Antigravity models",
@@ -451,7 +462,7 @@ export const layerModelsRepo: Layer.Layer<
       ),
     })
   }),
-).pipe(Layer.provide(layerClient))
+)
 
 /**
  * Caps the output tokens of the Claude requests made within it, thinking

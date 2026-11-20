@@ -2,9 +2,11 @@ import { createHash } from "node:crypto"
 import { assert, describe, it } from "@effect/vitest"
 import * as ConfigProvider from "effect/ConfigProvider"
 import * as Effect from "effect/Effect"
+import * as Fiber from "effect/Fiber"
 import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
+import * as TestClock from "effect/testing/TestClock"
 import * as LanguageModel from "effect/ai/LanguageModel"
 import * as Prompt from "effect/ai/Prompt"
 import * as Tool from "effect/ai/Tool"
@@ -524,7 +526,12 @@ describe("Antigravity provider", () => {
         )
         const readCatalog = (
           httpLayer: Layer.Layer<HttpClient.HttpClient>,
-          signedIn: boolean,
+          store: Layer.Layer<KeyValueStore.KeyValueStore> = KeyValueStore.layerMemory,
+          setup: Layer.Layer<
+            never,
+            never,
+            KeyValueStore.KeyValueStore
+          > = Layer.empty,
         ) =>
           Effect.gen(function* () {
             const repo = yield* ModelsRepo.ModelsRepo
@@ -539,13 +546,17 @@ describe("Antigravity provider", () => {
                   httpLayer,
                   Layer.succeed(AuthCodeHandler, noSignIn),
                 ]),
-                Layer.provide(signedIn ? seedToken() : Layer.empty),
-                Layer.provide(KeyValueStore.layerMemory),
+                Layer.provide(setup),
+                Layer.provide(store),
               ),
             ),
           )
 
-        const [first, second] = yield* readCatalog(http.layer, true)
+        const [first, second] = yield* readCatalog(
+          http.layer,
+          KeyValueStore.layerMemory,
+          seedToken(),
+        )
         assert.lengthOf(http.requests, 1)
         const request = http.requests[0]!
         assert.strictEqual(
@@ -573,15 +584,71 @@ describe("Antigravity provider", () => {
 
         // Without a stored token, layerModelsRepo does not sign in or fetch.
         const signedOut = captureHttp(() => jsonResponse({ models: {} }))
-        const [withoutToken] = yield* readCatalog(signedOut.layer, false)
+        const [withoutToken] = yield* readCatalog(signedOut.layer)
         assert.deepStrictEqual(withoutToken, [baseModel])
         assert.lengthOf(signedOut.requests, 0)
 
+        // An unreadable token store falls back to the base catalog without HTTP.
+        const unreadableStore = Layer.succeed(
+          KeyValueStore.KeyValueStore,
+          KeyValueStore.makeStringOnly({
+            get: (key) =>
+              Effect.fail(
+                new KeyValueStore.KeyValueStoreError({
+                  method: "get",
+                  key,
+                  message: "EACCES",
+                }),
+              ),
+            set: () => Effect.void,
+            remove: () => Effect.void,
+            clear: Effect.void,
+            size: Effect.succeed(0),
+            keys: Effect.succeed([]),
+          }),
+        )
+        const afterUnreadable = captureHttp(() => jsonResponse({ models: {} }))
+        const [fromUnreadable] = yield* readCatalog(
+          afterUnreadable.layer,
+          unreadableStore,
+        )
+        assert.deepStrictEqual(fromUnreadable, [baseModel])
+        assert.lengthOf(afterUnreadable.requests, 0)
+
         // A failing fetch leaves the base catalog intact.
         const failing = captureHttp(() => new Response("oops", { status: 500 }))
-        const [afterError] = yield* readCatalog(failing.layer, true)
+        const [afterError] = yield* readCatalog(
+          failing.layer,
+          KeyValueStore.layerMemory,
+          seedToken(),
+        )
         assert.deepStrictEqual(afterError, [baseModel])
         assert.lengthOf(failing.requests, 1)
+
+        // A hung refresh of an expired token times out and falls back to the base catalog.
+        const hungRequests: Array<HttpClientRequest.HttpClientRequest> = []
+        const hungHttp = Layer.succeed(
+          HttpClient.HttpClient,
+          HttpClient.make((request) =>
+            Effect.sync(() => {
+              hungRequests.push(request)
+            }).pipe(Effect.andThen(Effect.never)),
+          ),
+        )
+        const fiber = yield* Effect.forkChild(
+          readCatalog(
+            hungHttp,
+            KeyValueStore.layerMemory,
+            seedToken({ expires: Date.now() - 1000 }),
+          ),
+        )
+        yield* TestClock.adjust("15 seconds")
+        const [afterTimeout] = yield* Fiber.join(fiber)
+        assert.deepStrictEqual(afterTimeout, [baseModel])
+        assert.deepStrictEqual(
+          hungRequests.map((request) => request.url),
+          ["https://oauth2.googleapis.com/token"],
+        )
       }),
   )
 })

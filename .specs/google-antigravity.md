@@ -134,22 +134,20 @@ are capped.
 
 ## Catalog and CLI
 
-- `AntigravityClient.models` calls `POST {API}:fetchAvailableModels` with
-  `{ project }` and the bearer token (timing out after 15 seconds once signed
-  in). Each entry in `models` is decoded loosely (`displayName`,
-  `isInternal`): internal and malformed entries are skipped, `efforts` is
-  omitted, and the models are sorted by name.
-- `layerModelsRepo` appends those models to `ModelsRepo`, cached on first use,
-  only when a token is already stored in the `KeyValueStore`; client
-  construction is deferred until that lookup succeeds, and the whole lookup
-  (including token refresh) is bounded to 15 seconds. Missing or unreadable
-  tokens make no requests, and any failure or timeout logs a warning and
-  leaves the catalog unchanged.
-- `clanka --provider antigravity` without `--model` calls
-  `AntigravityClient.models` (signing in first if needed), skips the effort
-  prompt because `efforts` is omitted, and falls back to a typed
-  `<model>[/<effort>]` if listing fails.
-- `clanka acp` layers `Antigravity.layerModelsRepo` onto `ModelsRepo` (with
-  `AuthCodeHandler.layerUnavailable`), so Antigravity models appear in the
-  ACP list only when a token is stored; typed `antigravity/<model>[/<effort>]`
+- `AntigravityClient.models` signs in if needed, then posts `{ project }`
+  to `{API}:fetchAvailableModels`. Each entry of the response's `models`
+  record becomes a `ModelInfo` with the key as id and `displayName` as
+  name (the id when blank), without `efforts`. Entries with `isInternal`
+  and entries that do not decode are skipped. The list is sorted by name.
+- `layerModelsRepo` appends those models to the `ModelsRepo` in context,
+  listed once, on first use. It never signs in: without a stored token it
+  makes no request. A token store that cannot be read, a failed listing or
+  one that takes longer than 15 seconds, token refresh included, logs a
+  warning and adds no models.
+- `clanka --provider antigravity` without `--model` signs in, with no time
+  limit, then lists the models and picks one without asking for an effort.
+  A failed sign-in fails the command. A listing that fails or takes longer
+  than 15 seconds logs a warning and asks for a typed `<model>[/<effort>]`.
+- `clanka acp` uses `layerModelsRepo`, so the Antigravity models are in its
+  list only once a token is stored. A typed `antigravity/<model>[/<effort>]`
   works either way through `ModelLayer`.

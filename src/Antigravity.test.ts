@@ -506,10 +506,7 @@ describe("Antigravity provider", () => {
           id: "gpt-6-astra",
           name: "GPT-6 Astra",
         })
-        const baseRepo = Layer.succeed(
-          ModelsRepo.ModelsRepo,
-          ModelsRepo.ModelsRepo.of({ models: Effect.succeed([baseModel]) }),
-        )
+        const baseRepo = ModelsRepo.ModelsRepo.layer([baseModel])
         const http = captureHttp(() =>
           jsonResponse({
             models: {

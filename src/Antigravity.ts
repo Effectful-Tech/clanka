@@ -334,55 +334,34 @@ export class AntigravityClient extends Context.Service<
         const token = yield* Effect.mapError(auth.get, (error) =>
           authError(error, method),
         )
-        return yield* post(method, token, { project: token.project }).pipe(
-          Effect.flatMap((response) =>
-            HttpClientResponse.schemaBodyJson(AvailableModelsResponse)(
-              response,
-            ).pipe(
-              Effect.mapError((error) =>
-                error._tag === "SchemaError"
-                  ? aiError(
-                      AiError.InvalidOutputError.fromSchemaError(error),
-                      method,
-                    )
-                  : httpError(error, method),
-              ),
-            ),
-          ),
-          Effect.timeoutOrElse({
-            duration: "15 seconds",
-            orElse: () =>
-              Effect.fail(
-                aiError(
-                  new AiError.NetworkError({
-                    reason: "TransportError",
-                    method: "POST",
-                    url: `${API_URL}:${method}`,
-                    description: "Timed out fetching Antigravity models",
-                  }),
+        const response = yield* post(method, token, { project: token.project })
+        const { models } = yield* HttpClientResponse.schemaBodyJson(
+          AvailableModelsResponse,
+        )(response).pipe(
+          Effect.mapError((error) =>
+            error._tag === "SchemaError"
+              ? aiError(
+                  AiError.InvalidOutputError.fromSchemaError(error),
                   method,
-                ),
-              ),
-          }),
-          Effect.map((data) =>
-            Object.entries(data.models ?? {})
-              .flatMap(([id, raw]) => {
-                const entry = Option.getOrUndefined(decodeAvailableModel(raw))
-                if (entry === undefined || entry.isInternal === true) return []
-                return [
-                  new ModelsRepo.ModelInfo({
-                    provider: "antigravity",
-                    id,
-                    name: entry.displayName?.trim() || id,
-                  }),
-                ]
-              })
-              .toSorted(
-                (a, b) =>
-                  a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
-              ),
+                )
+              : httpError(error, method),
           ),
         )
+        return Object.entries(models ?? {})
+          .flatMap(([id, raw]) => {
+            const entry = Option.getOrUndefined(decodeAvailableModel(raw))
+            if (entry === undefined || entry.isInternal === true) return []
+            return [
+              new ModelsRepo.ModelInfo({
+                provider: "antigravity",
+                id,
+                name: entry.displayName?.trim() || id,
+              }),
+            ]
+          })
+          .toSorted(
+            (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+          )
       }),
     })
   })
@@ -405,11 +384,9 @@ export const layerClient = AntigravityClient.layer
 
 /**
  * The `ModelsRepo` in context followed by the account's Antigravity models,
- * fetched once on first use when a token is already stored in the
- * `KeyValueStore`. Defers client construction until that token lookup
- * succeeds and bounds the whole lookup (including token refresh) to 15
- * seconds. Leaves the catalog unchanged when no token is stored, the store
- * cannot be read, or the lookup fails or times out.
+ * listed once, on first use, and only when a token is already stored: it
+ * never signs in. Serves no Antigravity models when the token store cannot
+ * be read or the listing fails or takes longer than 15 seconds.
  *
  * @since 1.0.0
  * @category Layers
@@ -429,24 +406,17 @@ export const layerModelsRepo: Layer.Layer<
       HttpClient.HttpClient | KeyValueStore.KeyValueStore | AuthCodeHandler
     >()
     const tokenStore = toTokenStore(yield* KeyValueStore.KeyValueStore)
-    const clientLayer = layerClient.pipe(
-      Layer.provide(Layer.succeedContext(context)),
-    )
     const listed = yield* Effect.cached(
       tokenStore.get("token").pipe(
-        Effect.flatMap(
-          Option.match({
-            onNone: () =>
-              Effect.succeed<ReadonlyArray<ModelsRepo.ModelInfo>>([]),
-            onSome: () =>
-              AntigravityClient.use((client) => client.models).pipe(
-                Effect.provide(clientLayer),
+        Effect.flatMap((token) =>
+          Option.isNone(token)
+            ? Effect.succeed([])
+            : AntigravityClient.use((client) => client.models).pipe(
+                Effect.provide(layerClient),
               ),
-          }),
         ),
         Effect.timeout("15 seconds"),
-        // `AntigravityAuth` dies on KeyValueStore errors; convert those to
-        // typed failures here without swallowing interruption or other defects.
+        // `AntigravityAuth` dies when the token store fails.
         Effect.catchDefect((defect) =>
           defect instanceof KeyValueStore.KeyValueStoreError
             ? Effect.fail(defect)
@@ -456,8 +426,9 @@ export const layerModelsRepo: Layer.Layer<
           Effect.logWarning(
             "Failed to list the Antigravity models",
             error,
-          ).pipe(Effect.as<ReadonlyArray<ModelsRepo.ModelInfo>>([])),
+          ).pipe(Effect.as([])),
         ),
+        Effect.provideContext(context),
       ),
     )
     return ModelsRepo.ModelsRepo.of({

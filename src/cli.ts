@@ -13,6 +13,7 @@ import * as AcpSessionStore from "./AcpSessionStore.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as Agent from "./Agent.ts"
 import * as Antigravity from "./Antigravity.ts"
+import { AntigravityAuth } from "./AntigravityAuth.ts"
 import * as Compaction from "./Compaction.ts"
 import * as McpConfig from "./McpConfig.ts"
 import * as McpServers from "./McpServers.ts"
@@ -71,39 +72,40 @@ type Provider = ModelsRepo.Provider
 
 const providers = ModelsRepo.Provider.literals
 
-// Pick a model from the catalog, filtering by name as the user types, then
-// one of its reasoning efforts. A model whose efforts are unknown runs at the
-// provider's default effort. A provider with no models takes a typed
+// The models of the Antigravity account. Signs in first, however long that
+// takes, and fails when the sign-in does. A failed listing serves no models.
+const antigravityModels = Effect.gen(function* () {
+  yield* AntigravityAuth.use((auth) => auth.get)
+  const client = yield* Antigravity.AntigravityClient
+  return yield* client.models.pipe(
+    Effect.timeout("15 seconds"),
+    Effect.catch((error) =>
+      Effect.logWarning("Failed to list the Antigravity models", error).pipe(
+        Effect.as([]),
+      ),
+    ),
+  )
+}).pipe(Effect.provide([AntigravityAuth.layer, Antigravity.layerClient]))
+
+const catalogModels = Effect.fnUntraced(function* (provider: Provider) {
+  const repo = yield* ModelsRepo.ModelsRepo
+  const catalog = (yield* repo.models).filter(
+    (model) => model.provider === provider,
+  )
+  return catalog.length > 0
+    ? catalog
+    : ModelsRepo.fallback.filter((model) => model.provider === provider)
+})
+
+// Pick one of the provider's models, filtering by name as the user types,
+// then one of its reasoning efforts. A model whose efforts are unknown runs
+// at the provider's default effort. A provider with no models takes a typed
 // <model>[/<effort>].
 const selectModel = Effect.fnUntraced(function* (provider: Provider) {
   const models =
     provider === "antigravity"
-      ? yield* Antigravity.AntigravityClient.use(
-          (client) => client.models,
-        ).pipe(
-          Effect.provide(Antigravity.layerClient),
-          Effect.catchIf(
-            (error) =>
-              !(
-                error.reason._tag === "AuthenticationError" &&
-                error.reason.kind === "Unknown"
-              ),
-            (error) =>
-              Effect.logWarning(
-                "Failed to list the Antigravity models",
-                error,
-              ).pipe(Effect.as<ReadonlyArray<ModelsRepo.ModelInfo>>([])),
-          ),
-        )
-      : yield* Effect.gen(function* () {
-          const repo = yield* ModelsRepo.ModelsRepo
-          const catalog = (yield* repo.models).filter(
-            (model) => model.provider === provider,
-          )
-          return catalog.length > 0
-            ? catalog
-            : ModelsRepo.fallback.filter((model) => model.provider === provider)
-        })
+      ? yield* antigravityModels
+      : yield* catalogModels(provider)
   if (models.length === 0) {
     return ModelLayer.parseModel(
       yield* Prompt.String({ message: "Enter a model id" }),

@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
+import * as Stream from "effect/Stream"
 import * as LanguageModel from "effect/ai/LanguageModel"
 import * as Prompt from "effect/ai/Prompt"
 import * as Tool from "effect/ai/Tool"
@@ -247,8 +248,18 @@ describe("Antigravity provider", () => {
               : [],
           ),
           [
-            { antigravity: { thoughtSignature: "sig-1" } },
-            { antigravity: { thoughtSignature: "sig-2" } },
+            {
+              antigravity: {
+                thoughtSignature: "sig-1",
+                model: "gemini-3-flash",
+              },
+            },
+            {
+              antigravity: {
+                thoughtSignature: "sig-2",
+                model: "gemini-3-flash",
+              },
+            },
           ],
         )
         assert.strictEqual(response.text, "Running ls.")
@@ -275,54 +286,166 @@ describe("Antigravity provider", () => {
   )
 
   it.effect(
-    "replays a model's thoughts and tool calls with their signatures",
+    "replays a streamed turn with its signatures to the same model family only",
     () =>
       Effect.gen(function* () {
-        const http = setup(() => new Response(sse([{ response: {} }])))
-        yield* LanguageModel.generateText({
-          prompt: Prompt.make([
-            { role: "user", content: "Hi" },
-            {
-              role: "assistant",
-              content: [
-                Prompt.makePart("reasoning", {
-                  text: "Greeting.",
-                  options: { antigravity: { thoughtSignature: "sig-1" } },
-                }),
-                Prompt.makePart("reasoning", { text: "Unsigned." }),
-                Prompt.makePart("text", { text: "Hello" }),
-              ],
-            },
-            { role: "user", content: "Again" },
-          ]),
-        }).pipe(Effect.provide(http.layer("gemini-3-flash")))
-        assert.deepStrictEqual(http.body().request.contents[1], {
+        // Gemini signs the first of parallel tool calls only.
+        const http = setup(
+          () =>
+            new Response(
+              sse([
+                {
+                  response: {
+                    candidates: [
+                      {
+                        content: {
+                          parts: [
+                            { text: "Two calls.", thought: true },
+                            {
+                              text: "",
+                              thought: true,
+                              thoughtSignature: "sig-1",
+                            },
+                            {
+                              functionCall: {
+                                id: "a",
+                                name: "execute",
+                                args: { script: "ls" },
+                              },
+                              thoughtSignature: "sig-2",
+                            },
+                            {
+                              functionCall: {
+                                id: "b",
+                                name: "execute",
+                                args: { script: "pwd" },
+                              },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                },
+              ]),
+            ),
+        )
+        const turn = (prompt: Prompt.RawInput, model: string) =>
+          LanguageModel.streamText({
+            prompt,
+            toolkit: Tools,
+            disableToolCallResolution: true,
+          }).pipe(
+            Stream.runCollect,
+            Effect.provide(Layer.merge(http.layer(model), ToolsLive)),
+          )
+        const parts = yield* turn("Run two scripts.", "gemini-3-flash")
+        const history = Prompt.concat(
+          Prompt.make("Run two scripts."),
+          Prompt.fromResponseParts(parts),
+        )
+        yield* turn(history, "gemini-3.8-flash-high")
+        yield* turn(history, "claude-sonnet-4-6")
+
+        const calls = [
+          {
+            functionCall: { id: "a", name: "execute", args: { script: "ls" } },
+          },
+          {
+            functionCall: { id: "b", name: "execute", args: { script: "pwd" } },
+          },
+        ]
+        assert.deepStrictEqual(http.body(1).request.contents[1], {
           role: "model",
           parts: [
-            { text: "Greeting.", thought: true, thoughtSignature: "sig-1" },
-            { text: "Hello" },
+            { text: "Two calls.", thought: true, thoughtSignature: "sig-1" },
+            { ...calls[0], thoughtSignature: "sig-2" },
+            calls[1],
+          ],
+        })
+        assert.deepStrictEqual(http.body(2).request.contents[1], {
+          role: "model",
+          parts: [
+            {
+              ...calls[0],
+              thoughtSignature: "skip_thought_signature_validator",
+            },
+            calls[1],
           ],
         })
       }),
   )
 
-  it.effect("caps compaction summaries below a Claude thinking budget", () =>
+  it.effect("caps compaction summaries for Claude models only", () =>
     Effect.gen(function* () {
       const http = setup(() => new Response(sse([{ response: {} }])))
-      yield* Effect.gen(function* () {
-        const summarize = yield* Compaction.SummarizerTransform
-        yield* summarize(LanguageModel.generateText({ prompt: "Summarize" }))
-      }).pipe(
-        Effect.provide(
-          http.layer("claude-opus-4-6-thinking", {
-            reasoning: { effort: "high" },
-          }),
-        ),
-      )
-      assert.deepStrictEqual(http.body().request.generationConfig, {
+      const summarize = (model: string) =>
+        Effect.gen(function* () {
+          const summarize = yield* Compaction.SummarizerTransform
+          yield* summarize(LanguageModel.generateText({ prompt: "Summarize" }))
+        }).pipe(
+          Effect.provide(http.layer(model, { reasoning: { effort: "high" } })),
+        )
+      yield* summarize("claude-opus-4-6-thinking")
+      yield* summarize("gemini-3-flash")
+      assert.deepStrictEqual(http.body(0).request.generationConfig, {
         maxOutputTokens: 4000,
         thinkingConfig: { includeThoughts: true, thinkingBudget: 2000 },
       })
+      assert.deepStrictEqual(http.body(1).request.generationConfig, {
+        thinkingConfig: { includeThoughts: true, thinkingLevel: "high" },
+      })
+    }),
+  )
+
+  // A captured Cloud Code stream: a tool call with usage, no finish reason,
+  // and no blank line before the end of the stream.
+  it.effect("finishes a tool call turn that ends without a finish reason", () =>
+    Effect.gen(function* () {
+      const http = setup(
+        () =>
+          new Response(
+            `data: {"response":{"candidates":[{"content":{"parts":[{"thoughtSignature":"CqcECqQEARFNMg8iZ3xVniKaulgBlzhJJDlc","functionCall":{"name":"execute","args":{"script":"ls -la .."},"id":"call_524881"}}],"role":"model"}}],"modelVersion":"gemini-3.7-flash","responseId":"resp-nofr","usageMetadata":{"promptTokenCount":153609,"candidatesTokenCount":17,"totalTokenCount":153720,"thoughtsTokenCount":94}}}\n`,
+          ),
+      )
+      const response = yield* LanguageModel.generateText({
+        prompt: "Run ls",
+        toolkit: Tools,
+        disableToolCallResolution: true,
+      }).pipe(
+        Effect.provide(Layer.merge(http.layer("gemini-3-flash"), ToolsLive)),
+      )
+      assert.deepStrictEqual(
+        response.toolCalls.map(({ id, params }) => ({ id, params })),
+        [{ id: "call_524881", params: { script: "ls -la .." } }],
+      )
+      assert.strictEqual(response.finishReason, "tool-calls")
+      assert.strictEqual(response.usage.inputTokens.total, 153609)
+      assert.strictEqual(response.usage.outputTokens.total, 111)
+    }),
+  )
+
+  it.effect("fails on a backend error after a partial answer", () =>
+    Effect.gen(function* () {
+      const http = setup(
+        () =>
+          new Response(`data: {"response":{"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"modelVersion":"gemini-3.7-flash"}}
+
+{
+  "error": {
+    "code": 503,
+    "message": "backend capacity exhausted",
+    "status": "UNAVAILABLE"
+  }
+}
+`),
+      )
+      const error = yield* LanguageModel.generateText({ prompt: "Hi" }).pipe(
+        Effect.provide(http.layer("gemini-3-flash")),
+        Effect.flip,
+      )
+      assert.strictEqual(error.reason._tag, "InternalProviderError")
+      assert.isTrue(error.isRetryable)
     }),
   )
 

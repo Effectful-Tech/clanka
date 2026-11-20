@@ -15,7 +15,6 @@ import * as Tool from "effect/ai/Tool"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Base64 from "effect/encoding/Base64"
-import * as Sse from "effect/encoding/Sse"
 import * as HttpClient from "effect/http/HttpClient"
 import type * as HttpClientError from "effect/http/HttpClientError"
 import * as HttpClientRequest from "effect/http/HttpClientRequest"
@@ -34,7 +33,7 @@ import {
 } from "./AntigravityAuth.ts"
 
 // Accepted by Cloud Code in place of a thought signature, for tool calls made
-// by another provider or model.
+// by another provider or model family.
 const SKIP_SIGNATURE = "skip_thought_signature_validator"
 
 interface Part {
@@ -126,9 +125,70 @@ export const GenerateContentChunk = Schema.Struct({
  */
 export type GenerateContentChunk = typeof GenerateContentChunk.Type
 
-const decodeChunk = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(GenerateContentChunk),
-)
+const decodeChunk = Schema.decodeUnknownEffect(GenerateContentChunk)
+
+const invalidOutput = (description: string) =>
+  aiError(
+    "streamGenerateContent",
+    new AiError.InvalidOutputError({ description }),
+  )
+
+// Cloud Code sends one JSON document per `data:` line, but can end the
+// stream without the blank line that ends an SSE event, and reports a
+// failure after the response started as bare, multi-line JSON. Lines are
+// joined until they parse.
+const jsonPayloads = <E, R>(lines: Stream.Stream<string, E, R>) =>
+  Stream.suspend(() => {
+    let pending = ""
+    return lines.pipe(
+      Stream.map((line): Array<unknown> => {
+        const text = line.trim().replace(/^data:\s*/, "")
+        if (pending === "" && !text.startsWith("{")) return []
+        pending = pending === "" ? text : `${pending}\n${text}`
+        try {
+          const payload: unknown = JSON.parse(pending)
+          pending = ""
+          return [payload]
+        } catch {
+          return []
+        }
+      }),
+      Stream.flattenIterable,
+      Stream.concat(
+        Stream.suspend(() =>
+          pending === ""
+            ? Stream.empty
+            : Stream.fail(invalidOutput("The response ended mid-event")),
+        ),
+      ),
+    )
+  })
+
+const BackendError = Schema.Struct({
+  error: Schema.Struct({
+    code: Schema.optional(Schema.Number),
+    message: Schema.optional(Schema.String),
+  }),
+})
+const isBackendError = Schema.is(BackendError)
+
+const toChunk = (payload: unknown) => {
+  if (isBackendError(payload)) {
+    const code = payload.error.code ?? 0
+    return Effect.fail(
+      aiError(
+        "streamGenerateContent",
+        AiError.reasonFromHttpStatus({
+          status: code >= 400 && code <= 599 ? code : 502,
+          description: payload.error.message,
+        }),
+      ),
+    )
+  }
+  return decodeChunk(payload).pipe(
+    Effect.mapError((error) => invalidOutput(error.message)),
+  )
+}
 
 const aiError = (method: string, reason: AiError.AiErrorReason) =>
   AiError.make({ module: "Antigravity", method, reason })
@@ -211,30 +271,10 @@ export class AntigravityClient extends Context.Service<
           }
           return response.stream.pipe(
             Stream.decodeText(),
-            Stream.pipeThroughChannel(Sse.decode()),
-            Stream.mapEffect((event) => decodeChunk(event.data)),
-            Stream.catchTags({
-              HttpClientError: (error) => Stream.fail(httpError(error)),
-              SchemaError: (error) =>
-                Stream.fail(
-                  aiError(
-                    "streamGenerateContent",
-                    new AiError.InvalidOutputError({
-                      description: error.message,
-                    }),
-                  ),
-                ),
-              SseError: (error) =>
-                Stream.fail(
-                  aiError(
-                    "streamGenerateContent",
-                    new AiError.InternalProviderError({
-                      description: error.message,
-                    }),
-                  ),
-                ),
-              Retry: (error) => Stream.die(error),
-            }),
+            Stream.splitLines,
+            Stream.mapError(httpError),
+            jsonPayloads,
+            Stream.mapEffect(toChunk),
           )
         }).pipe(Stream.unwrap),
     })
@@ -257,7 +297,8 @@ export class AntigravityClient extends Context.Service<
 export const layerClient = AntigravityClient.layer
 
 /**
- * Caps the output tokens of the requests made within it, thinking included.
+ * Caps the output tokens of the Claude requests made within it, thinking
+ * included. Other models are sent no cap, as the Antigravity app does.
  *
  * @since 1.0.0
  * @category Configuration
@@ -316,7 +357,7 @@ const make = Effect.fnUntraced(function* (
   const streamText = (options: LanguageModel.ProviderOptions) =>
     Effect.gen(function* () {
       const maxOutputTokens = yield* MaxOutputTokens
-      const parts = streamParts()
+      const parts = streamParts(model)
       return client
         .streamGenerateContent({
           model,
@@ -345,12 +386,16 @@ const budgets: Record<string, number> = {
   max: 63999,
 }
 
-// A thinking budget must stay below the output cap.
+// A thinking budget must stay below the output cap. Like CLIProxyAPI, only
+// Claude requests carry a cap.
 const generationConfig = (
   model: string,
   reasoning: ModelOptions["reasoning"],
-  maxOutputTokens: number | undefined,
+  claudeMaxOutputTokens: number | undefined,
 ): Record<string, unknown> => {
+  const maxOutputTokens = model.startsWith("claude-")
+    ? claudeMaxOutputTokens
+    : undefined
   const cap = maxOutputTokens === undefined ? {} : { maxOutputTokens }
   if (reasoning === null || reasoning?.effort === "none") return cap
   const effort = reasoning?.effort
@@ -385,7 +430,7 @@ const toRequest = (
   maxOutputTokens: number | undefined,
   options: LanguageModel.ProviderOptions,
 ): GenerateContentRequest => {
-  const { system, contents } = toContents(options.prompt)
+  const { system, contents } = toContents(options.prompt, model)
   const declarations = options.tools
     .filter((tool) => !Tool.isProviderDefined(tool))
     .map((tool) => ({
@@ -429,11 +474,19 @@ const functionCalling = (
   }
 }
 
-const signature = (options: Prompt.ProviderOptions): string | undefined => {
+// Signatures are only valid for models of the family that issued them.
+const family = (model: string) =>
+  ["claude", "gpt", "gemini"].find((family) => model.includes(family)) ?? model
+
+const signature = (
+  options: Prompt.ProviderOptions,
+  model: string,
+): string | undefined => {
   const value = options.antigravity
   return Predicate.isObject(value) &&
-    "thoughtSignature" in value &&
-    Predicate.isString(value.thoughtSignature)
+    Predicate.isString(value.thoughtSignature) &&
+    Predicate.isString(value.model) &&
+    family(value.model) === family(model)
     ? value.thoughtSignature
     : undefined
 }
@@ -452,8 +505,11 @@ const filePart = (part: Prompt.FilePart): Part => {
     : { inlineData: { mimeType: dataUrl[1] ?? mimeType, data: dataUrl[2]! } }
 }
 
-const assistantParts = (part: Prompt.AssistantMessagePart): Array<Part> => {
-  const thoughtSignature = signature(part.options)
+const assistantParts = (
+  part: Prompt.AssistantMessagePart,
+  model: string,
+): Array<Part> => {
+  const thoughtSignature = signature(part.options, model)
   switch (part.type) {
     case "text":
       return part.text === "" && thoughtSignature === undefined
@@ -470,7 +526,7 @@ const assistantParts = (part: Prompt.AssistantMessagePart): Array<Part> => {
         : [
             {
               functionCall: { id: part.id, name: part.name, args: part.params },
-              thoughtSignature: thoughtSignature ?? SKIP_SIGNATURE,
+              ...(thoughtSignature && { thoughtSignature }),
             },
           ]
     default:
@@ -490,7 +546,7 @@ const toolOutput = (part: Prompt.ToolResultPart) =>
 // Leading system messages become the system instruction; later ones are
 // sent as user text, where they were. Consecutive messages of one role are
 // merged, as Gemini expects turns to alternate.
-const toContents = (prompt: Prompt.Prompt) => {
+const toContents = (prompt: Prompt.Prompt, model: string) => {
   const system: Array<string> = []
   const contents: Array<Content> = []
   const push = (role: Content["role"], parts: Array<Part>) => {
@@ -514,7 +570,10 @@ const toContents = (prompt: Prompt.Prompt) => {
         )
         break
       case "assistant":
-        push("model", message.content.flatMap(assistantParts))
+        push(
+          "model",
+          message.content.flatMap((part) => assistantParts(part, model)),
+        )
         break
       case "tool":
         push(
@@ -534,6 +593,16 @@ const toContents = (prompt: Prompt.Prompt) => {
           ),
         )
         break
+    }
+  }
+  // Cloud Code checks the signature of the first tool call of a turn only.
+  // Parallel calls after it stay unsigned, as the model sent them.
+  for (const content of contents) {
+    if (content.role !== "model") continue
+    const index = content.parts.findIndex((part) => part.functionCall)
+    const first = content.parts[index]
+    if (first !== undefined && first.thoughtSignature === undefined) {
+      content.parts[index] = { ...first, thoughtSignature: SKIP_SIGNATURE }
     }
   }
   return { system, contents }
@@ -588,8 +657,9 @@ const finishReason = (
   hasToolCalls: boolean,
 ): Response.FinishReason => {
   switch (reason) {
+    // Tool call turns can end without a finish reason.
     case undefined:
-      return "unknown"
+      return hasToolCalls ? "tool-calls" : "unknown"
     case "STOP":
       return hasToolCalls ? "tool-calls" : "stop"
     case "MAX_TOKENS":
@@ -609,7 +679,7 @@ const finishReason = (
 
 // Turns response chunks into stream parts. A thought signature belongs to
 // the text or thoughts it arrives with or after, or to its tool call.
-const streamParts = () => {
+const streamParts = (model: string) => {
   let block:
     { type: "text" | "reasoning"; id: string; signature?: string } | undefined
   let blocks = 0
@@ -624,7 +694,9 @@ const streamParts = () => {
       type: `${block.type}-end`,
       id: block.id,
       ...(block.signature && {
-        metadata: { antigravity: { thoughtSignature: block.signature } },
+        metadata: {
+          antigravity: { thoughtSignature: block.signature, model },
+        },
       }),
     })
     block = undefined
@@ -664,7 +736,7 @@ const streamParts = () => {
             params: part.functionCall.args ?? {},
             ...(part.thoughtSignature && {
               metadata: {
-                antigravity: { thoughtSignature: part.thoughtSignature },
+                antigravity: { thoughtSignature: part.thoughtSignature, model },
               },
             }),
           })

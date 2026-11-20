@@ -11,11 +11,13 @@ import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
+import * as Predicate from "effect/Predicate"
 import * as Redacted from "effect/Redacted"
 import * as Schedule from "effect/Schedule"
 import * as Schema from "effect/Schema"
 import * as Semaphore from "effect/Semaphore"
 import * as HttpClient from "effect/http/HttpClient"
+import type * as HttpClientError from "effect/http/HttpClientError"
 import * as HttpClientRequest from "effect/http/HttpClientRequest"
 import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
@@ -100,11 +102,20 @@ const ProjectRef = Schema.Union([
   Schema.String,
   Schema.Struct({ id: Schema.String }),
 ])
-const projectId = (ref: typeof ProjectRef.Type | undefined) =>
-  typeof ref === "object" ? ref.id : ref || undefined
+// Cloud Code names the project in any of these fields, as an id or as
+// `{ id }`.
+const ProjectFields = Schema.Struct({
+  cloudaicompanionProject: Schema.optional(ProjectRef),
+  projectId: Schema.optional(ProjectRef),
+  project: Schema.optional(ProjectRef),
+})
+const projectOf = (fields: typeof ProjectFields.Type | undefined) =>
+  [fields?.cloudaicompanionProject, fields?.projectId, fields?.project]
+    .map((ref) => (typeof ref === "object" ? ref.id : ref)?.trim())
+    .find((id) => id !== undefined && id !== "")
 
 const LoadCodeAssistResponse = Schema.Struct({
-  cloudaicompanionProject: Schema.optional(ProjectRef),
+  ...ProjectFields.fields,
   allowedTiers: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -118,9 +129,7 @@ const LoadCodeAssistResponse = Schema.Struct({
 
 const OnboardUserResponse = Schema.Struct({
   done: Schema.optional(Schema.Boolean),
-  response: Schema.optional(
-    Schema.Struct({ cloudaicompanionProject: Schema.optional(ProjectRef) }),
-  ),
+  response: Schema.optional(ProjectFields),
 })
 
 /**
@@ -235,7 +244,7 @@ export class AntigravityAuth extends Context.Service<
         { metadata: { ideType: "ANTIGRAVITY" } },
         LoadCodeAssistResponse,
       )
-      const existing = projectId(loaded.cloudaicompanionProject)
+      const existing = projectOf(loaded)
       if (existing !== undefined) return existing
       const tier =
         loaded.allowedTiers?.find((tier) => tier.isDefault)?.id ??
@@ -261,7 +270,7 @@ export class AntigravityAuth extends Context.Service<
           times: 4,
         }),
       )
-      const project = projectId(onboarded.response?.cloudaicompanionProject)
+      const project = projectOf(onboarded.response)
       if (onboarded.done !== true || project === undefined) {
         return yield* new AntigravityAuthError({
           reason: "LoginFailed",
@@ -319,26 +328,40 @@ export class AntigravityAuth extends Context.Service<
       ),
     )
 
+    // None when Google rejects the refresh token, which only signing in
+    // again fixes. Any other failure keeps the token for the next attempt.
     const refreshToken = Effect.fn("AntigravityAuth.refreshToken")(
       function* (token: TokenData) {
         const refreshed = yield* requestToken({
           grant_type: "refresh_token",
           refresh_token: token.refresh,
-        })
-        return new TokenData({
-          access: refreshed.access_token,
-          refresh: refreshed.refresh_token ?? token.refresh,
-          expires: expiresAt(refreshed),
-          project: token.project,
-        })
+        }).pipe(
+          Effect.asSome,
+          Effect.catchTag("HttpClientError", (error) =>
+            Effect.flatMap(grantRejected(error), (rejected) =>
+              rejected ? Effect.succeedNone : Effect.fail(error),
+            ),
+          ),
+        )
+        return Option.map(
+          refreshed,
+          (refreshed) =>
+            new TokenData({
+              access: refreshed.access_token,
+              refresh: refreshed.refresh_token ?? token.refresh,
+              expires: expiresAt(refreshed),
+              project: token.project,
+            }),
+        )
       },
-      Effect.mapError(
-        (cause) =>
-          new AntigravityAuthError({
-            reason: "RefreshFailed",
-            message: "Failed to refresh the Antigravity access token",
-            cause,
-          }),
+      Effect.mapError((cause) =>
+        cause instanceof AntigravityAuthError
+          ? cause
+          : new AntigravityAuthError({
+              reason: "RefreshFailed",
+              message: "Failed to refresh the Antigravity access token",
+              cause,
+            }),
       ),
     )
 
@@ -349,9 +372,7 @@ export class AntigravityAuth extends Context.Service<
       Effect.fnUntraced(function* (restore) {
         if (Option.isSome(currentToken)) {
           if (!currentToken.value.isExpired()) return currentToken.value
-          const refreshed = yield* restore(
-            refreshToken(currentToken.value).pipe(Effect.option),
-          )
+          const refreshed = yield* restore(refreshToken(currentToken.value))
           if (Option.isSome(refreshed)) return yield* saveToken(refreshed.value)
           yield* clearToken
         }
@@ -367,6 +388,18 @@ export class AntigravityAuth extends Context.Service<
 
   static readonly layer = Layer.effect(AntigravityAuth, AntigravityAuth.make)
 }
+
+// Google answers `invalid_grant` to a revoked or expired refresh token.
+const grantRejected = (error: HttpClientError.HttpClientError) =>
+  error.reason._tag === "StatusCodeError" &&
+  error.reason.response.status === 400
+    ? error.reason.response.json.pipe(
+        Effect.map(
+          (body) => Predicate.isObject(body) && body.error === "invalid_grant",
+        ),
+        Effect.orElseSucceed(() => false),
+      )
+    : Effect.succeed(false)
 
 const expiresAt = (token: typeof TokenResponse.Type) =>
   Date.now() + (token.expires_in ?? DEFAULT_TOKEN_EXPIRY_SECONDS) * 1000

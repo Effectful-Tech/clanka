@@ -59,13 +59,17 @@ model(model: string, options?: { reasoning?: { effort?: string } | null } & Agen
 - `AntigravityAuth` uses that client, the app's scopes and
   the redirect `http://localhost:51121/oauth-callback`, with `access_type=offline`,
   `prompt=consent` and a random `state` it checks.
-- After the code exchange it calls `loadCodeAssist`. Without a
-  `cloudaicompanionProject` it calls `onboardUser` on the default allowed
+- After the code exchange it calls `loadCodeAssist`. The project is the
+  first of `cloudaicompanionProject`, `projectId` and `project` that is
+  set, as an id or `{ id }`; `onboardUser` responses are read the same
+  way. Without one it calls `onboardUser` on the default allowed
   tier (else the current tier, else `free-tier`), up to five times two
   seconds apart, until `done`.
 - The token and project are stored under `antigravity.auth/token` in the
   `KeyValueStore`. `get` refreshes a token that expires within a minute and
-  keeps the project; a failed refresh clears the token and signs in again.
+  keeps the project. Only an `invalid_grant` answer clears the token and
+  signs in again; any other refresh failure fails `get` and keeps the token
+  for the next attempt.
 
 ## Requests
 
@@ -76,12 +80,14 @@ model(model: string, options?: { reasoning?: { effort?: string } | null } & Agen
 - Leading system messages become `systemInstruction`; later ones are user
   text. Roles map to `user` / `model`, and consecutive turns of one role are
   merged.
-- Tool calls are `functionCall` parts with their thought signature, or
-  `skip_thought_signature_validator` when there is none. Tool results are
+- Tool calls are `functionCall` parts with their thought signature. When
+  the first tool call of a model turn has none, it gets
+  `skip_thought_signature_validator`; later parallel calls stay unsigned. Tool results are
   `functionResponse` parts whose `response.result` is always a string.
-- Reasoning parts are replayed only with their signature. Signatures come
-  back as `metadata.antigravity.thoughtSignature` on reasoning, text and
-  tool-call parts.
+- Signatures come back as `metadata.antigravity` `{ thoughtSignature, model }`
+  on reasoning, text and tool-call parts. They are replayed only to a model
+  of the same family (`claude`, `gpt` or `gemini` in the id), and
+  reasoning parts only with a replayable signature.
 - Tool schemas are reduced to Gemini's subset: `$ref`s inlined, type
   arrays with `null` turned into `nullable`, non-string enums and every
   other keyword dropped.
@@ -96,15 +102,24 @@ model(model: string, options?: { reasoning?: { effort?: string } | null } & Agen
 | `none` or `null`  | no thinking                                            | no thinking                                  |
 | `minimal` … `max` | `thinkingBudget` 1024 … 63999, `maxOutputTokens` 64000 | `thinkingLevel`, `xhigh` and `max` as `high` |
 
-`MaxOutputTokens` sets `maxOutputTokens` and caps a Claude budget at half
-of it. The model's `SummarizerTransform` sets it to
-`Compaction.summarizerMaxOutputTokens`.
+`MaxOutputTokens` sets `maxOutputTokens` on Claude requests and caps a
+Claude budget at half of it. Other models get no `maxOutputTokens`, as
+CLIProxyAPI strips it for them. The model's `SummarizerTransform` sets it to
+`Compaction.summarizerMaxOutputTokens`, so only Claude compaction summaries
+are capped.
 
 ## Responses
 
-- SSE events decode as `{ response: { candidates, usageMetadata, responseId, modelVersion } }`.
-- Finish reasons: `STOP` is `tool-calls` after a tool call and `stop`
-  otherwise; `MAX_TOKENS` is `length`; safety reasons are
+- The body is read line by line: `data:` prefixes are dropped and lines
+  are joined until they parse as JSON, so a last event without a closing
+  blank line still counts and bare multi-line JSON is read too. A stream that
+  ends mid-document is an `InvalidOutputError`.
+- A payload with a top-level `error` fails the stream with
+  `AiError.reasonFromHttpStatus` of its `code` (502 when the code is not an
+  HTTP error status), so a trailing 503 is a retryable `InternalProviderError`.
+- Other payloads decode as `{ response: { candidates, usageMetadata, responseId, modelVersion } }`.
+- Finish reasons: `STOP` or no finish reason is `tool-calls` after a tool
+  call; otherwise `STOP` is `stop` and no finish reason `unknown`; `MAX_TOKENS` is `length`; safety reasons are
   `content-filter`; `MALFORMED_FUNCTION_CALL` is `error`.
 - Usage: `promptTokenCount` (with `cachedContentTokenCount` as cache reads),
   `candidatesTokenCount` as text and `thoughtsTokenCount` as reasoning.

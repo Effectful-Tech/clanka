@@ -12,10 +12,15 @@ import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import { AntigravityAuth, TokenData, toTokenStore } from "./AntigravityAuth.ts"
 import { OAuthCallback } from "./OAuthCallback.ts"
 
-const json = (request: HttpClientRequest.HttpClientRequest, body: unknown) =>
+const json = (
+  request: HttpClientRequest.HttpClientRequest,
+  body: unknown,
+  status = 200,
+) =>
   HttpClientResponse.fromWeb(
     request,
     new Response(JSON.stringify(body), {
+      status,
       headers: { "content-type": "application/json" },
     }),
   )
@@ -25,13 +30,35 @@ const bodyText = (request: HttpClientRequest.HttpClientRequest) => {
   return new TextDecoder().decode(request.body.body)
 }
 
-// Google's token endpoint and Cloud Code, for an account with no project yet.
-const setup = (callback: OAuthCallback["Service"]) => {
+const signIn: OAuthCallback["Service"] = {
+  receive: ({ url, redirectUri }) =>
+    Effect.sync(() => {
+      assert.strictEqual(redirectUri, "http://localhost:51121/oauth-callback")
+      const state = new URL(url).searchParams.get("state")!
+      return new URLSearchParams({ code: "auth-code", state })
+    }),
+}
+const noSignIn: OAuthCallback["Service"] = {
+  receive: () => Effect.die("A refresh must not sign in again"),
+}
+
+// Google's token endpoint and Cloud Code. By default the account has no
+// project yet; `tokenErrors` are the answers to the first token requests.
+const setup = (
+  callback: OAuthCallback["Service"],
+  options: {
+    readonly loadCodeAssist?: unknown
+    readonly tokenErrors?: Array<unknown>
+  } = {},
+) => {
   const requests: Array<HttpClientRequest.HttpClientRequest> = []
+  const tokenErrors = [...(options.tokenErrors ?? [])]
   const client = HttpClient.make((request) =>
     Effect.sync(() => {
       requests.push(request)
       if (request.url === "https://oauth2.googleapis.com/token") {
+        const error = tokenErrors.shift()
+        if (error !== undefined) return json(request, error, 401)
         return json(request, {
           access_token: "new-access",
           refresh_token: "new-refresh",
@@ -39,12 +66,15 @@ const setup = (callback: OAuthCallback["Service"]) => {
         })
       }
       if (request.url.endsWith(":loadCodeAssist")) {
-        return json(request, {
-          allowedTiers: [
-            { id: "legacy-tier" },
-            { id: "free-tier", isDefault: true },
-          ],
-        })
+        return json(
+          request,
+          options.loadCodeAssist ?? {
+            allowedTiers: [
+              { id: "legacy-tier" },
+              { id: "free-tier", isDefault: true },
+            ],
+          },
+        )
       }
       return json(request, {
         done: true,
@@ -76,17 +106,7 @@ describe("AntigravityAuth", () => {
     "signs in through the browser and onboards an account without a project",
     () =>
       Effect.gen(function* () {
-        const http = setup({
-          receive: ({ url, redirectUri }) =>
-            Effect.sync(() => {
-              assert.strictEqual(
-                redirectUri,
-                "http://localhost:51121/oauth-callback",
-              )
-              const state = new URL(url).searchParams.get("state")!
-              return new URLSearchParams({ code: "auth-code", state })
-            }),
-        })
+        const http = setup(signIn)
         const token = yield* AntigravityAuth.use((auth) => auth.get).pipe(
           Effect.provide(http.layer),
         )
@@ -114,32 +134,52 @@ describe("AntigravityAuth", () => {
       }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   )
 
-  it.effect("refreshes an expired token and keeps its project", () =>
+  it.effect("uses the project an account already has", () =>
     Effect.gen(function* () {
-      const http = setup({
-        receive: () => Effect.die("A refresh must not sign in again"),
+      const http = setup(signIn, {
+        loadCodeAssist: { projectId: { id: "existing-project" } },
       })
-      yield* toTokenStore(yield* KeyValueStore.KeyValueStore)
-        .set(
-          "token",
-          new TokenData({
-            access: "old-access",
-            refresh: "old-refresh",
-            expires: Date.now() - 1000,
-            project: "project-1",
-          }),
-        )
-        .pipe(Effect.orDie)
       const token = yield* AntigravityAuth.use((auth) => auth.get).pipe(
         Effect.provide(http.layer),
       )
-
-      assert.strictEqual(token.access, "new-access")
-      assert.strictEqual(token.project, "project-1")
-      assert.lengthOf(http.requests, 1)
-      const refresh = new URLSearchParams(bodyText(http.requests[0]!))
-      assert.strictEqual(refresh.get("grant_type"), "refresh_token")
-      assert.strictEqual(refresh.get("refresh_token"), "old-refresh")
+      assert.strictEqual(token.project, "existing-project")
+      assert.deepStrictEqual(
+        http.requests.map((request) => request.url.split("/").at(-1)),
+        ["token", "v1internal:loadCodeAssist"],
+      )
     }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  )
+
+  it.effect(
+    "keeps an expired token through a failed refresh and refreshes it later",
+    () =>
+      Effect.gen(function* () {
+        const http = setup(noSignIn, {
+          tokenErrors: [{ error: "invalid_client" }],
+        })
+        yield* toTokenStore(yield* KeyValueStore.KeyValueStore)
+          .set(
+            "token",
+            new TokenData({
+              access: "old-access",
+              refresh: "old-refresh",
+              expires: Date.now() - 1000,
+              project: "project-1",
+            }),
+          )
+          .pipe(Effect.orDie)
+        const [failure, token] = yield* Effect.gen(function* () {
+          const auth = yield* AntigravityAuth
+          return [yield* Effect.flip(auth.get), yield* auth.get] as const
+        }).pipe(Effect.provide(http.layer))
+
+        assert.strictEqual(failure.reason, "RefreshFailed")
+        assert.strictEqual(token.access, "new-access")
+        assert.strictEqual(token.project, "project-1")
+        assert.lengthOf(http.requests, 2)
+        const refresh = new URLSearchParams(bodyText(http.requests[1]!))
+        assert.strictEqual(refresh.get("grant_type"), "refresh_token")
+        assert.strictEqual(refresh.get("refresh_token"), "old-refresh")
+      }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   )
 })

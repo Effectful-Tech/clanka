@@ -20,8 +20,8 @@ several Google accounts.
 class AuthCodeHandler {
   request(options: { url: string }): Effect<string, AuthCodeHandlerError>
 }
-layerPrompt: Layer<AuthCodeHandler, never, Prompt.Environment>
-layerUnavailable: Layer<AuthCodeHandler>
+layerPrompt: Layer<AuthCodeHandler, never, Prompt.Environment | Stdio>
+layerUnavailable(message: string): Layer<AuthCodeHandler>
 
 // AntigravityAuth
 class TokenData { access; refresh; expires; project }
@@ -45,13 +45,13 @@ model(model: string, options?: { reasoning?: { effort?: string } | null } & Agen
 
 ## Sign-in
 
-- `layerPrompt` prints the authorization URL and reads the pasted code with
-  `Prompt.Password` (unwrapping the redacted value without echoing it),
-  turning a quit (Ctrl-C) into `AuthCodeHandlerError`. When
-  stdin is not a terminal it fails immediately with instructions to sign in
-  from an interactive terminal. `clanka acp` uses `layerUnavailable`, which
-  always fails with the same instructions, because ACP owns stdin and stdout.
-- `AntigravityAuth` signs in as the Antigravity CLI (`agy`) does in full: its
+- `layerPrompt` prints the authorization URL and reads the pasted code,
+  masked, from the terminal. Ctrl-C fails the sign-in as cancelled. When
+  stdin is not a terminal every sign-in fails without prompting.
+- `clanka acp` owns stdin and stdout, so it uses `layerUnavailable` with a
+  message that says to sign in with `clanka --provider antigravity` in a
+  terminal first.
+- `AntigravityAuth` signs in as the Antigravity CLI (`agy`) does: its
   Google OAuth client, `/o/oauth2/auth`, its scopes (including `openid`),
   S256 PKCE, `access_type=offline`, `prompt=consent`, a random `state`, and
   redirect URI `https://antigravity.google/oauth-callback`. The callback page

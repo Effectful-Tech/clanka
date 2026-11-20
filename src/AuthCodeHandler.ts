@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Redacted from "effect/Redacted"
 import * as Schema from "effect/Schema"
+import * as Stdio from "effect/Stdio"
 
 /**
  * @since 1.0.0
@@ -40,12 +41,14 @@ export class AuthCodeHandler extends Context.Service<
   }
 >()("clanka/AuthCodeHandler") {}
 
-const signInMessage =
-  "Sign in to Antigravity by running `clanka --provider antigravity` in an interactive terminal."
+const unavailable = (message: string) =>
+  AuthCodeHandler.of({
+    request: () => Effect.fail(new AuthCodeHandlerError({ message })),
+  })
 
 /**
- * Prints the authorization URL and reads the pasted code from the terminal.
- * Fails immediately when stdin is not a terminal.
+ * Prints the authorization URL and reads the pasted code, masked, from the
+ * terminal. Every sign-in fails when stdin is not a terminal.
  *
  * @since 1.0.0
  * @category Layers
@@ -53,47 +56,37 @@ const signInMessage =
 export const layerPrompt: Layer.Layer<
   AuthCodeHandler,
   never,
-  Prompt.Environment
+  Prompt.Environment | Stdio.Stdio
 > = Layer.effect(
   AuthCodeHandler,
   Effect.gen(function* () {
+    const stdio = yield* Stdio.Stdio
+    if (!(yield* stdio.stdinIsTerminal)) {
+      return unavailable("Sign-in needs an interactive terminal")
+    }
     const context = yield* Effect.context<Prompt.Environment>()
     return AuthCodeHandler.of({
       request: ({ url }) =>
-        Effect.gen(function* () {
-          if (process.stdin.isTTY !== true) {
-            return yield* new AuthCodeHandlerError({ message: signInMessage })
-          }
-          yield* Console.log(`Open ${url} to sign in.`)
-          return yield* Prompt.Password({
-            message: "Paste the authorization code",
-          }).pipe(
-            Effect.map(Redacted.value),
-            Effect.provideContext(context),
-            Effect.mapError(
-              (cause) =>
-                new AuthCodeHandlerError({
-                  message: "Sign-in cancelled",
-                  cause,
-                }),
-            ),
-          )
-        }),
+        Console.log(`Open ${url} to sign in.`).pipe(
+          Effect.andThen(
+            Prompt.Password({ message: "Paste the authorization code" }),
+          ),
+          Effect.map(Redacted.value),
+          Effect.mapError(
+            () => new AuthCodeHandlerError({ message: "Sign-in cancelled" }),
+          ),
+          Effect.provideContext(context),
+        ),
     })
   }),
 )
 
 /**
- * Fails every sign-in attempt with instructions to sign in from an
- * interactive terminal first, for modes such as `clanka acp` that own stdin.
+ * Fails every sign-in with `message`, for modes such as `clanka acp` that
+ * own stdin and cannot ask for a code.
  *
  * @since 1.0.0
  * @category Layers
  */
-export const layerUnavailable: Layer.Layer<AuthCodeHandler> = Layer.succeed(
-  AuthCodeHandler,
-  {
-    request: () =>
-      Effect.fail(new AuthCodeHandlerError({ message: signInMessage })),
-  },
-)
+export const layerUnavailable = (message: string) =>
+  Layer.succeed(AuthCodeHandler, unavailable(message))

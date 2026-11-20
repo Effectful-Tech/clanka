@@ -285,7 +285,6 @@ export class AntigravityAuth extends Context.Service<
 
     const login = Effect.gen(function* () {
       const client = yield* oauthClient
-      const state = crypto.randomUUID()
       const verifier = Base64Url.encode(
         crypto.getRandomValues(new Uint8Array(32)),
       )
@@ -302,9 +301,10 @@ export class AntigravityAuth extends Context.Service<
         redirect_uri: REDIRECT_URI,
         response_type: "code",
         scope: SCOPES.join(" "),
-        state,
+        state: crypto.randomUUID(),
       }).toString()
-      const rawCode = yield* authCode.request({ url: url.toString() }).pipe(
+      const code = yield* authCode.request({ url: url.toString() }).pipe(
+        Effect.map((code) => code.trim()),
         Effect.mapError(
           (cause) =>
             new AntigravityAuthError({
@@ -314,7 +314,6 @@ export class AntigravityAuth extends Context.Service<
             }),
         ),
       )
-      const code = rawCode.trim()
       if (code === "") {
         return yield* new AntigravityAuthError({
           reason: "LoginFailed",

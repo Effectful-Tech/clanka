@@ -154,6 +154,7 @@ const catalog = [
     name: "Grok Build 0.1",
     efforts: [],
   }),
+  ...ModelsRepo.antigravity,
 ]
 
 const provider = (prefix: string, count: number, year: number) => ({
@@ -214,7 +215,7 @@ const modelsWith = (client: HttpClient.HttpClient) =>
 
 describe("ModelsRepo.layerModelsDev", () => {
   it.effect(
-    "lists the openai, copilot, xai and anthropic text models that accept tool calls",
+    "lists the openai, copilot, xai and anthropic text models that accept tool calls, then the antigravity models",
     () =>
       Effect.gen(function* () {
         assert.deepStrictEqual(yield* modelsWith(online), catalog)
@@ -252,7 +253,9 @@ describe("ModelsRepo.layerModelsDev", () => {
         ),
       )
       assert.deepStrictEqual(
-        (yield* modelsWith(client)).map((model) => model.id),
+        (yield* modelsWith(client))
+          .filter((model) => model.provider === "openai")
+          .map((model) => model.id),
         [
           "newest",
           "second-tie",

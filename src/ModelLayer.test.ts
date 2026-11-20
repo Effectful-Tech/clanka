@@ -15,6 +15,7 @@ import * as Agent from "./Agent.ts"
 import { DeviceCodeHandler } from "./DeviceCodeHandler.ts"
 import * as ModelLayer from "./ModelLayer.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
+import { OAuthCallback } from "./OAuthCallback.ts"
 
 const makeModel = ModelLayer.makeAcp({
   models: Effect.succeed([
@@ -59,6 +60,9 @@ const unused = Layer.mergeAll(
   }),
   Layer.succeed(Socket.WebSocketConstructor, () => {
     throw new Error("Unexpected live WebSocket")
+  }),
+  Layer.succeed(OAuthCallback, {
+    receive: () => Effect.die("The API-key path must not log in"),
   }),
 )
 

@@ -5,17 +5,25 @@
  * @since 1.0.0
  */
 import { OpenAiClient } from "@effect/ai-openai"
+import type * as LanguageModel from "effect/ai/LanguageModel"
+import type * as Model from "effect/ai/Model"
 import * as Effect from "effect/Effect"
+import type * as HttpClient from "effect/http/HttpClient"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
+import type * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Schema from "effect/Schema"
+import type * as Socket from "effect/socket/Socket"
 import { ThoughtLevel } from "./Acp.ts"
 import * as Agent from "./Agent.ts"
+import * as Antigravity from "./Antigravity.ts"
 import * as ClaudeAgent from "./ClaudeAgent.ts"
 import * as Codex from "./Codex.ts"
 import * as Compaction from "./Compaction.ts"
 import * as Copilot from "./Copilot.ts"
+import type { DeviceCodeHandler } from "./DeviceCodeHandler.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
+import type { OAuthCallback } from "./OAuthCallback.ts"
 import * as OpenAiCompat from "./OpenAiCompat.ts"
 import * as Xai from "./Xai.ts"
 
@@ -61,7 +69,15 @@ const languageModel = (
   effort: string | null | undefined,
   openai: OpenAiClient.Options,
   fastMode: boolean,
-) => {
+): Layer.Layer<
+  LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName,
+  never,
+  | DeviceCodeHandler
+  | OAuthCallback
+  | HttpClient.HttpClient
+  | KeyValueStore.KeyValueStore
+  | Socket.WebSocketConstructor
+> => {
   const options =
     effort === undefined
       ? undefined
@@ -87,6 +103,10 @@ const languageModel = (
     case "copilot":
       return Copilot.model(model, options).pipe(
         Layer.provide(Copilot.layerClient),
+      )
+    case "antigravity":
+      return Antigravity.model(model, options).pipe(
+        Layer.provide(Antigravity.layerClient),
       )
     case "openai-compat":
       return OpenAiCompat.model(model, options).pipe(

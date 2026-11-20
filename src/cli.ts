@@ -30,6 +30,7 @@ import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Option from "effect/Option"
 import type * as Redacted from "effect/Redacted"
 import * as DeviceCodeHandler from "./DeviceCodeHandler.ts"
+import * as OAuthCallback from "./OAuthCallback.ts"
 import packageJson from "../package.json" with { type: "json" }
 
 // `--reported-version` replaces the version clanka reports, for `--version`
@@ -192,6 +193,10 @@ const provider = Flag.Literals("provider", providers).pipe(
         {
           title: "openai-compat",
           value: "openai-compat",
+        },
+        {
+          title: "antigravity",
+          value: "antigravity",
         },
       ],
     }),
@@ -446,6 +451,7 @@ const acp = Command.make("acp", {
       Agent.ConversationMode.layer(false),
       Layer.succeed(Logger.LogToStderr, true),
       DeviceCodeHandler.layerLog,
+      OAuthCallback.layerLog,
       compactionConfig(flags),
       openAiCompatModels(flags),
     ),
@@ -565,6 +571,7 @@ Command.make("clanka", {
     ),
     GlobalWebSocket.layerWebSocketConstructor,
     DeviceCodeHandler.layerConsole,
+    OAuthCallback.layerConsole,
   ]),
   NodeRuntime.runMain,
 )

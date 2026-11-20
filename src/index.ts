@@ -32,6 +32,11 @@ export * as AgentTools from "./AgentTools.ts"
 /**
  * @since 1.0.0
  */
+export * as Antigravity from "./Antigravity.ts"
+
+/**
+ * @since 1.0.0
+ */
 export * as ClaudeAgent from "./ClaudeAgent.ts"
 
 /**
@@ -73,6 +78,11 @@ export * as Copilot from "./Copilot.ts"
  * @since 1.0.0
  */
 export * as DeviceCodeHandler from "./DeviceCodeHandler.ts"
+
+/**
+ * @since 1.0.0
+ */
+export * as OAuthCallback from "./OAuthCallback.ts"
 
 /**
  * @since 1.0.0

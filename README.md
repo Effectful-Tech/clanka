@@ -50,6 +50,50 @@ lists at `/models` show up in the model prompt and in the ACP model list as
 including ids with slashes such as `openai-compat/moonshotai/Kimi-K2-Instruct`;
 a trailing segment is read as the effort only when it is a reasoning level.
 
+## Google Antigravity
+
+The `antigravity` provider runs the models of a Google Antigravity
+subscription (Gemini, Claude and GPT-OSS) through the Cloud Code API the
+Antigravity app uses. Sign in with the Google account that holds the
+subscription:
+
+1. clanka does not ship the Antigravity app's Google OAuth client. Set its id
+   and secret in the environment of `clanka` or `clanka acp`. Open-source
+   Antigravity proxies publish them, for example CLIProxyAPI in
+   `internal/auth/antigravity/constants.go`:
+
+   ```sh
+   export CLANKA_ANTIGRAVITY_CLIENT_ID="….apps.googleusercontent.com"
+   export CLANKA_ANTIGRAVITY_CLIENT_SECRET="GOCSPX-…"
+   ```
+
+2. Pick an Antigravity model:
+
+   ```sh
+   clanka --provider antigravity --model gemini-4-argon-high/high
+   clanka acp --model antigravity/gemini-3-flash/low
+   ```
+
+3. On first use clanka prints a Google sign-in URL (in `clanka acp`, as a
+   warning on stderr) and listens on `http://localhost:51121` for the
+   redirect. Open the URL in a browser on the same machine and sign in. On a
+   remote machine, forward the port first, for example
+   `ssh -L 51121:localhost:51121 host`.
+4. clanka finds the account's Cloud Code project, or sets one up on the
+   account's default tier, and stores the tokens and project in its
+   key-value store. Later runs refresh the token without a browser.
+
+Model ids are Antigravity's: `gemini-4-argon-high`, `gemini-3.8-flash-high`,
+`gemini-3-flash`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
+`claude-opus-5-5-high`, `claude-sonnet-5-5-high`, `claude-opus-4-6-thinking`,
+`claude-sonnet-4-6` and `gpt-oss-120b-medium`. The effort sets the Gemini
+and Claude 5.5 thinking level (`xhigh` and `max` run as `high`) or the
+Claude 4.6 thinking budget; `none` turns thinking off.
+
+This uses the Antigravity app's OAuth client and an internal Google API, not
+a public one. Google may change it or limit its use outside the app at any
+time; check that this is allowed for your account before relying on it.
+
 ## Fast mode
 
 OpenAI fast mode sends requests on the `priority` service tier: faster

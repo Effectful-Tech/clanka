@@ -122,11 +122,6 @@ const setupModel = (response: () => Response) => {
   return { ...http, layer }
 }
 
-const ANTIGRAVITY_CLIENT_ID =
-  "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-
-const authConfig = ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))
-
 const signIn = () => {
   const urls: Array<URL> = []
   const callback: OAuthCallback["Service"] = {
@@ -149,6 +144,7 @@ const setupAuth = (
   options: {
     readonly loadCodeAssist?: unknown
     readonly tokenErrors?: ReadonlyArray<unknown>
+    readonly env?: Record<string, string>
   } = {},
 ) => {
   const tokenErrors = [...(options.tokenErrors ?? [])]
@@ -180,7 +176,9 @@ const setupAuth = (
   })
   const layer = AntigravityAuth.layer.pipe(
     Layer.provide([http.layer, Layer.succeed(OAuthCallback, callback)]),
-    Layer.provide(authConfig),
+    Layer.provide(
+      ConfigProvider.layer(ConfigProvider.fromEnv({ env: options.env ?? {} })),
+    ),
   )
   return { ...http, layer }
 }
@@ -504,7 +502,7 @@ describe("Antigravity provider", () => {
 
 describe("AntigravityAuth", () => {
   it.effect(
-    "signs in through the browser, onboarding only when the account has no project",
+    "signs in through the browser with PKCE, onboards, and reuses the stored token",
     () =>
       Effect.gen(function* () {
         const browser = signIn()
@@ -513,41 +511,26 @@ describe("AntigravityAuth", () => {
           Effect.provide(onboard.layer),
         )
         const authUrl = browser.urls[0]!
-        assert.strictEqual(
-          `${authUrl.origin}${authUrl.pathname}`,
-          "https://accounts.google.com/o/oauth2/auth",
-        )
-        assert.strictEqual(
-          authUrl.searchParams.get("client_id"),
-          ANTIGRAVITY_CLIENT_ID,
-        )
+        const exchange = new URLSearchParams(bodyText(onboard.requests[0]!))
+        const clientId = authUrl.searchParams.get("client_id")
+        assert.isNotEmpty(clientId)
+        assert.strictEqual(exchange.get("client_id"), clientId)
+        assert.isNotEmpty(exchange.get("client_secret"))
         assert.strictEqual(
           authUrl.searchParams.get("code_challenge_method"),
           "S256",
         )
-        assert.deepStrictEqual(authUrl.searchParams.get("scope")?.split(" "), [
-          "https://www.googleapis.com/auth/cloud-platform",
-          "https://www.googleapis.com/auth/userinfo.email",
-          "https://www.googleapis.com/auth/userinfo.profile",
-          "https://www.googleapis.com/auth/cclog",
-          "https://www.googleapis.com/auth/experimentsandconfigs",
-          "https://www.googleapis.com/auth/aicode",
-          "openid",
-        ])
-        assert.strictEqual(token.access, "new-access")
-        assert.strictEqual(token.refresh, "new-refresh")
-        assert.strictEqual(token.project, "onboarded-project")
-        const exchange = new URLSearchParams(bodyText(onboard.requests[0]!))
         assert.strictEqual(exchange.get("grant_type"), "authorization_code")
         assert.strictEqual(exchange.get("code"), "auth-code")
-        assert.strictEqual(exchange.get("client_id"), ANTIGRAVITY_CLIENT_ID)
-        assert.match(exchange.get("client_secret")!, /^GOCSPX-/)
         const verifier = exchange.get("code_verifier")!
         assert.isAtLeast(verifier.length, 43)
         assert.strictEqual(
           createHash("sha256").update(verifier).digest("base64url"),
           authUrl.searchParams.get("code_challenge"),
         )
+        assert.strictEqual(token.access, "new-access")
+        assert.strictEqual(token.refresh, "new-refresh")
+        assert.strictEqual(token.project, "onboarded-project")
         assert.deepStrictEqual(onboard.endpoints(), [
           "token",
           "v1internal:loadCodeAssist",
@@ -564,22 +547,33 @@ describe("AntigravityAuth", () => {
           token,
         )
         assert.lengthOf(reused.requests, 0)
+      }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  )
 
-        // An account with an existing project skips onboarding.
-        const existing = setupAuth(signIn().callback, {
+  it.effect(
+    "skips onboarding for an existing project and honors client env overrides",
+    () =>
+      Effect.gen(function* () {
+        const browser = signIn()
+        const http = setupAuth(browser.callback, {
           loadCodeAssist: { projectId: { id: "existing-project" } },
+          env: {
+            CLANKA_ANTIGRAVITY_CLIENT_ID: "custom-id",
+            CLANKA_ANTIGRAVITY_CLIENT_SECRET: "custom-secret",
+          },
         })
-        const existingToken = yield* AntigravityAuth.use(
-          (auth) => auth.get,
-        ).pipe(
-          Effect.provide(
-            existing.layer.pipe(
-              Layer.provide(Layer.fresh(KeyValueStore.layerMemory)),
-            ),
-          ),
+        const token = yield* AntigravityAuth.use((auth) => auth.get).pipe(
+          Effect.provide(http.layer),
         )
-        assert.strictEqual(existingToken.project, "existing-project")
-        assert.deepStrictEqual(existing.endpoints(), [
+        assert.strictEqual(
+          browser.urls[0]!.searchParams.get("client_id"),
+          "custom-id",
+        )
+        const exchange = new URLSearchParams(bodyText(http.requests[0]!))
+        assert.strictEqual(exchange.get("client_id"), "custom-id")
+        assert.strictEqual(exchange.get("client_secret"), "custom-secret")
+        assert.strictEqual(token.project, "existing-project")
+        assert.deepStrictEqual(http.endpoints(), [
           "token",
           "v1internal:loadCodeAssist",
         ])

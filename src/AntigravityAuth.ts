@@ -6,7 +6,6 @@
  */
 /** @effect-diagnostics schemaNumber:off */
 import * as Config from "effect/Config"
-import * as ConfigProvider from "effect/ConfigProvider"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Base64Url from "effect/encoding/Base64Url"
@@ -208,18 +207,16 @@ export class AntigravityAuth extends Context.Service<
       ),
     )
 
-    const oauthClient = OAuthClient.parse(yield* ConfigProvider.ConfigProvider)
+    const client = yield* Effect.orDie(OAuthClient)
     const requestToken = (params: Record<string, string>) =>
-      Effect.flatMap(oauthClient, (client) =>
-        HttpClientRequest.post(TOKEN_URL).pipe(
-          HttpClientRequest.bodyUrlParams({
-            client_id: client.id,
-            client_secret: Redacted.value(client.secret),
-            ...params,
-          }),
-          httpClient.execute,
-          Effect.flatMap(HttpClientResponse.schemaBodyJson(TokenResponse)),
-        ),
+      HttpClientRequest.post(TOKEN_URL).pipe(
+        HttpClientRequest.bodyUrlParams({
+          client_id: client.id,
+          client_secret: Redacted.value(client.secret),
+          ...params,
+        }),
+        httpClient.execute,
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(TokenResponse)),
       )
 
     const cloudCode = <S extends Schema.Top>(
@@ -282,23 +279,18 @@ export class AntigravityAuth extends Context.Service<
     })
 
     const login = Effect.gen(function* () {
-      const client = yield* oauthClient
       const state = crypto.randomUUID()
       const verifier = Base64Url.encode(
         crypto.getRandomValues(new Uint8Array(32)),
       )
-      const challenge = Base64Url.encode(
-        new Uint8Array(
-          yield* Effect.promise(() =>
-            crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
-          ),
-        ),
+      const digest = yield* Effect.promise(() =>
+        crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
       )
       const url = new URL(AUTH_URL)
       url.search = new URLSearchParams({
         access_type: "offline",
         client_id: client.id,
-        code_challenge: challenge,
+        code_challenge: Base64Url.encode(new Uint8Array(digest)),
         code_challenge_method: "S256",
         prompt: "consent",
         redirect_uri: REDIRECT_URI,

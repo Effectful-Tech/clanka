@@ -66,18 +66,12 @@ subscription:
 
 2. On first use clanka prints a Google sign-in URL (in `clanka acp`, as a
    warning on stderr) and listens on `http://localhost:51121` for the
-   redirect. Unlike the Antigravity CLI's headless paste-code flow, clanka
-   always uses this loopback callback so sign-in works in both CLI and
-   `clanka acp` modes without reading stdin. Open the URL in a browser on
-   the same machine and sign in; over SSH, forward the port first, for
-   example `ssh -L 51121:localhost:51121 host`.
+   redirect. Open the URL in a browser on the same machine and sign in. On a
+   remote machine, forward the port first, for example
+   `ssh -L 51121:localhost:51121 host`.
 3. clanka finds the account's Cloud Code project, or sets one up on the
    account's default tier, and stores the tokens and project in its
    key-value store. Later runs refresh the token without a browser.
-
-clanka uses the Antigravity CLI's Google OAuth client by default. Set
-`CLANKA_ANTIGRAVITY_CLIENT_ID` and `CLANKA_ANTIGRAVITY_CLIENT_SECRET` to
-override it.
 
 Model ids are Antigravity's: `gemini-4-argon-high`, `gemini-3.8-flash-high`,
 `gemini-3-flash`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
@@ -86,9 +80,11 @@ Model ids are Antigravity's: `gemini-4-argon-high`, `gemini-3.8-flash-high`,
 and Claude 5.5 thinking level (`xhigh` and `max` run as `high`) or the
 Claude 4.6 thinking budget; `none` turns thinking off.
 
-This uses the Antigravity app's OAuth client and an internal Google API, not
-a public one. Google may change it or limit its use outside the app at any
-time; check that this is allowed for your account before relying on it.
+This uses the Antigravity CLI's OAuth client (set
+`CLANKA_ANTIGRAVITY_CLIENT_ID` and `CLANKA_ANTIGRAVITY_CLIENT_SECRET` to use
+another) and an internal Google API, not a public one. Google may change it
+or limit its use outside the app at any time; check that this is allowed for
+your account before relying on it.
 
 ## Fast mode
 

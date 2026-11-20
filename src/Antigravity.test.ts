@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto"
+import * as NodeServices from "@effect/platform-node/NodeServices"
 import { assert, describe, it } from "@effect/vitest"
 import * as ConfigProvider from "effect/ConfigProvider"
 import * as Effect from "effect/Effect"
 import * as Fiber from "effect/Fiber"
 import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
+import * as Stdio from "effect/Stdio"
 import * as Stream from "effect/Stream"
 import * as TestClock from "effect/testing/TestClock"
 import * as LanguageModel from "effect/ai/LanguageModel"
@@ -19,7 +21,7 @@ import {
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Antigravity from "./Antigravity.ts"
 import { AntigravityAuth, TokenData, toTokenStore } from "./AntigravityAuth.ts"
-import { AuthCodeHandler } from "./AuthCodeHandler.ts"
+import { AuthCodeHandler, layerPrompt } from "./AuthCodeHandler.ts"
 import * as Compaction from "./Compaction.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
 
@@ -59,7 +61,7 @@ const noSignIn: AuthCodeHandler["Service"] = {
   request: () => Effect.die("Must not sign in"),
 }
 
-const seedToken = (
+const seededStore = (
   overrides?: Partial<ConstructorParameters<typeof TokenData>[0]>,
 ) =>
   Layer.effectDiscard(
@@ -77,7 +79,29 @@ const seedToken = (
         )
         .pipe(Effect.orDie)
     }),
-  )
+  ).pipe(Layer.provideMerge(KeyValueStore.layerMemory))
+
+const failReadsAfter = (failAfter: number) =>
+  Layer.effect(
+    KeyValueStore.KeyValueStore,
+    Effect.gen(function* () {
+      const store = yield* KeyValueStore.KeyValueStore
+      let reads = 0
+      return KeyValueStore.make({
+        ...store,
+        get: (key) =>
+          reads++ < failAfter
+            ? store.get(key)
+            : Effect.fail(
+                new KeyValueStore.KeyValueStoreError({
+                  method: "get",
+                  key,
+                  message: "EACCES",
+                }),
+              ),
+      })
+    }),
+  ).pipe(Layer.provide(seededStore()))
 
 const captureHttp = (
   respond: (request: HttpClientRequest.HttpClientRequest) => Response,
@@ -117,8 +141,7 @@ const setupModel = (response: () => Response) => {
       Antigravity.model(model, options).pipe(
         Layer.provide(Antigravity.layerClient),
         Layer.provide([http.layer, Layer.succeed(AuthCodeHandler, noSignIn)]),
-        Layer.provide(seedToken()),
-        Layer.provide(KeyValueStore.layerMemory),
+        Layer.provide(seededStore()),
       ),
       ToolsLive,
     )
@@ -507,6 +530,26 @@ describe("Antigravity provider", () => {
           name: "GPT-6 Astra",
         })
         const baseRepo = ModelsRepo.ModelsRepo.layer([baseModel])
+        const readCatalog = (
+          httpLayer: Layer.Layer<HttpClient.HttpClient>,
+          store: Layer.Layer<KeyValueStore.KeyValueStore> = KeyValueStore.layerMemory,
+        ) =>
+          Effect.gen(function* () {
+            const repo = yield* ModelsRepo.ModelsRepo
+            return [yield* repo.models, yield* repo.models] as const
+          }).pipe(
+            Effect.provide(
+              Antigravity.layerModelsRepo.pipe(
+                Layer.provide([
+                  baseRepo,
+                  httpLayer,
+                  Layer.succeed(AuthCodeHandler, noSignIn),
+                ]),
+                Layer.provide(store),
+              ),
+            ),
+          )
+
         const http = captureHttp(() =>
           jsonResponse({
             models: {
@@ -521,39 +564,7 @@ describe("Antigravity provider", () => {
             webSearchModelIds: ["gemini-4-argon-high"],
           }),
         )
-        const readCatalog = (
-          httpLayer: Layer.Layer<HttpClient.HttpClient>,
-          store: Layer.Layer<KeyValueStore.KeyValueStore> = KeyValueStore.layerMemory,
-          setup: Layer.Layer<
-            never,
-            never,
-            KeyValueStore.KeyValueStore
-          > = Layer.empty,
-        ) =>
-          Effect.gen(function* () {
-            const repo = yield* ModelsRepo.ModelsRepo
-            const first = yield* repo.models
-            const second = yield* repo.models
-            return [first, second] as const
-          }).pipe(
-            Effect.provide(
-              Antigravity.layerModelsRepo.pipe(
-                Layer.provide([
-                  baseRepo,
-                  httpLayer,
-                  Layer.succeed(AuthCodeHandler, noSignIn),
-                ]),
-                Layer.provide(setup),
-                Layer.provide(store),
-              ),
-            ),
-          )
-
-        const [first, second] = yield* readCatalog(
-          http.layer,
-          KeyValueStore.layerMemory,
-          seedToken(),
-        )
+        const [first, second] = yield* readCatalog(http.layer, seededStore())
         assert.lengthOf(http.requests, 1)
         const request = http.requests[0]!
         assert.strictEqual(
@@ -579,87 +590,44 @@ describe("Antigravity provider", () => {
         assert.deepStrictEqual(first, expected)
         assert.deepStrictEqual(second, expected)
 
-        // Without a stored token, layerModelsRepo does not sign in or fetch.
-        const signedOut = captureHttp(() => jsonResponse({ models: {} }))
-        const [withoutToken] = yield* readCatalog(signedOut.layer)
-        assert.deepStrictEqual(withoutToken, [baseModel])
-        assert.lengthOf(signedOut.requests, 0)
-
-        // Token-store read failures (on the initial guard or during auth
-        // construction) fall back to the base catalog without HTTP.
-        const storedToken = JSON.stringify({
-          access: "access-token",
-          refresh: "refresh-token",
-          expires: Date.now() + 3600_000,
-          project: "project-1",
-        })
-        for (const failAfter of [0, 1]) {
-          let reads = 0
-          const unreadableStore = Layer.succeed(
-            KeyValueStore.KeyValueStore,
-            KeyValueStore.makeStringOnly({
-              get: (key) =>
-                reads++ < failAfter
-                  ? Effect.succeed(storedToken)
-                  : Effect.fail(
-                      new KeyValueStore.KeyValueStoreError({
-                        method: "get",
-                        key,
-                        message: "EACCES",
-                      }),
-                    ),
-              set: () => Effect.void,
-              remove: () => Effect.void,
-              clear: Effect.void,
-              size: Effect.succeed(0),
-              keys: Effect.succeed([]),
-            }),
-          )
-          const afterUnreadable = captureHttp(() =>
-            jsonResponse({ models: {} }),
-          )
-          const [fromUnreadable] = yield* readCatalog(
-            afterUnreadable.layer,
-            unreadableStore,
-          )
-          assert.deepStrictEqual(fromUnreadable, [baseModel])
-          assert.lengthOf(afterUnreadable.requests, 0)
+        // Signed-out and unreadable token stores (failing on either the guard
+        // read or auth construction) fall back to the base catalog without HTTP.
+        for (const store of [
+          KeyValueStore.layerMemory,
+          failReadsAfter(0),
+          failReadsAfter(1),
+        ]) {
+          const unused = captureHttp(() => jsonResponse({ models: {} }))
+          const [catalog] = yield* readCatalog(unused.layer, store)
+          assert.deepStrictEqual(catalog, [baseModel])
+          assert.lengthOf(unused.requests, 0)
         }
 
         // A failing fetch leaves the base catalog intact.
         const failing = captureHttp(() => new Response("oops", { status: 500 }))
-        const [afterError] = yield* readCatalog(
-          failing.layer,
-          KeyValueStore.layerMemory,
-          seedToken(),
-        )
+        const [afterError] = yield* readCatalog(failing.layer, seededStore())
         assert.deepStrictEqual(afterError, [baseModel])
         assert.lengthOf(failing.requests, 1)
 
         // A hung refresh of an expired token times out and falls back to the base catalog.
-        const hungRequests: Array<HttpClientRequest.HttpClientRequest> = []
+        const hungUrls: Array<string> = []
         const hungHttp = Layer.succeed(
           HttpClient.HttpClient,
           HttpClient.make((request) =>
             Effect.sync(() => {
-              hungRequests.push(request)
+              hungUrls.push(request.url)
             }).pipe(Effect.andThen(Effect.never)),
           ),
         )
         const fiber = yield* Effect.forkChild(
-          readCatalog(
-            hungHttp,
-            KeyValueStore.layerMemory,
-            seedToken({ expires: Date.now() - 1000 }),
-          ),
+          readCatalog(hungHttp, seededStore({ expires: Date.now() - 1000 })),
         )
         yield* TestClock.adjust("15 seconds")
         const [afterTimeout] = yield* Fiber.join(fiber)
         assert.deepStrictEqual(afterTimeout, [baseModel])
-        assert.deepStrictEqual(
-          hungRequests.map((request) => request.url),
-          ["https://oauth2.googleapis.com/token"],
-        )
+        assert.deepStrictEqual(hungUrls, [
+          "https://oauth2.googleapis.com/token",
+        ])
       }),
   )
 })
@@ -781,6 +749,30 @@ describe("AntigravityAuth", () => {
   )
 
   it.effect(
+    "fails sign-in without prompting when stdin is not a terminal",
+    () =>
+      Effect.gen(function* () {
+        const error = yield* AuthCodeHandler.use((handler) =>
+          handler.request({ url: "https://accounts.google.com/o/oauth2/auth" }),
+        ).pipe(
+          Effect.provide(
+            layerPrompt.pipe(
+              Layer.provide(
+                Layer.merge(
+                  NodeServices.layer,
+                  Stdio.layerTest({ stdinIsTerminal: Effect.succeed(false) }),
+                ),
+              ),
+            ),
+          ),
+          Effect.flip,
+        )
+        assert.strictEqual(error._tag, "AuthCodeHandlerError")
+        assert.include(error.message, "interactive terminal")
+      }),
+  )
+
+  it.effect(
     "keeps an expired token through a failed refresh and refreshes it later",
     () =>
       Effect.gen(function* () {
@@ -794,13 +786,12 @@ describe("AntigravityAuth", () => {
           Effect.provide(
             http.layer.pipe(
               Layer.provide(
-                seedToken({
+                seededStore({
                   access: "old-access",
                   refresh: "old-refresh",
                   expires: Date.now() - 1000,
                 }),
               ),
-              Layer.provide(KeyValueStore.layerMemory),
             ),
           ),
         )

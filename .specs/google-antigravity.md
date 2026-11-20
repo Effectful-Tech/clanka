@@ -56,9 +56,13 @@ model(model: string, options?: { reasoning?: { effort?: string } | null } & Agen
   and allows overriding it via `CLANKA_ANTIGRAVITY_CLIENT_ID` and
   `CLANKA_ANTIGRAVITY_CLIENT_SECRET` through the `ConfigProvider` of its
   layer.
-- `AntigravityAuth` uses that client, the app's scopes and
-  the redirect `http://localhost:51121/oauth-callback`, with `access_type=offline`,
-  `prompt=consent` and a random `state` it checks.
+- `AntigravityAuth` uses that client, `/o/oauth2/auth`, the CLI's scopes
+  (including `openid`), S256 PKCE (`code_challenge` / `code_verifier`),
+  `access_type=offline`, `prompt=consent`, and a random `state` it checks.
+  It intentionally keeps the fixed loopback redirect
+  `http://localhost:51121/oauth-callback` instead of `agy`'s headless
+  `https://antigravity.google/oauth-callback` paste-code flow, because
+  `clanka acp` owns stdin/stdout; SSH users forward port `51121`.
 - After the code exchange it calls `loadCodeAssist`. The project is the
   first of `cloudaicompanionProject`, `projectId` and `project` that is
   set, as an id or `{ id }`; `onboardUser` responses are read the same

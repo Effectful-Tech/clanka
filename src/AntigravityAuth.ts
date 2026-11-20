@@ -9,6 +9,7 @@ import * as Config from "effect/Config"
 import * as ConfigProvider from "effect/ConfigProvider"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
+import * as Base64Url from "effect/encoding/Base64Url"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as Predicate from "effect/Predicate"
@@ -40,12 +41,15 @@ const SCOPES = [
   "https://www.googleapis.com/auth/cloud-platform",
   "https://www.googleapis.com/auth/userinfo.email",
   "https://www.googleapis.com/auth/userinfo.profile",
-  "https://www.googleapis.com/auth/aicode",
   "https://www.googleapis.com/auth/cclog",
   "https://www.googleapis.com/auth/experimentsandconfigs",
+  "https://www.googleapis.com/auth/aicode",
+  "openid",
 ]
-const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+const AUTH_URL = "https://accounts.google.com/o/oauth2/auth"
 const TOKEN_URL = "https://oauth2.googleapis.com/token"
+// Loopback redirect works in both CLI and ACP modes without reading stdin
+// (unlike agy's headless paste-code flow).
 const REDIRECT_URI = "http://localhost:51121/oauth-callback"
 const DEFAULT_TOKEN_EXPIRY_SECONDS = 3600
 const IDE_VERSION = "2.29.0"
@@ -280,10 +284,22 @@ export class AntigravityAuth extends Context.Service<
     const login = Effect.gen(function* () {
       const client = yield* oauthClient
       const state = crypto.randomUUID()
+      const verifier = Base64Url.encode(
+        crypto.getRandomValues(new Uint8Array(32)),
+      )
+      const challenge = Base64Url.encode(
+        new Uint8Array(
+          yield* Effect.promise(() =>
+            crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
+          ),
+        ),
+      )
       const url = new URL(AUTH_URL)
       url.search = new URLSearchParams({
         access_type: "offline",
         client_id: client.id,
+        code_challenge: challenge,
+        code_challenge_method: "S256",
         prompt: "consent",
         redirect_uri: REDIRECT_URI,
         response_type: "code",
@@ -304,6 +320,7 @@ export class AntigravityAuth extends Context.Service<
       const token = yield* requestToken({
         grant_type: "authorization_code",
         code,
+        code_verifier: verifier,
         redirect_uri: REDIRECT_URI,
       })
       return new TokenData({

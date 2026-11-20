@@ -66,9 +66,11 @@ subscription:
 
 2. On first use clanka prints a Google sign-in URL (in `clanka acp`, as a
    warning on stderr) and listens on `http://localhost:51121` for the
-   redirect. Open the URL in a browser on the same machine and sign in. On a
-   remote machine, forward the port first, for example
-   `ssh -L 51121:localhost:51121 host`.
+   redirect. Unlike the Antigravity CLI's headless paste-code flow, clanka
+   always uses this loopback callback so sign-in works in both CLI and
+   `clanka acp` modes without reading stdin. Open the URL in a browser on
+   the same machine and sign in; over SSH, forward the port first, for
+   example `ssh -L 51121:localhost:51121 host`.
 3. clanka finds the account's Cloud Code project, or sets one up on the
    account's default tier, and stores the tokens and project in its
    key-value store. Later runs refresh the token without a browser.

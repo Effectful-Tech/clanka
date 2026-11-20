@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { assert, describe, it } from "@effect/vitest"
 import * as ConfigProvider from "effect/ConfigProvider"
 import * as Effect from "effect/Effect"
@@ -126,17 +127,21 @@ const ANTIGRAVITY_CLIENT_ID =
 
 const authConfig = ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))
 
-const signIn: OAuthCallback["Service"] = {
-  receive: ({ url, redirectUri }) =>
-    Effect.sync(() => {
-      assert.strictEqual(redirectUri, "http://localhost:51121/oauth-callback")
-      const params = new URL(url).searchParams
-      assert.strictEqual(params.get("client_id"), ANTIGRAVITY_CLIENT_ID)
-      return new URLSearchParams({
-        code: "auth-code",
-        state: params.get("state")!,
-      })
-    }),
+const signIn = () => {
+  const urls: Array<URL> = []
+  const callback: OAuthCallback["Service"] = {
+    receive: ({ url, redirectUri }) =>
+      Effect.sync(() => {
+        assert.strictEqual(redirectUri, "http://localhost:51121/oauth-callback")
+        const parsed = new URL(url)
+        urls.push(parsed)
+        return new URLSearchParams({
+          code: "auth-code",
+          state: parsed.searchParams.get("state")!,
+        })
+      }),
+  }
+  return { urls, callback }
 }
 
 const setupAuth = (
@@ -502,10 +507,33 @@ describe("AntigravityAuth", () => {
     "signs in through the browser, onboarding only when the account has no project",
     () =>
       Effect.gen(function* () {
-        const onboard = setupAuth(signIn)
+        const browser = signIn()
+        const onboard = setupAuth(browser.callback)
         const token = yield* AntigravityAuth.use((auth) => auth.get).pipe(
           Effect.provide(onboard.layer),
         )
+        const authUrl = browser.urls[0]!
+        assert.strictEqual(
+          `${authUrl.origin}${authUrl.pathname}`,
+          "https://accounts.google.com/o/oauth2/auth",
+        )
+        assert.strictEqual(
+          authUrl.searchParams.get("client_id"),
+          ANTIGRAVITY_CLIENT_ID,
+        )
+        assert.strictEqual(
+          authUrl.searchParams.get("code_challenge_method"),
+          "S256",
+        )
+        assert.deepStrictEqual(authUrl.searchParams.get("scope")?.split(" "), [
+          "https://www.googleapis.com/auth/cloud-platform",
+          "https://www.googleapis.com/auth/userinfo.email",
+          "https://www.googleapis.com/auth/userinfo.profile",
+          "https://www.googleapis.com/auth/cclog",
+          "https://www.googleapis.com/auth/experimentsandconfigs",
+          "https://www.googleapis.com/auth/aicode",
+          "openid",
+        ])
         assert.strictEqual(token.access, "new-access")
         assert.strictEqual(token.refresh, "new-refresh")
         assert.strictEqual(token.project, "onboarded-project")
@@ -514,6 +542,12 @@ describe("AntigravityAuth", () => {
         assert.strictEqual(exchange.get("code"), "auth-code")
         assert.strictEqual(exchange.get("client_id"), ANTIGRAVITY_CLIENT_ID)
         assert.match(exchange.get("client_secret")!, /^GOCSPX-/)
+        const verifier = exchange.get("code_verifier")!
+        assert.isAtLeast(verifier.length, 43)
+        assert.strictEqual(
+          createHash("sha256").update(verifier).digest("base64url"),
+          authUrl.searchParams.get("code_challenge"),
+        )
         assert.deepStrictEqual(onboard.endpoints(), [
           "token",
           "v1internal:loadCodeAssist",
@@ -532,7 +566,7 @@ describe("AntigravityAuth", () => {
         assert.lengthOf(reused.requests, 0)
 
         // An account with an existing project skips onboarding.
-        const existing = setupAuth(signIn, {
+        const existing = setupAuth(signIn().callback, {
           loadCodeAssist: { projectId: { id: "existing-project" } },
         })
         const existingToken = yield* AntigravityAuth.use(

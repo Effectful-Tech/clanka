@@ -19,6 +19,7 @@ import * as Antigravity from "./Antigravity.ts"
 import { AntigravityAuth, TokenData, toTokenStore } from "./AntigravityAuth.ts"
 import { AuthCodeHandler } from "./AuthCodeHandler.ts"
 import * as Compaction from "./Compaction.ts"
+import * as ModelsRepo from "./ModelsRepo.ts"
 
 const sse = (events: ReadonlyArray<unknown>) =>
   events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")
@@ -492,6 +493,96 @@ describe("Antigravity provider", () => {
         assert.isTrue(error.isRetryable)
       }
     }),
+  )
+
+  it.effect(
+    "lists the account's available models and adds them to ModelsRepo when signed in",
+    () =>
+      Effect.gen(function* () {
+        const baseModel = new ModelsRepo.ModelInfo({
+          provider: "openai",
+          id: "gpt-6-astra",
+          name: "GPT-6 Astra",
+        })
+        const baseRepo = Layer.succeed(
+          ModelsRepo.ModelsRepo,
+          ModelsRepo.ModelsRepo.of({ models: Effect.succeed([baseModel]) }),
+        )
+        const http = captureHttp(() =>
+          jsonResponse({
+            models: {
+              "gemini-4-argon-high": {
+                displayName: "Gemini 4 Argon",
+                extra: 1,
+              },
+              "claude-opus-5-5-high": { displayName: "" },
+              "internal-only": { displayName: "Hidden", isInternal: true },
+              malformed: "not-an-object",
+            },
+            webSearchModelIds: ["gemini-4-argon-high"],
+          }),
+        )
+        const readCatalog = (
+          httpLayer: Layer.Layer<HttpClient.HttpClient>,
+          signedIn: boolean,
+        ) =>
+          Effect.gen(function* () {
+            const repo = yield* ModelsRepo.ModelsRepo
+            const first = yield* repo.models
+            const second = yield* repo.models
+            return [first, second] as const
+          }).pipe(
+            Effect.provide(
+              Antigravity.layerModelsRepo.pipe(
+                Layer.provide([
+                  baseRepo,
+                  httpLayer,
+                  Layer.succeed(AuthCodeHandler, noSignIn),
+                ]),
+                Layer.provide(signedIn ? seedToken() : Layer.empty),
+                Layer.provide(KeyValueStore.layerMemory),
+              ),
+            ),
+          )
+
+        const [first, second] = yield* readCatalog(http.layer, true)
+        assert.lengthOf(http.requests, 1)
+        const request = http.requests[0]!
+        assert.strictEqual(
+          request.url,
+          "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+        )
+        assert.strictEqual(request.headers.authorization, "Bearer access-token")
+        assert.match(request.headers["user-agent"]!, /^antigravity\//)
+        assert.deepStrictEqual(http.json(), { project: "project-1" })
+        const expected = [
+          baseModel,
+          new ModelsRepo.ModelInfo({
+            provider: "antigravity",
+            id: "claude-opus-5-5-high",
+            name: "claude-opus-5-5-high",
+          }),
+          new ModelsRepo.ModelInfo({
+            provider: "antigravity",
+            id: "gemini-4-argon-high",
+            name: "Gemini 4 Argon",
+          }),
+        ]
+        assert.deepStrictEqual(first, expected)
+        assert.deepStrictEqual(second, expected)
+
+        // Without a stored token, layerModelsRepo does not sign in or fetch.
+        const signedOut = captureHttp(() => jsonResponse({ models: {} }))
+        const [withoutToken] = yield* readCatalog(signedOut.layer, false)
+        assert.deepStrictEqual(withoutToken, [baseModel])
+        assert.lengthOf(signedOut.requests, 0)
+
+        // A failing fetch leaves the base catalog intact.
+        const failing = captureHttp(() => new Response("oops", { status: 500 }))
+        const [afterError] = yield* readCatalog(failing.layer, true)
+        assert.deepStrictEqual(afterError, [baseModel])
+        assert.lengthOf(failing.requests, 1)
+      }),
   )
 })
 

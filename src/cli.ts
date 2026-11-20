@@ -12,6 +12,7 @@ import * as Acp from "./Acp.ts"
 import * as AcpSessionStore from "./AcpSessionStore.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as Agent from "./Agent.ts"
+import * as Antigravity from "./Antigravity.ts"
 import * as Compaction from "./Compaction.ts"
 import * as McpConfig from "./McpConfig.ts"
 import * as McpServers from "./McpServers.ts"
@@ -75,14 +76,34 @@ const providers = ModelsRepo.Provider.literals
 // provider's default effort. A provider with no models takes a typed
 // <model>[/<effort>].
 const selectModel = Effect.fnUntraced(function* (provider: Provider) {
-  const repo = yield* ModelsRepo.ModelsRepo
-  const catalog = (yield* repo.models).filter(
-    (model) => model.provider === provider,
-  )
   const models =
-    catalog.length > 0
-      ? catalog
-      : ModelsRepo.fallback.filter((model) => model.provider === provider)
+    provider === "antigravity"
+      ? yield* Antigravity.AntigravityClient.use(
+          (client) => client.models,
+        ).pipe(
+          Effect.provide(Antigravity.layerClient),
+          Effect.catchIf(
+            (error) =>
+              !(
+                error.reason._tag === "AuthenticationError" &&
+                error.reason.kind === "Unknown"
+              ),
+            (error) =>
+              Effect.logWarning(
+                "Failed to list the Antigravity models",
+                error,
+              ).pipe(Effect.as<ReadonlyArray<ModelsRepo.ModelInfo>>([])),
+          ),
+        )
+      : yield* Effect.gen(function* () {
+          const repo = yield* ModelsRepo.ModelsRepo
+          const catalog = (yield* repo.models).filter(
+            (model) => model.provider === provider,
+          )
+          return catalog.length > 0
+            ? catalog
+            : ModelsRepo.fallback.filter((model) => model.provider === provider)
+        })
   if (models.length === 0) {
     return ModelLayer.parseModel(
       yield* Prompt.String({ message: "Enter a model id" }),
@@ -429,11 +450,15 @@ const acp = Command.make("acp", {
       Agent.ConversationMode.layer(false),
       Layer.succeed(Logger.LogToStderr, true),
       DeviceCodeHandler.layerLog,
-      AuthCodeHandler.layerUnavailable(
-        "Sign in to Antigravity by running `clanka --provider antigravity` in an interactive terminal.",
+      Antigravity.layerModelsRepo.pipe(
+        Layer.provide(openAiCompatModels(flags)),
+        Layer.provideMerge(
+          AuthCodeHandler.layerUnavailable(
+            "Sign in to Antigravity by running `clanka --provider antigravity` in an interactive terminal.",
+          ),
+        ),
       ),
       compactionConfig(flags),
-      openAiCompatModels(flags),
     ),
   ),
 )

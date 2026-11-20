@@ -57,10 +57,12 @@ subscription (Gemini, Claude and GPT-OSS) through the Cloud Code API the
 Antigravity app uses. Sign in with the Google account that holds the
 subscription:
 
-1. Pick an Antigravity model:
+1. Run `clanka --provider antigravity` to pick from your account's models, or
+   pass a model id directly:
 
    ```sh
-   clanka --provider antigravity --model gemini-4-argon-high/high
+   clanka --provider antigravity
+   clanka --provider antigravity --model gemini-3-flash/low
    clanka acp --model antigravity/gemini-3-flash/low
    ```
 
@@ -73,12 +75,12 @@ subscription:
    account's default tier, and stores the tokens and project in its
    key-value store. Later runs refresh the token without a browser.
 
-Model ids are Antigravity's: `gemini-4-argon-high`, `gemini-3.8-flash-high`,
-`gemini-3-flash`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
-`claude-opus-5-5-high`, `claude-sonnet-5-5-high`, `claude-opus-4-6-thinking`,
-`claude-sonnet-4-6` and `gpt-oss-120b-medium`. The effort sets the Gemini
+Without `--model`, `clanka --provider antigravity` asks Cloud Code for the
+models available to your account and shows them in the picker. Once signed in,
+`clanka acp` includes those models in its model list as well. You can still
+pass any model id directly as `<model>[/<effort>]`: the effort sets the Gemini
 and Claude 5.5 thinking level (`xhigh` and `max` run as `high`) or the
-Claude 4.6 thinking budget; `none` turns thinking off.
+Claude 4.6 thinking budget, and `none` turns thinking off.
 
 This uses the Antigravity CLI's OAuth client (set
 `CLANKA_ANTIGRAVITY_CLIENT_ID` and `CLANKA_ANTIGRAVITY_CLIENT_SECRET` to use

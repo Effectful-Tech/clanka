@@ -18,7 +18,10 @@ import * as Base64 from "effect/encoding/Base64"
 import * as HttpClient from "effect/http/HttpClient"
 import type * as HttpClientError from "effect/http/HttpClientError"
 import * as HttpClientRequest from "effect/http/HttpClientRequest"
+import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as Layer from "effect/Layer"
+import * as Option from "effect/Option"
+import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Predicate from "effect/Predicate"
 import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
@@ -29,8 +32,12 @@ import {
   AntigravityAuth,
   type AntigravityAuthError,
   API_URL,
+  type TokenData,
+  toTokenStore,
   USER_AGENT,
 } from "./AntigravityAuth.ts"
+import type { AuthCodeHandler } from "./AuthCodeHandler.ts"
+import * as ModelsRepo from "./ModelsRepo.ts"
 
 // Accepted by Cloud Code in place of a thought signature, for tool calls made
 // by another provider or model family.
@@ -127,10 +134,28 @@ export type GenerateContentChunk = typeof GenerateContentChunk.Type
 
 const decodeChunk = Schema.decodeUnknownEffect(GenerateContentChunk)
 
-const aiError = (reason: AiError.AiErrorReason) =>
+// Loose per-entry decoding for `fetchAvailableModels`, so an unknown or
+// malformed entry does not drop the rest of the catalog.
+const AvailableModel = Schema.Struct({
+  displayName: Schema.optional(Schema.NullOr(Schema.String)),
+  isInternal: Schema.optional(Schema.NullOr(Schema.Boolean)),
+})
+
+const AvailableModelsResponse = Schema.Struct({
+  models: Schema.optional(
+    Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown)),
+  ),
+})
+
+const decodeAvailableModel = Schema.decodeUnknownOption(AvailableModel)
+
+const aiError = (
+  reason: AiError.AiErrorReason,
+  method = "streamGenerateContent",
+) =>
   AiError.make({
     module: "Antigravity",
-    method: "streamGenerateContent",
+    method,
     reason,
   })
 
@@ -198,7 +223,10 @@ const toChunk = (payload: unknown) => {
   )
 }
 
-const httpError = (error: HttpClientError.HttpClientError) =>
+const httpError = (
+  error: HttpClientError.HttpClientError,
+  method = "streamGenerateContent",
+) =>
   aiError(
     error.reason._tag === "TransportError" ||
       error.reason._tag === "EncodeError" ||
@@ -209,14 +237,19 @@ const httpError = (error: HttpClientError.HttpClientError) =>
           },
         )
       : new AiError.InternalProviderError({ description: error.message }),
+    method,
   )
 
-const authError = (error: AntigravityAuthError) =>
+const authError = (
+  error: AntigravityAuthError,
+  method = "streamGenerateContent",
+) =>
   aiError(
     new AiError.AuthenticationError({
       kind: "Unknown",
       description: error.message,
     }),
+    method,
   )
 
 /**
@@ -232,6 +265,10 @@ export class AntigravityClient extends Context.Service<
       readonly model: string
       readonly request: GenerateContentRequest
     }) => Stream.Stream<GenerateContentChunk, AiError.AiError>
+    readonly models: Effect.Effect<
+      ReadonlyArray<ModelsRepo.ModelInfo>,
+      AiError.AiError
+    >
   }
 >()("clanka/Antigravity/AntigravityClient") {
   static readonly make = Effect.gen(function* () {
@@ -240,37 +277,50 @@ export class AntigravityClient extends Context.Service<
     // The Antigravity app sends a session id with every request of a
     // conversation; one per client is close enough for prompt caching.
     const sessionId = `-${crypto.getRandomValues(new BigUint64Array(1))[0]! >> 1n}`
+    const post = Effect.fnUntraced(function* (
+      method: string,
+      token: TokenData,
+      body: unknown,
+      query = "",
+    ) {
+      const response = yield* HttpClientRequest.post(
+        `${API_URL}:${method}${query}`,
+      ).pipe(
+        HttpClientRequest.bearerToken(token.access),
+        HttpClientRequest.setHeader("User-Agent", USER_AGENT),
+        HttpClientRequest.bodyJsonUnsafe(body),
+        httpClient.execute,
+        Effect.mapError((error) => httpError(error, method)),
+      )
+      if (response.status !== 200) {
+        const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""))
+        return yield* aiError(
+          AiError.reasonFromHttpStatus({
+            status: response.status,
+            description: text,
+          }),
+          method,
+        )
+      }
+      return response
+    })
     return AntigravityClient.of({
       streamGenerateContent: ({ model, request }) =>
         Effect.gen(function* () {
           const token = yield* Effect.mapError(auth.get, authError)
-          const response = yield* HttpClientRequest.post(
-            `${API_URL}:streamGenerateContent?alt=sse`,
-          ).pipe(
-            HttpClientRequest.bearerToken(token.access),
-            HttpClientRequest.setHeader("User-Agent", USER_AGENT),
-            HttpClientRequest.bodyJsonUnsafe({
+          const response = yield* post(
+            "streamGenerateContent",
+            token,
+            {
               project: token.project,
               model,
               userAgent: "antigravity",
               requestType: "agent",
               requestId: `agent-${crypto.randomUUID()}`,
               request: { ...request, sessionId },
-            }),
-            httpClient.execute,
-            Effect.mapError(httpError),
+            },
+            "?alt=sse",
           )
-          if (response.status !== 200) {
-            const body = yield* response.text.pipe(
-              Effect.orElseSucceed(() => ""),
-            )
-            return yield* aiError(
-              AiError.reasonFromHttpStatus({
-                status: response.status,
-                description: body,
-              }),
-            )
-          }
           return response.stream.pipe(
             Stream.decodeText(),
             Stream.splitLines,
@@ -279,6 +329,61 @@ export class AntigravityClient extends Context.Service<
             Stream.mapEffect(toChunk),
           )
         }).pipe(Stream.unwrap),
+      models: Effect.gen(function* () {
+        const method = "fetchAvailableModels"
+        const token = yield* Effect.mapError(auth.get, (error) =>
+          authError(error, method),
+        )
+        return yield* post(method, token, { project: token.project }).pipe(
+          Effect.flatMap((response) =>
+            HttpClientResponse.schemaBodyJson(AvailableModelsResponse)(
+              response,
+            ).pipe(
+              Effect.mapError((error) =>
+                error._tag === "SchemaError"
+                  ? aiError(
+                      AiError.InvalidOutputError.fromSchemaError(error),
+                      method,
+                    )
+                  : httpError(error, method),
+              ),
+            ),
+          ),
+          Effect.timeoutOrElse({
+            duration: "15 seconds",
+            orElse: () =>
+              Effect.fail(
+                aiError(
+                  new AiError.NetworkError({
+                    reason: "TransportError",
+                    method: "POST",
+                    url: `${API_URL}:${method}`,
+                    description: "Timed out fetching Antigravity models",
+                  }),
+                  method,
+                ),
+              ),
+          }),
+          Effect.map((data) =>
+            Object.entries(data.models ?? {})
+              .flatMap(([id, raw]) => {
+                const entry = Option.getOrUndefined(decodeAvailableModel(raw))
+                if (entry === undefined || entry.isInternal === true) return []
+                return [
+                  new ModelsRepo.ModelInfo({
+                    provider: "antigravity",
+                    id,
+                    name: entry.displayName?.trim() || id,
+                  }),
+                ]
+              })
+              .toSorted(
+                (a, b) =>
+                  a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+              ),
+          ),
+        )
+      }),
     })
   })
 
@@ -297,6 +402,56 @@ export class AntigravityClient extends Context.Service<
  * @category Layers
  */
 export const layerClient = AntigravityClient.layer
+
+/**
+ * The `ModelsRepo` in context followed by the account's Antigravity models,
+ * fetched once on first use when a token is already stored in the
+ * `KeyValueStore`. Leaves the catalog unchanged when no token is stored or
+ * when the fetch fails.
+ *
+ * @since 1.0.0
+ * @category Layers
+ */
+export const layerModelsRepo: Layer.Layer<
+  ModelsRepo.ModelsRepo,
+  never,
+  | ModelsRepo.ModelsRepo
+  | HttpClient.HttpClient
+  | KeyValueStore.KeyValueStore
+  | AuthCodeHandler
+> = Layer.effect(
+  ModelsRepo.ModelsRepo,
+  Effect.gen(function* () {
+    const repo = yield* ModelsRepo.ModelsRepo
+    const tokenStore = toTokenStore(yield* KeyValueStore.KeyValueStore)
+    const client = yield* AntigravityClient
+    const listed = yield* Effect.cached(
+      tokenStore.get("token").pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () =>
+              Effect.succeed<ReadonlyArray<ModelsRepo.ModelInfo>>([]),
+            onSome: () => client.models,
+          }),
+        ),
+        Effect.catch((error) =>
+          Effect.logWarning(
+            "Failed to list the Antigravity models",
+            error,
+          ).pipe(Effect.as<ReadonlyArray<ModelsRepo.ModelInfo>>([])),
+        ),
+      ),
+    )
+    return ModelsRepo.ModelsRepo.of({
+      models: Effect.zipWith(
+        repo.models,
+        listed,
+        (catalog, antigravity) => [...catalog, ...antigravity],
+        { concurrent: true },
+      ),
+    })
+  }),
+).pipe(Layer.provide(layerClient))
 
 /**
  * Caps the output tokens of the Claude requests made within it, thinking

@@ -9,9 +9,8 @@ Antigravity app, finds or sets up the account's Cloud Code project, and
 sends Gemini `generateContent` requests for every model, Claude and GPT-OSS
 included. The protocol follows `CLIProxyAPI`'s Antigravity executor.
 
-Out of scope: discovering the account's models with `fetchAvailableModels`;
-quota display; image generation models; fast mode; switching between
-several Google accounts.
+Out of scope: quota display; image generation models; fast mode; switching
+between several Google accounts.
 
 ## Library
 
@@ -36,8 +35,10 @@ class AntigravityAuth {
 class AntigravityClient {
   streamGenerateContent(options: { model; request: GenerateContentRequest }):
     Stream<GenerateContentChunk, AiError>
+  models: Effect<ReadonlyArray<ModelsRepo.ModelInfo>, AiError>
   static layer: Layer<AntigravityClient, never, HttpClient | KeyValueStore | AuthCodeHandler>
 }
+layerModelsRepo: Layer<ModelsRepo, never, ModelsRepo | HttpClient | KeyValueStore | AuthCodeHandler>
 class MaxOutputTokens extends Context.Reference<number | undefined>
 model(model: string, options?: { reasoning?: { effort?: string } | null } & AgentModelConfig):
   Model<"antigravity", LanguageModel, AntigravityClient>
@@ -133,8 +134,20 @@ are capped.
 
 ## Catalog and CLI
 
-- `ModelsRepo.antigravity` is a built-in list of the Antigravity models,
-  since models.dev does not list them. Every catalog ends with it, cached
-  ones included, and `fallback` contains it.
-- `--provider antigravity` and `antigravity/<model>[/<effort>]` in
-  `clanka acp` use it through `ModelLayer`.
+- `AntigravityClient.models` calls `POST {API}:fetchAvailableModels` with
+  `{ project }` and the bearer token (timing out after 15 seconds once signed
+  in). Each entry in `models` is decoded loosely (`displayName`,
+  `isInternal`): internal and malformed entries are skipped, `efforts` is
+  omitted, and the models are sorted by name.
+- `layerModelsRepo` appends those models to `ModelsRepo`, cached on first use,
+  only when a token is already stored in the `KeyValueStore`; otherwise it
+  makes no requests, and fetch failures log a warning and leave the catalog
+  unchanged.
+- `clanka --provider antigravity` without `--model` calls
+  `AntigravityClient.models` (signing in first if needed), skips the effort
+  prompt because `efforts` is omitted, and falls back to a typed
+  `<model>[/<effort>]` if listing fails.
+- `clanka acp` layers `Antigravity.layerModelsRepo` onto `ModelsRepo` (with
+  `AuthCodeHandler.layerUnavailable`), so Antigravity models appear in the
+  ACP list only when a token is stored; typed `antigravity/<model>[/<effort>]`
+  works either way through `ModelLayer`.

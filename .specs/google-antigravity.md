@@ -1,0 +1,153 @@
+# Google Antigravity provider
+
+## Overview
+
+An `antigravity` provider runs the models of a Google Antigravity
+subscription through Cloud Code (`daily-cloudcode-pa.googleapis.com/v1internal`),
+the API the Antigravity app uses. clanka signs in with Google OAuth as the
+Antigravity app, finds or sets up the account's Cloud Code project, and
+sends Gemini `generateContent` requests for every model, Claude and GPT-OSS
+included. The protocol follows `CLIProxyAPI`'s Antigravity executor.
+
+Out of scope: quota display; image generation models; fast mode; switching
+between several Google accounts.
+
+## Library
+
+```ts
+// AuthCodeHandler
+class AuthCodeHandler {
+  request(options: { url: string }): Effect<string, AuthCodeHandlerError>
+}
+layerPrompt: Layer<AuthCodeHandler, never, Prompt.Environment | Stdio>
+layerUnavailable(message: string): Layer<AuthCodeHandler>
+
+// AntigravityAuth
+class TokenData { access; refresh; expires; project }
+class AntigravityAuth {
+  get: Effect<TokenData, AntigravityAuthError>
+  authenticate: Effect<TokenData, AntigravityAuthError>
+  logout: Effect<void>
+  static layer: Layer<AntigravityAuth, never, HttpClient | KeyValueStore | AuthCodeHandler>
+}
+
+// Antigravity
+class AntigravityClient {
+  streamGenerateContent(options: { model; request: GenerateContentRequest }):
+    Stream<GenerateContentChunk, AiError>
+  models: Effect<ReadonlyArray<ModelsRepo.ModelInfo>, AiError>
+  static layer: Layer<AntigravityClient, never, HttpClient | KeyValueStore | AuthCodeHandler>
+}
+layerModelsRepo: Layer<ModelsRepo, never, ModelsRepo | HttpClient | KeyValueStore>
+class MaxOutputTokens extends Context.Reference<number | undefined>
+model(model: string, options?: { reasoning?: { effort?: string } | null } & AgentModelConfig):
+  Model<"antigravity", LanguageModel, AntigravityClient>
+```
+
+## Sign-in
+
+- `layerPrompt` prints the authorization URL and reads the pasted code,
+  masked, from the terminal. Ctrl-C fails the sign-in as cancelled. When
+  stdin is not a terminal every sign-in fails without prompting.
+- `clanka acp` owns stdin and stdout, so it uses `layerUnavailable` with a
+  message that says to sign in with `clanka --provider antigravity` in a
+  terminal first.
+- `AntigravityAuth` signs in as the Antigravity CLI (`agy`) does: its
+  Google OAuth client, `/o/oauth2/auth`, its scopes (including `openid`),
+  S256 PKCE, `access_type=offline`, `prompt=consent`, a random `state`, and
+  redirect URI `https://antigravity.google/oauth-callback`. The callback page
+  shows only the authorization code, so `state` is sent without comparing it
+  on return; the pasted code is trimmed and rejected when empty.
+  `CLANKA_ANTIGRAVITY_CLIENT_ID` and `CLANKA_ANTIGRAVITY_CLIENT_SECRET`, read
+  through the `ConfigProvider` of its layer when signing in or refreshing,
+  name another client.
+- After the code exchange it calls `loadCodeAssist`. The project is the
+  first of `cloudaicompanionProject`, `projectId` and `project` that is
+  set, as an id or `{ id }`; `onboardUser` responses are read the same
+  way. Without one it calls `onboardUser` on the default allowed
+  tier (else the current tier, else `free-tier`), up to five times two
+  seconds apart, until `done`.
+- The token and project are stored under `antigravity.auth/token` in the
+  `KeyValueStore`. `get` refreshes a token that expires within a minute and
+  keeps the project. Only an `invalid_grant` answer clears the token and
+  signs in again; any other refresh failure fails `get` and keeps the token
+  for the next attempt.
+
+## Requests
+
+- `POST {API}:streamGenerateContent?alt=sse` with the bearer token, the
+  Antigravity user agent and
+  `{ project, model, userAgent: "antigravity", requestType: "agent", requestId, request }`.
+  `request.sessionId` is fixed per client.
+- Leading system messages become `systemInstruction`; later ones are user
+  text. Roles map to `user` / `model`, and consecutive turns of one role are
+  merged.
+- Tool calls are `functionCall` parts with their thought signature. For a
+  non-Claude model, when the first tool call of a model turn has none, it
+  gets `skip_thought_signature_validator`; later parallel calls stay
+  unsigned.
+- For a Claude model, only reasoning parts with non-blank text carry a
+  signature. Text and tool calls are sent unsigned and get no sentinel, as
+  CLIProxyAPI's Claude signature sanitizer sends them. Tool results are
+  `functionResponse` parts whose `response.result` is always a string.
+- Signatures come back as `metadata.antigravity` `{ thoughtSignature, model }`
+  on reasoning, text and tool-call parts. They are replayed only to a model
+  of the same family (`claude`, `gpt` or `gemini` in the id), and
+  reasoning parts only with a replayable signature.
+- Tool schemas are reduced to Gemini's subset: `$ref`s inlined, type
+  arrays with `null` turned into `nullable`, non-string enums and every
+  other keyword dropped.
+- `toolChoice` maps to `functionCallingConfig` (`auto` is `VALIDATED`
+  for Claude models).
+
+## Thinking
+
+| effort            | Claude 4.x                                             | others                                       |
+| ----------------- | ------------------------------------------------------ | -------------------------------------------- |
+| absent            | `includeThoughts` only                                 | `includeThoughts` only                       |
+| `none` or `null`  | no thinking                                            | no thinking                                  |
+| `minimal` … `max` | `thinkingBudget` 1024 … 63999, `maxOutputTokens` 64000 | `thinkingLevel`, `xhigh` and `max` as `high` |
+
+`MaxOutputTokens` sets `maxOutputTokens` on Claude requests and caps a
+Claude budget at half of it. Other models get no `maxOutputTokens`, as
+CLIProxyAPI strips it for them. The model's `SummarizerTransform` sets it to
+`Compaction.summarizerMaxOutputTokens`, so only Claude compaction summaries
+are capped.
+
+## Responses
+
+- The body is read line by line: `data:` prefixes are dropped and lines
+  are joined until they parse as JSON, so a last event without a closing
+  blank line still counts and bare multi-line JSON is read too. A stream that
+  ends mid-document is an `InvalidOutputError`.
+- A payload with a top-level `error` fails the stream with
+  `AiError.reasonFromHttpStatus` of its `code` (502 when the code is not an
+  HTTP error status), so a trailing 503 is a retryable `InternalProviderError`.
+- Other payloads decode as `{ response: { candidates, usageMetadata, responseId, modelVersion } }`.
+- Finish reasons: `STOP` or no finish reason is `tool-calls` after a tool
+  call; otherwise `STOP` is `stop` and no finish reason `unknown`; `MAX_TOKENS` is `length`; safety reasons are
+  `content-filter`; `MALFORMED_FUNCTION_CALL` is `error`.
+- Usage: `promptTokenCount` (with `cachedContentTokenCount` as cache reads),
+  `candidatesTokenCount` as text and `thoughtsTokenCount` as reasoning.
+- A non-200 status maps through `AiError.reasonFromHttpStatus`, so 429 is a
+  retryable `RateLimitError`.
+
+## Catalog and CLI
+
+- `AntigravityClient.models` signs in if needed, then posts `{ project }`
+  to `{API}:fetchAvailableModels`. Each entry of the response's `models`
+  record becomes a `ModelInfo` with the key as id and `displayName` as
+  name (the id when blank), without `efforts`. Entries with `isInternal`
+  and entries that do not decode are skipped. The list is sorted by name.
+- `layerModelsRepo` appends those models to the `ModelsRepo` in context,
+  listed once, on first use. It never signs in: without a stored token it
+  makes no request. A token store that cannot be read, a failed listing or
+  one that takes longer than 15 seconds, token refresh included, logs a
+  warning and adds no models.
+- `clanka --provider antigravity` without `--model` signs in, with no time
+  limit, then lists the models and picks one without asking for an effort.
+  A failed sign-in fails the command. A listing that fails or takes longer
+  than 15 seconds logs a warning and asks for a typed `<model>[/<effort>]`.
+- `clanka acp` uses `layerModelsRepo`, so the Antigravity models are in its
+  list only once a token is stored. A typed `antigravity/<model>[/<effort>]`
+  works either way through `ModelLayer`.

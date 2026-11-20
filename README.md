@@ -50,6 +50,44 @@ lists at `/models` show up in the model prompt and in the ACP model list as
 including ids with slashes such as `openai-compat/moonshotai/Kimi-K2-Instruct`;
 a trailing segment is read as the effort only when it is a reasoning level.
 
+## Google Antigravity
+
+The `antigravity` provider runs the models of a Google Antigravity
+subscription (Gemini, Claude and GPT-OSS) through the Cloud Code API the
+Antigravity app uses. Sign in with the Google account that holds the
+subscription:
+
+1. Run `clanka --provider antigravity` to pick from your account's models, or
+   pass a model id directly:
+
+   ```sh
+   clanka --provider antigravity
+   clanka --provider antigravity --model gemini-3-flash/low
+   clanka acp --model antigravity/gemini-3-flash/low
+   ```
+
+2. On first use clanka prints a Google sign-in URL and prompts for an
+   authorization code. Open the URL in a browser, sign in, and paste the
+   code back into the terminal. `clanka acp` does not prompt for sign-in, so
+   sign in once from a terminal with `clanka --provider antigravity` before
+   using Antigravity models in ACP.
+3. clanka finds the account's Cloud Code project, or sets one up on the
+   account's default tier, and stores the tokens and project in its
+   key-value store. Later runs refresh the token without a browser.
+
+Without `--model`, `clanka --provider antigravity` asks Cloud Code for the
+models available to your account and shows them in the picker. Once signed in,
+`clanka acp` includes those models in its model list as well. You can still
+pass any model id directly as `<model>[/<effort>]`: the effort sets the Gemini
+and Claude 5.5 thinking level (`xhigh` and `max` run as `high`) or the
+Claude 4.6 thinking budget, and `none` turns thinking off.
+
+This uses the Antigravity CLI's OAuth client (set
+`CLANKA_ANTIGRAVITY_CLIENT_ID` and `CLANKA_ANTIGRAVITY_CLIENT_SECRET` to use
+another) and an internal Google API, not a public one. Google may change it
+or limit its use outside the app at any time; check that this is allowed for
+your account before relying on it.
+
 ## Fast mode
 
 OpenAI fast mode sends requests on the `priority` service tier: faster

@@ -12,6 +12,8 @@ import * as Acp from "./Acp.ts"
 import * as AcpSessionStore from "./AcpSessionStore.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as Agent from "./Agent.ts"
+import * as Antigravity from "./Antigravity.ts"
+import { AntigravityAuth } from "./AntigravityAuth.ts"
 import * as Compaction from "./Compaction.ts"
 import * as McpConfig from "./McpConfig.ts"
 import * as McpServers from "./McpServers.ts"
@@ -29,6 +31,7 @@ import * as Config from "effect/Config"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Option from "effect/Option"
 import type * as Redacted from "effect/Redacted"
+import * as AuthCodeHandler from "./AuthCodeHandler.ts"
 import * as DeviceCodeHandler from "./DeviceCodeHandler.ts"
 import packageJson from "../package.json" with { type: "json" }
 
@@ -69,19 +72,40 @@ type Provider = ModelsRepo.Provider
 
 const providers = ModelsRepo.Provider.literals
 
-// Pick a model from the catalog, filtering by name as the user types, then
-// one of its reasoning efforts. A model whose efforts are unknown runs at the
-// provider's default effort. A provider with no models takes a typed
-// <model>[/<effort>].
-const selectModel = Effect.fnUntraced(function* (provider: Provider) {
+// The models of the Antigravity account. Signs in first, however long that
+// takes, and fails when the sign-in does. A failed listing serves no models.
+const antigravityModels = Effect.gen(function* () {
+  yield* AntigravityAuth.use((auth) => auth.get)
+  const client = yield* Antigravity.AntigravityClient
+  return yield* client.models.pipe(
+    Effect.timeout("15 seconds"),
+    Effect.catch((error) =>
+      Effect.logWarning("Failed to list the Antigravity models", error).pipe(
+        Effect.as([]),
+      ),
+    ),
+  )
+}).pipe(Effect.provide([AntigravityAuth.layer, Antigravity.layerClient]))
+
+const catalogModels = Effect.fnUntraced(function* (provider: Provider) {
   const repo = yield* ModelsRepo.ModelsRepo
   const catalog = (yield* repo.models).filter(
     (model) => model.provider === provider,
   )
+  return catalog.length > 0
+    ? catalog
+    : ModelsRepo.fallback.filter((model) => model.provider === provider)
+})
+
+// Pick one of the provider's models, filtering by name as the user types,
+// then one of its reasoning efforts. A model whose efforts are unknown runs
+// at the provider's default effort. A provider with no models takes a typed
+// <model>[/<effort>].
+const selectModel = Effect.fnUntraced(function* (provider: Provider) {
   const models =
-    catalog.length > 0
-      ? catalog
-      : ModelsRepo.fallback.filter((model) => model.provider === provider)
+    provider === "antigravity"
+      ? yield* antigravityModels
+      : yield* catalogModels(provider)
   if (models.length === 0) {
     return ModelLayer.parseModel(
       yield* Prompt.String({ message: "Enter a model id" }),
@@ -171,29 +195,11 @@ const provider = Flag.Literals("provider", providers).pipe(
   Flag.withFallbackPrompt(
     Prompt.Select({
       message: "Select a provider",
-      choices: [
-        {
-          title: "openai",
-          value: "openai",
-          selected: true,
-        },
-        {
-          title: "copilot",
-          value: "copilot",
-        },
-        {
-          title: "xai",
-          value: "xai",
-        },
-        {
-          title: "claude",
-          value: "claude",
-        },
-        {
-          title: "openai-compat",
-          value: "openai-compat",
-        },
-      ],
+      choices: providers.map((value) => ({
+        title: value,
+        value,
+        selected: value === "openai",
+      })),
     }),
   ),
 )
@@ -446,8 +452,13 @@ const acp = Command.make("acp", {
       Agent.ConversationMode.layer(false),
       Layer.succeed(Logger.LogToStderr, true),
       DeviceCodeHandler.layerLog,
+      AuthCodeHandler.layerUnavailable(
+        "Sign in to Antigravity by running `clanka --provider antigravity` in an interactive terminal.",
+      ),
+      Antigravity.layerModelsRepo.pipe(
+        Layer.provide(openAiCompatModels(flags)),
+      ),
       compactionConfig(flags),
-      openAiCompatModels(flags),
     ),
   ),
 )
@@ -565,6 +576,7 @@ Command.make("clanka", {
     ),
     GlobalWebSocket.layerWebSocketConstructor,
     DeviceCodeHandler.layerConsole,
+    AuthCodeHandler.layerPrompt.pipe(Layer.provide(NodeServices.layer)),
   ]),
   NodeRuntime.runMain,
 )

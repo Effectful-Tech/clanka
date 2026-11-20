@@ -37,3 +37,7 @@
   Claude models through the Claude Agent SDK and the user's installed Claude
   Code. clanka keeps its loop, `execute` tool and history; a parked MCP tool
   bridges each `execute` call back to clanka.
+- [Google Antigravity provider](./google-antigravity.md) - An `antigravity`
+  provider that signs in with Google as the Antigravity app, finds the
+  account's Cloud Code project, and runs Gemini, Claude and GPT-OSS models
+  through Cloud Code's Gemini `streamGenerateContent` API.

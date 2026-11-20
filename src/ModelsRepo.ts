@@ -29,6 +29,7 @@ export const Provider = Schema.Literals([
   "xai",
   "claude",
   "openai-compat",
+  "antigravity",
 ])
 
 /**
@@ -59,8 +60,8 @@ export class ModelInfo extends Schema.Class<ModelInfo>(
 
 /**
  * The built-in catalog, served when neither models.dev nor a cached catalog
- * is available. It has no `openai-compat` model, since that provider's
- * models depend on the endpoint.
+ * is available. It has no `openai-compat` or `antigravity` models, since
+ * those providers list models from their own endpoints.
  *
  * @since 1.0.0
  * @category Models

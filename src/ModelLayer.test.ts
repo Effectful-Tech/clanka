@@ -12,6 +12,7 @@ import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import * as Socket from "effect/socket/Socket"
 import type * as Acp from "./Acp.ts"
 import * as Agent from "./Agent.ts"
+import { AuthCodeHandler } from "./AuthCodeHandler.ts"
 import { DeviceCodeHandler } from "./DeviceCodeHandler.ts"
 import * as ModelLayer from "./ModelLayer.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
@@ -59,6 +60,9 @@ const unused = Layer.mergeAll(
   }),
   Layer.succeed(Socket.WebSocketConstructor, () => {
     throw new Error("Unexpected live WebSocket")
+  }),
+  Layer.succeed(AuthCodeHandler, {
+    request: () => Effect.die("The API-key path must not log in"),
   }),
 )
 

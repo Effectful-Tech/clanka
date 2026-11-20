@@ -69,6 +69,7 @@ const languageModel = (
   effort: string | null | undefined,
   openai: OpenAiClient.Options,
   fastMode: boolean,
+  // Annotated: the providers' layers are not inferred as one layer.
 ): Layer.Layer<
   LanguageModel.LanguageModel | Model.ProviderName | Model.ModelName,
   never,

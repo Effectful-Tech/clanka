@@ -172,33 +172,11 @@ const provider = Flag.Literals("provider", providers).pipe(
   Flag.withFallbackPrompt(
     Prompt.Select({
       message: "Select a provider",
-      choices: [
-        {
-          title: "openai",
-          value: "openai",
-          selected: true,
-        },
-        {
-          title: "copilot",
-          value: "copilot",
-        },
-        {
-          title: "xai",
-          value: "xai",
-        },
-        {
-          title: "claude",
-          value: "claude",
-        },
-        {
-          title: "openai-compat",
-          value: "openai-compat",
-        },
-        {
-          title: "antigravity",
-          value: "antigravity",
-        },
-      ],
+      choices: providers.map((value) => ({
+        title: value,
+        value,
+        selected: value === "openai",
+      })),
     }),
   ),
 )

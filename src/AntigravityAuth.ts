@@ -316,17 +316,7 @@ export class AntigravityAuth extends Context.Service<
         expires: expiresAt(token),
         project: yield* findProject(token.access_token),
       })
-    }).pipe(
-      Effect.mapError((cause) =>
-        cause instanceof AntigravityAuthError
-          ? cause
-          : new AntigravityAuthError({
-              reason: "LoginFailed",
-              message: "Failed to sign in to Antigravity",
-              cause,
-            }),
-      ),
-    )
+    }).pipe(orAuthError("LoginFailed", "Failed to sign in to Antigravity"))
 
     // None when Google rejects the refresh token, which only signing in
     // again fixes. Any other failure keeps the token for the next attempt.
@@ -354,14 +344,9 @@ export class AntigravityAuth extends Context.Service<
             }),
         )
       },
-      Effect.mapError((cause) =>
-        cause instanceof AntigravityAuthError
-          ? cause
-          : new AntigravityAuthError({
-              reason: "RefreshFailed",
-              message: "Failed to refresh the Antigravity access token",
-              cause,
-            }),
+      orAuthError(
+        "RefreshFailed",
+        "Failed to refresh the Antigravity access token",
       ),
     )
 
@@ -388,6 +373,13 @@ export class AntigravityAuth extends Context.Service<
 
   static readonly layer = Layer.effect(AntigravityAuth, AntigravityAuth.make)
 }
+
+const orAuthError = (reason: AntigravityAuthError["reason"], message: string) =>
+  Effect.mapError((cause: unknown) =>
+    cause instanceof AntigravityAuthError
+      ? cause
+      : new AntigravityAuthError({ reason, message, cause }),
+  )
 
 // Google answers `invalid_grant` to a revoked or expired refresh token.
 const grantRejected = (error: HttpClientError.HttpClientError) =>

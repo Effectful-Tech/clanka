@@ -63,6 +63,8 @@ const antigravityModel = (
   name: string,
   efforts: ReadonlyArray<ThoughtLevel>,
 ) => new ModelInfo({ provider: "antigravity", id, name, efforts })
+const levels = ["low", "medium", "high"] as const
+const flashLevels = ["minimal", ...levels] as const
 
 /**
  * The Google Antigravity models. models.dev does not list them, so every
@@ -72,66 +74,32 @@ const antigravityModel = (
  * @category Models
  */
 export const antigravity: ReadonlyArray<ModelInfo> = [
-  antigravityModel("gemini-4-argon-high", "Gemini 4 Argon", [
-    "low",
-    "medium",
-    "high",
-  ]),
-  antigravityModel("claude-opus-5-5-high", "Claude Opus 5.5", [
-    "low",
-    "medium",
-    "high",
-  ]),
-  antigravityModel("claude-sonnet-5-5-high", "Claude Sonnet 5.5", [
-    "low",
-    "medium",
-    "high",
-  ]),
-  antigravityModel("gemini-3.8-flash-high", "Gemini 3.8 Flash", [
-    "low",
-    "medium",
-    "high",
-  ]),
-  antigravityModel("gemini-3-flash", "Gemini 3 Flash", [
-    "minimal",
-    "low",
-    "medium",
-    "high",
-  ]),
-  antigravityModel("gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite", [
-    "minimal",
-    "low",
-    "medium",
-    "high",
-  ]),
-  antigravityModel("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite", [
-    "minimal",
-    "low",
-    "medium",
-    "high",
-  ]),
-  antigravityModel("claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)", [
-    "low",
-    "medium",
-    "high",
-  ]),
-  antigravityModel("claude-sonnet-4-6", "Claude Sonnet 4.6", [
-    "low",
-    "medium",
-    "high",
-  ]),
+  antigravityModel("gemini-4-argon-high", "Gemini 4 Argon", levels),
+  antigravityModel("claude-opus-5-5-high", "Claude Opus 5.5", levels),
+  antigravityModel("claude-sonnet-5-5-high", "Claude Sonnet 5.5", levels),
+  antigravityModel("gemini-3.8-flash-high", "Gemini 3.8 Flash", levels),
+  antigravityModel("gemini-3-flash", "Gemini 3 Flash", flashLevels),
+  antigravityModel(
+    "gemini-3.5-flash-lite",
+    "Gemini 3.5 Flash Lite",
+    flashLevels,
+  ),
+  antigravityModel(
+    "gemini-3.1-flash-lite",
+    "Gemini 3.1 Flash Lite",
+    flashLevels,
+  ),
+  antigravityModel(
+    "claude-opus-4-6-thinking",
+    "Claude Opus 4.6 (Thinking)",
+    levels,
+  ),
+  antigravityModel("claude-sonnet-4-6", "Claude Sonnet 4.6", levels),
   antigravityModel("gpt-oss-120b-medium", "GPT-OSS 120B", []),
 ]
 
-/**
- * The built-in catalog, served when neither models.dev nor a cached catalog
- * is available. It has no `openai-compat` model, since that provider's
- * models depend on the endpoint.
- *
- * @since 1.0.0
- * @category Models
- */
-export const fallback: ReadonlyArray<ModelInfo> = [
+// Stands in for the models.dev catalog when it cannot be fetched.
+const modelsDevFallback = [
   new ModelInfo({
     provider: "openai",
     id: "gpt-6-astra",
@@ -156,6 +124,18 @@ export const fallback: ReadonlyArray<ModelInfo> = [
     name: "Claude Opus 5.5",
     efforts: ["low", "medium", "high", "xhigh", "max"],
   }),
+]
+
+/**
+ * The built-in catalog, served when neither models.dev nor a cached catalog
+ * is available. It has no `openai-compat` model, since that provider's
+ * models depend on the endpoint.
+ *
+ * @since 1.0.0
+ * @category Models
+ */
+export const fallback: ReadonlyArray<ModelInfo> = [
+  ...modelsDevFallback,
   ...antigravity,
 ]
 
@@ -240,12 +220,6 @@ const toCatalog = (api: typeof ModelsDevApi.Type): ReadonlyArray<ModelInfo> => {
       })
     })
 }
-
-// Every catalog lists the current `antigravity` models, cached ones too.
-const withAntigravity = (models: ReadonlyArray<ModelInfo>) => [
-  ...models.filter((model) => model.provider !== "antigravity"),
-  ...antigravity,
-]
 
 class CachedCatalog extends Schema.Class<CachedCatalog>(
   "clanka/ModelsRepo/CachedCatalog",
@@ -358,13 +332,15 @@ export class ModelsRepo extends Context.Service<
                   ? "Failed to refresh the models.dev catalog, using the cached catalog"
                   : "Failed to fetch the models.dev catalog, using the built-in catalog",
                 error,
-              ).pipe(Effect.as(cached?.models ?? fallback)),
+              ).pipe(Effect.as(cached?.models ?? modelsDevFallback)),
             ),
           )
         })
 
         return ModelsRepo.of({
-          models: yield* Effect.cached(Effect.map(load, withAntigravity)),
+          models: yield* Effect.cached(
+            Effect.map(load, (models) => [...models, ...antigravity]),
+          ),
         })
       }),
     )

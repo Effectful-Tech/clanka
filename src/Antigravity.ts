@@ -127,11 +127,12 @@ export type GenerateContentChunk = typeof GenerateContentChunk.Type
 
 const decodeChunk = Schema.decodeUnknownEffect(GenerateContentChunk)
 
-const invalidOutput = (description: string) =>
-  aiError(
-    "streamGenerateContent",
-    new AiError.InvalidOutputError({ description }),
-  )
+const aiError = (reason: AiError.AiErrorReason) =>
+  AiError.make({
+    module: "Antigravity",
+    method: "streamGenerateContent",
+    reason,
+  })
 
 // Cloud Code sends one JSON document per `data:` line, but can end the
 // stream without the blank line that ends an SSE event, and reports a
@@ -158,7 +159,13 @@ const jsonPayloads = <E, R>(lines: Stream.Stream<string, E, R>) =>
         Stream.suspend(() =>
           pending === ""
             ? Stream.empty
-            : Stream.fail(invalidOutput("The response ended mid-event")),
+            : Stream.fail(
+                aiError(
+                  new AiError.InvalidOutputError({
+                    description: "The response ended mid-event",
+                  }),
+                ),
+              ),
         ),
       ),
     )
@@ -177,7 +184,6 @@ const toChunk = (payload: unknown) => {
     const code = payload.error.code ?? 0
     return Effect.fail(
       aiError(
-        "streamGenerateContent",
         AiError.reasonFromHttpStatus({
           status: code >= 400 && code <= 599 ? code : 502,
           description: payload.error.message,
@@ -186,16 +192,14 @@ const toChunk = (payload: unknown) => {
     )
   }
   return decodeChunk(payload).pipe(
-    Effect.mapError((error) => invalidOutput(error.message)),
+    Effect.mapError((error) =>
+      aiError(AiError.InvalidOutputError.fromSchemaError(error)),
+    ),
   )
 }
 
-const aiError = (method: string, reason: AiError.AiErrorReason) =>
-  AiError.make({ module: "Antigravity", method, reason })
-
 const httpError = (error: HttpClientError.HttpClientError) =>
   aiError(
-    "streamGenerateContent",
     error.reason._tag === "TransportError" ||
       error.reason._tag === "EncodeError" ||
       error.reason._tag === "InvalidUrlError"
@@ -209,7 +213,6 @@ const httpError = (error: HttpClientError.HttpClientError) =>
 
 const authError = (error: AntigravityAuthError) =>
   aiError(
-    "streamGenerateContent",
     new AiError.AuthenticationError({
       kind: "Unknown",
       description: error.message,
@@ -262,7 +265,6 @@ export class AntigravityClient extends Context.Service<
               Effect.orElseSucceed(() => ""),
             )
             return yield* aiError(
-              "streamGenerateContent",
               AiError.reasonFromHttpStatus({
                 status: response.status,
                 description: body,
@@ -386,16 +388,12 @@ const budgets: Record<string, number> = {
   max: 63999,
 }
 
-// A thinking budget must stay below the output cap. Like CLIProxyAPI, only
-// Claude requests carry a cap.
+// A thinking budget must stay below the output cap.
 const generationConfig = (
   model: string,
   reasoning: ModelOptions["reasoning"],
-  claudeMaxOutputTokens: number | undefined,
+  maxOutputTokens: number | undefined,
 ): Record<string, unknown> => {
-  const maxOutputTokens = model.startsWith("claude-")
-    ? claudeMaxOutputTokens
-    : undefined
   const cap = maxOutputTokens === undefined ? {} : { maxOutputTokens }
   if (reasoning === null || reasoning?.effort === "none") return cap
   const effort = reasoning?.effort
@@ -430,7 +428,9 @@ const toRequest = (
   maxOutputTokens: number | undefined,
   options: LanguageModel.ProviderOptions,
 ): GenerateContentRequest => {
-  const { system, contents } = toContents(options.prompt, model)
+  const modelFamily = family(model)
+  const claude = modelFamily === "claude"
+  const { system, contents } = toContents(options.prompt, modelFamily)
   const declarations = options.tools
     .filter((tool) => !Tool.isProviderDefined(tool))
     .map((tool) => ({
@@ -447,14 +447,16 @@ const toRequest = (
       ? {
           tools: [{ functionDeclarations: declarations }],
           toolConfig: {
-            functionCallingConfig: functionCalling(
-              options.toolChoice,
-              model.startsWith("claude-"),
-            ),
+            functionCallingConfig: functionCalling(options.toolChoice, claude),
           },
         }
       : undefined),
-    generationConfig: generationConfig(model, reasoning, maxOutputTokens),
+    // Like CLIProxyAPI, only Claude requests carry a cap.
+    generationConfig: generationConfig(
+      model,
+      reasoning,
+      claude ? maxOutputTokens : undefined,
+    ),
   }
 }
 
@@ -480,16 +482,22 @@ const family = (model: string) =>
 
 const signature = (
   options: Prompt.ProviderOptions,
-  model: string,
+  modelFamily: string,
 ): string | undefined => {
   const value = options.antigravity
   return Predicate.isObject(value) &&
     Predicate.isString(value.thoughtSignature) &&
     Predicate.isString(value.model) &&
-    family(value.model) === family(model)
+    family(value.model) === modelFamily
     ? value.thoughtSignature
     : undefined
 }
+
+// The metadata `signature` reads back on a later turn.
+const signed = (thoughtSignature: string | undefined, model: string) =>
+  thoughtSignature
+    ? { metadata: { antigravity: { thoughtSignature, model } } }
+    : undefined
 
 const filePart = (part: Prompt.FilePart): Part => {
   const mimeType = part.mediaType === "image/*" ? "image/jpeg" : part.mediaType
@@ -507,11 +515,11 @@ const filePart = (part: Prompt.FilePart): Part => {
 
 const assistantParts = (
   part: Prompt.AssistantMessagePart,
-  model: string,
+  modelFamily: string,
 ): Array<Part> => {
   // Claude takes signatures on thinking only, like CLIProxyAPI sends them.
-  const claude = family(model) === "claude"
-  const thoughtSignature = signature(part.options, model)
+  const claude = modelFamily === "claude"
+  const thoughtSignature = signature(part.options, modelFamily)
   const callSignature = claude ? undefined : thoughtSignature
   switch (part.type) {
     case "text":
@@ -555,7 +563,7 @@ const toolOutput = (part: Prompt.ToolResultPart) =>
 // Leading system messages become the system instruction; later ones are
 // sent as user text, where they were. Consecutive messages of one role are
 // merged, as Gemini expects turns to alternate.
-const toContents = (prompt: Prompt.Prompt, model: string) => {
+const toContents = (prompt: Prompt.Prompt, modelFamily: string) => {
   const system: Array<string> = []
   const contents: Array<Content> = []
   const push = (role: Content["role"], parts: Array<Part>) => {
@@ -581,7 +589,7 @@ const toContents = (prompt: Prompt.Prompt, model: string) => {
       case "assistant":
         push(
           "model",
-          message.content.flatMap((part) => assistantParts(part, model)),
+          message.content.flatMap((part) => assistantParts(part, modelFamily)),
         )
         break
       case "tool":
@@ -607,12 +615,14 @@ const toContents = (prompt: Prompt.Prompt, model: string) => {
   // Gemini checks the signature of the first tool call of a turn only.
   // Parallel calls after it stay unsigned, as the model sent them. Claude
   // tool calls are never signed.
-  for (const content of family(model) === "claude" ? [] : contents) {
-    if (content.role !== "model") continue
-    const index = content.parts.findIndex((part) => part.functionCall)
-    const first = content.parts[index]
-    if (first !== undefined && first.thoughtSignature === undefined) {
-      content.parts[index] = { ...first, thoughtSignature: SKIP_SIGNATURE }
+  if (modelFamily !== "claude") {
+    for (const content of contents) {
+      if (content.role !== "model") continue
+      const index = content.parts.findIndex((part) => part.functionCall)
+      const first = content.parts[index]
+      if (first !== undefined && first.thoughtSignature === undefined) {
+        content.parts[index] = { ...first, thoughtSignature: SKIP_SIGNATURE }
+      }
     }
   }
   return { system, contents }
@@ -622,40 +632,38 @@ const toContents = (prompt: Prompt.Prompt, model: string) => {
 // `$ref`s are inlined and unsupported keywords dropped.
 const toGeminiSchema = (
   schema: unknown,
-  defs: Record<string, unknown> = Predicate.isObject(schema) &&
-  "$defs" in schema &&
+  defs: Record<PropertyKey, unknown> = Predicate.isObject(schema) &&
   Predicate.isObject(schema.$defs)
-    ? (schema.$defs as Record<string, unknown>)
+    ? schema.$defs
     : {},
 ): unknown => {
   if (!Predicate.isObject(schema)) return schema
-  const source = schema as Record<string, unknown>
-  if (Predicate.isString(source.$ref)) {
-    return toGeminiSchema(defs[source.$ref.replace(/^#\/\$defs\//, "")], defs)
+  if (Predicate.isString(schema.$ref)) {
+    return toGeminiSchema(defs[schema.$ref.replace(/^#\/\$defs\//, "")], defs)
   }
   const out: Record<string, unknown> = {}
-  if (Array.isArray(source.type)) {
-    out.type = source.type.find((type) => type !== "null")
-    if (source.type.includes("null")) out.nullable = true
-  } else if (source.type !== undefined) {
-    out.type = source.type
+  if (Array.isArray(schema.type)) {
+    out.type = schema.type.find((type) => type !== "null")
+    if (schema.type.includes("null")) out.nullable = true
+  } else if (schema.type !== undefined) {
+    out.type = schema.type
   }
   for (const key of ["description", "required", "nullable"] as const) {
-    if (source[key] !== undefined) out[key] = source[key]
+    if (schema[key] !== undefined) out[key] = schema[key]
   }
-  if (Array.isArray(source.enum) && source.enum.every(Predicate.isString)) {
-    out.enum = source.enum
+  if (Array.isArray(schema.enum) && schema.enum.every(Predicate.isString)) {
+    out.enum = schema.enum
   }
-  if (Predicate.isObject(source.properties)) {
+  if (Predicate.isObject(schema.properties)) {
     out.properties = Object.fromEntries(
-      Object.entries(source.properties).map(([key, value]) => [
+      Object.entries(schema.properties).map(([key, value]) => [
         key,
         toGeminiSchema(value, defs),
       ]),
     )
   }
-  if (source.items !== undefined) out.items = toGeminiSchema(source.items, defs)
-  const union = source.anyOf ?? source.oneOf
+  if (schema.items !== undefined) out.items = toGeminiSchema(schema.items, defs)
+  const union = schema.anyOf ?? schema.oneOf
   if (Array.isArray(union)) {
     out.anyOf = union.map((branch) => toGeminiSchema(branch, defs))
   }
@@ -696,18 +704,13 @@ const streamParts = (model: string) => {
   let calls = 0
   let responseId: string | undefined
   let reason: string | undefined
-  let hasToolCalls = false
   let usage: GenerateContentChunk["response"]["usageMetadata"]
   const close = (out: Array<Response.StreamPartEncoded>) => {
     if (block === undefined) return
     out.push({
       type: `${block.type}-end`,
       id: block.id,
-      ...(block.signature && {
-        metadata: {
-          antigravity: { thoughtSignature: block.signature, model },
-        },
-      }),
+      ...signed(block.signature, model),
     })
     block = undefined
   }
@@ -738,18 +741,14 @@ const streamParts = (model: string) => {
       for (const part of candidate?.content?.parts ?? []) {
         if (part.functionCall !== undefined) {
           close(out)
-          hasToolCalls = true
           out.push({
             type: "tool-call",
-            id: part.functionCall.id ?? `${responseId}-${calls++}`,
+            id: part.functionCall.id ?? `${responseId}-${calls}`,
             name: part.functionCall.name,
             params: part.functionCall.args ?? {},
-            ...(part.thoughtSignature && {
-              metadata: {
-                antigravity: { thoughtSignature: part.thoughtSignature, model },
-              },
-            }),
+            ...signed(part.thoughtSignature, model),
           })
+          calls++
           continue
         }
         const type = part.thought ? "reasoning" : "text"
@@ -772,7 +771,7 @@ const streamParts = (model: string) => {
       const thoughts = usage?.thoughtsTokenCount
       out.push({
         type: "finish",
-        reason: finishReason(reason, hasToolCalls),
+        reason: finishReason(reason, calls > 0),
         usage: {
           inputTokens: {
             total: prompt,

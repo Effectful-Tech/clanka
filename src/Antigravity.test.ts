@@ -588,32 +588,46 @@ describe("Antigravity provider", () => {
         assert.deepStrictEqual(withoutToken, [baseModel])
         assert.lengthOf(signedOut.requests, 0)
 
-        // An unreadable token store falls back to the base catalog without HTTP.
-        const unreadableStore = Layer.succeed(
-          KeyValueStore.KeyValueStore,
-          KeyValueStore.makeStringOnly({
-            get: (key) =>
-              Effect.fail(
-                new KeyValueStore.KeyValueStoreError({
-                  method: "get",
-                  key,
-                  message: "EACCES",
-                }),
-              ),
-            set: () => Effect.void,
-            remove: () => Effect.void,
-            clear: Effect.void,
-            size: Effect.succeed(0),
-            keys: Effect.succeed([]),
-          }),
-        )
-        const afterUnreadable = captureHttp(() => jsonResponse({ models: {} }))
-        const [fromUnreadable] = yield* readCatalog(
-          afterUnreadable.layer,
-          unreadableStore,
-        )
-        assert.deepStrictEqual(fromUnreadable, [baseModel])
-        assert.lengthOf(afterUnreadable.requests, 0)
+        // Token-store read failures (on the initial guard or during auth
+        // construction) fall back to the base catalog without HTTP.
+        const storedToken = JSON.stringify({
+          access: "access-token",
+          refresh: "refresh-token",
+          expires: Date.now() + 3600_000,
+          project: "project-1",
+        })
+        for (const failAfter of [0, 1]) {
+          let reads = 0
+          const unreadableStore = Layer.succeed(
+            KeyValueStore.KeyValueStore,
+            KeyValueStore.makeStringOnly({
+              get: (key) =>
+                reads++ < failAfter
+                  ? Effect.succeed(storedToken)
+                  : Effect.fail(
+                      new KeyValueStore.KeyValueStoreError({
+                        method: "get",
+                        key,
+                        message: "EACCES",
+                      }),
+                    ),
+              set: () => Effect.void,
+              remove: () => Effect.void,
+              clear: Effect.void,
+              size: Effect.succeed(0),
+              keys: Effect.succeed([]),
+            }),
+          )
+          const afterUnreadable = captureHttp(() =>
+            jsonResponse({ models: {} }),
+          )
+          const [fromUnreadable] = yield* readCatalog(
+            afterUnreadable.layer,
+            unreadableStore,
+          )
+          assert.deepStrictEqual(fromUnreadable, [baseModel])
+          assert.lengthOf(afterUnreadable.requests, 0)
+        }
 
         // A failing fetch leaves the base catalog intact.
         const failing = captureHttp(() => new Response("oops", { status: 500 }))

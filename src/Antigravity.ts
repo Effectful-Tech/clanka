@@ -445,6 +445,13 @@ export const layerModelsRepo: Layer.Layer<
           }),
         ),
         Effect.timeout("15 seconds"),
+        // `AntigravityAuth` dies on KeyValueStore errors; convert those to
+        // typed failures here without swallowing interruption or other defects.
+        Effect.catchDefect((defect) =>
+          defect instanceof KeyValueStore.KeyValueStoreError
+            ? Effect.fail(defect)
+            : Effect.die(defect),
+        ),
         Effect.catch((error) =>
           Effect.logWarning(
             "Failed to list the Antigravity models",

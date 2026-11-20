@@ -51,11 +51,11 @@ model(model: string, options?: { reasoning?: { effort?: string } | null } & Agen
   `code` or `error` on the redirect path, and returns the first
   redirect's query. It gives up after five minutes. The CLI shows the URL on
   the console; `clanka acp` logs it as a warning, since stdout carries ACP.
-- The Antigravity app's OAuth client is not in the source, since GitHub push
-  protection rejects it. `AntigravityAuth` reads it from
-  `CLANKA_ANTIGRAVITY_CLIENT_ID` and `CLANKA_ANTIGRAVITY_CLIENT_SECRET`
-  through the `ConfigProvider` of its layer, when it first needs it; without
-  them sign-in fails with an error naming both variables.
+- `AntigravityAuth` defaults to the Antigravity CLI's Google OAuth client
+  (`1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com`),
+  and allows overriding it via `CLANKA_ANTIGRAVITY_CLIENT_ID` and
+  `CLANKA_ANTIGRAVITY_CLIENT_SECRET` through the `ConfigProvider` of its
+  layer.
 - `AntigravityAuth` uses that client, the app's scopes and
   the redirect `http://localhost:51121/oauth-callback`, with `access_type=offline`,
   `prompt=consent` and a random `state` it checks.

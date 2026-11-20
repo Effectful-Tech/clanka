@@ -121,21 +121,21 @@ const setupModel = (response: () => Response) => {
   return { ...http, layer }
 }
 
-const authConfig = ConfigProvider.layer(
-  ConfigProvider.fromEnv({
-    env: {
-      CLANKA_ANTIGRAVITY_CLIENT_ID: "client-id",
-      CLANKA_ANTIGRAVITY_CLIENT_SECRET: "client-secret",
-    },
-  }),
-)
+const ANTIGRAVITY_CLIENT_ID =
+  "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+
+const authConfig = ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))
 
 const signIn: OAuthCallback["Service"] = {
   receive: ({ url, redirectUri }) =>
     Effect.sync(() => {
       assert.strictEqual(redirectUri, "http://localhost:51121/oauth-callback")
-      const state = new URL(url).searchParams.get("state")!
-      return new URLSearchParams({ code: "auth-code", state })
+      const params = new URL(url).searchParams
+      assert.strictEqual(params.get("client_id"), ANTIGRAVITY_CLIENT_ID)
+      return new URLSearchParams({
+        code: "auth-code",
+        state: params.get("state")!,
+      })
     }),
 }
 
@@ -512,8 +512,8 @@ describe("AntigravityAuth", () => {
         const exchange = new URLSearchParams(bodyText(onboard.requests[0]!))
         assert.strictEqual(exchange.get("grant_type"), "authorization_code")
         assert.strictEqual(exchange.get("code"), "auth-code")
-        assert.strictEqual(exchange.get("client_id"), "client-id")
-        assert.strictEqual(exchange.get("client_secret"), "client-secret")
+        assert.strictEqual(exchange.get("client_id"), ANTIGRAVITY_CLIENT_ID)
+        assert.match(exchange.get("client_secret")!, /^GOCSPX-/)
         assert.deepStrictEqual(onboard.endpoints(), [
           "token",
           "v1internal:loadCodeAssist",

@@ -23,10 +23,18 @@ import * as HttpClientResponse from "effect/http/HttpClientResponse"
 import * as KeyValueStore from "effect/persistence/KeyValueStore"
 import { OAuthCallback } from "./OAuthCallback.ts"
 
-// The OAuth client of the Antigravity app, which clanka does not ship.
+// The OAuth client of the Antigravity CLI, overridable via environment.
+const DEFAULT_CLIENT_ID =
+  "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+const DEFAULT_CLIENT_SECRET = "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"
+
 const OAuthClient = Config.all({
-  id: Config.String("CLANKA_ANTIGRAVITY_CLIENT_ID"),
-  secret: Config.Redacted("CLANKA_ANTIGRAVITY_CLIENT_SECRET"),
+  id: Config.String("CLANKA_ANTIGRAVITY_CLIENT_ID").pipe(
+    Config.withDefault(DEFAULT_CLIENT_ID),
+  ),
+  secret: Config.Redacted("CLANKA_ANTIGRAVITY_CLIENT_SECRET").pipe(
+    Config.withDefault(Redacted.make(DEFAULT_CLIENT_SECRET)),
+  ),
 })
 const SCOPES = [
   "https://www.googleapis.com/auth/cloud-platform",
@@ -196,19 +204,7 @@ export class AntigravityAuth extends Context.Service<
       ),
     )
 
-    const oauthClient = OAuthClient.parse(
-      yield* ConfigProvider.ConfigProvider,
-    ).pipe(
-      Effect.mapError(
-        (cause) =>
-          new AntigravityAuthError({
-            reason: "LoginFailed",
-            message:
-              "Set CLANKA_ANTIGRAVITY_CLIENT_ID and CLANKA_ANTIGRAVITY_CLIENT_SECRET to the Antigravity app's OAuth client",
-            cause,
-          }),
-      ),
-    )
+    const oauthClient = OAuthClient.parse(yield* ConfigProvider.ConfigProvider)
     const requestToken = (params: Record<string, string>) =>
       Effect.flatMap(oauthClient, (client) =>
         HttpClientRequest.post(TOKEN_URL).pipe(

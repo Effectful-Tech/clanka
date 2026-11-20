@@ -6,6 +6,7 @@
  */
 /** @effect-diagnostics schemaNumber:off */
 import * as Config from "effect/Config"
+import * as ConfigProvider from "effect/ConfigProvider"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Base64Url from "effect/encoding/Base64Url"
@@ -207,8 +208,14 @@ export class AntigravityAuth extends Context.Service<
       ),
     )
 
-    const client = yield* Effect.orDie(OAuthClient)
-    const requestToken = (params: Record<string, string>) =>
+    const oauthClient = OAuthClient.parse(yield* ConfigProvider.ConfigProvider)
+    const requestToken = (
+      client: {
+        readonly id: string
+        readonly secret: Redacted.Redacted<string>
+      },
+      params: Record<string, string>,
+    ) =>
       HttpClientRequest.post(TOKEN_URL).pipe(
         HttpClientRequest.bodyUrlParams({
           client_id: client.id,
@@ -279,6 +286,7 @@ export class AntigravityAuth extends Context.Service<
     })
 
     const login = Effect.gen(function* () {
+      const client = yield* oauthClient
       const state = crypto.randomUUID()
       const verifier = Base64Url.encode(
         crypto.getRandomValues(new Uint8Array(32)),
@@ -309,7 +317,7 @@ export class AntigravityAuth extends Context.Service<
           message: `Google sign-in failed: ${params.get("error") ?? "invalid state"}`,
         })
       }
-      const token = yield* requestToken({
+      const token = yield* requestToken(client, {
         grant_type: "authorization_code",
         code,
         code_verifier: verifier,
@@ -327,7 +335,8 @@ export class AntigravityAuth extends Context.Service<
     // again fixes. Any other failure keeps the token for the next attempt.
     const refreshToken = Effect.fn("AntigravityAuth.refreshToken")(
       function* (token: TokenData) {
-        const refreshed = yield* requestToken({
+        const client = yield* oauthClient
+        const refreshed = yield* requestToken(client, {
           grant_type: "refresh_token",
           refresh_token: token.refresh,
         }).pipe(

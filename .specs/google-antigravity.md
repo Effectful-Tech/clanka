@@ -56,7 +56,7 @@ model(model: string, options?: { reasoning?: { effort?: string } | null } & Agen
   S256 PKCE, `access_type=offline`, `prompt=consent` and a random `state`
   it checks. `CLANKA_ANTIGRAVITY_CLIENT_ID` and
   `CLANKA_ANTIGRAVITY_CLIENT_SECRET`, read through the `ConfigProvider` of
-  its layer when the layer is built, name another client.
+  its layer when signing in or refreshing, name another client.
 - The redirect is the one difference. `agy` redirects to
   `https://antigravity.google/oauth-callback` and asks for a pasted code,
   which `clanka acp` cannot do while it owns stdin and stdout, so clanka

@@ -512,10 +512,27 @@ describe("AntigravityAuth", () => {
         )
         const authUrl = browser.urls[0]!
         const exchange = new URLSearchParams(bodyText(onboard.requests[0]!))
-        const clientId = authUrl.searchParams.get("client_id")
-        assert.isNotEmpty(clientId)
+        const clientId =
+          "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+        assert.strictEqual(
+          `${authUrl.origin}${authUrl.pathname}`,
+          "https://accounts.google.com/o/oauth2/auth",
+        )
+        assert.strictEqual(authUrl.searchParams.get("client_id"), clientId)
         assert.strictEqual(exchange.get("client_id"), clientId)
         assert.isNotEmpty(exchange.get("client_secret"))
+        assert.sameMembers(
+          authUrl.searchParams.get("scope")?.split(" ") ?? [],
+          [
+            "https://www.googleapis.com/auth/cloud-platform",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/userinfo.profile",
+            "https://www.googleapis.com/auth/cclog",
+            "https://www.googleapis.com/auth/experimentsandconfigs",
+            "https://www.googleapis.com/auth/aicode",
+            "openid",
+          ],
+        )
         assert.strictEqual(
           authUrl.searchParams.get("code_challenge_method"),
           "S256",

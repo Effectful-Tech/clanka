@@ -46,7 +46,8 @@ model(model: string, options?: { reasoning?: { effort?: string } | null } & Agen
 ## Sign-in
 
 - `layerPrompt` prints the authorization URL and reads the pasted code with
-  `Prompt.String`, turning a quit (Ctrl-C) into `AuthCodeHandlerError`. When
+  `Prompt.Password` (unwrapping the redacted value without echoing it),
+  turning a quit (Ctrl-C) into `AuthCodeHandlerError`. When
   stdin is not a terminal it fails immediately with instructions to sign in
   from an interactive terminal. `clanka acp` uses `layerUnavailable`, which
   always fails with the same instructions, because ACP owns stdin and stdout.

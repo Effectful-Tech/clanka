@@ -9,6 +9,7 @@ import * as Console from "effect/Console"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
+import * as Redacted from "effect/Redacted"
 import * as Schema from "effect/Schema"
 
 /**
@@ -64,9 +65,10 @@ export const layerPrompt: Layer.Layer<
             return yield* new AuthCodeHandlerError({ message: signInMessage })
           }
           yield* Console.log(`Open ${url} to sign in.`)
-          return yield* Prompt.String({
+          return yield* Prompt.Password({
             message: "Paste the authorization code",
           }).pipe(
+            Effect.map(Redacted.value),
             Effect.provideContext(context),
             Effect.mapError(
               (cause) =>

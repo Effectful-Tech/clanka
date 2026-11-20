@@ -38,7 +38,7 @@ class AntigravityClient {
   models: Effect<ReadonlyArray<ModelsRepo.ModelInfo>, AiError>
   static layer: Layer<AntigravityClient, never, HttpClient | KeyValueStore | AuthCodeHandler>
 }
-layerModelsRepo: Layer<ModelsRepo, never, ModelsRepo | HttpClient | KeyValueStore | AuthCodeHandler>
+layerModelsRepo: Layer<ModelsRepo, never, ModelsRepo | HttpClient | KeyValueStore>
 class MaxOutputTokens extends Context.Reference<number | undefined>
 model(model: string, options?: { reasoning?: { effort?: string } | null } & AgentModelConfig):
   Model<"antigravity", LanguageModel, AntigravityClient>

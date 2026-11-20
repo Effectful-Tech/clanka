@@ -36,7 +36,7 @@ import {
   toTokenStore,
   USER_AGENT,
 } from "./AntigravityAuth.ts"
-import type { AuthCodeHandler } from "./AuthCodeHandler.ts"
+import * as AuthCodeHandler from "./AuthCodeHandler.ts"
 import * as ModelsRepo from "./ModelsRepo.ts"
 
 // Accepted by Cloud Code in place of a thought signature, for tool calls made
@@ -394,16 +394,13 @@ export const layerClient = AntigravityClient.layer
 export const layerModelsRepo: Layer.Layer<
   ModelsRepo.ModelsRepo,
   never,
-  | ModelsRepo.ModelsRepo
-  | HttpClient.HttpClient
-  | KeyValueStore.KeyValueStore
-  | AuthCodeHandler
+  ModelsRepo.ModelsRepo | HttpClient.HttpClient | KeyValueStore.KeyValueStore
 > = Layer.effect(
   ModelsRepo.ModelsRepo,
   Effect.gen(function* () {
     const repo = yield* ModelsRepo.ModelsRepo
     const context = yield* Effect.context<
-      HttpClient.HttpClient | KeyValueStore.KeyValueStore | AuthCodeHandler
+      HttpClient.HttpClient | KeyValueStore.KeyValueStore
     >()
     const tokenStore = toTokenStore(yield* KeyValueStore.KeyValueStore)
     const listed = yield* Effect.cached(
@@ -412,7 +409,15 @@ export const layerModelsRepo: Layer.Layer<
           Option.isNone(token)
             ? Effect.succeed([])
             : AntigravityClient.use((client) => client.models).pipe(
-                Effect.provide(layerClient),
+                Effect.provide(
+                  layerClient.pipe(
+                    Layer.provide(
+                      AuthCodeHandler.layerUnavailable(
+                        "Antigravity model listing does not sign in",
+                      ),
+                    ),
+                  ),
+                ),
               ),
         ),
         Effect.timeout("15 seconds"),

@@ -540,11 +540,7 @@ describe("Antigravity provider", () => {
           }).pipe(
             Effect.provide(
               Antigravity.layerModelsRepo.pipe(
-                Layer.provide([
-                  baseRepo,
-                  httpLayer,
-                  Layer.succeed(AuthCodeHandler, noSignIn),
-                ]),
+                Layer.provide([baseRepo, httpLayer]),
                 Layer.provide(store),
               ),
             ),
@@ -603,11 +599,22 @@ describe("Antigravity provider", () => {
           assert.lengthOf(unused.requests, 0)
         }
 
-        // A failing fetch leaves the base catalog intact.
-        const failing = captureHttp(() => new Response("oops", { status: 500 }))
-        const [afterError] = yield* readCatalog(failing.layer, seededStore())
-        assert.deepStrictEqual(afterError, [baseModel])
-        assert.lengthOf(failing.requests, 1)
+        // A failing fetch or a revoked refresh token leaves the base catalog
+        // intact and never invokes an AuthCodeHandler in context.
+        for (const [response, store] of [
+          [() => new Response("oops", { status: 500 }), seededStore()],
+          [
+            () => jsonResponse({ error: "invalid_grant" }, 400),
+            seededStore({ expires: Date.now() - 1000 }),
+          ],
+        ] as const) {
+          const failing = captureHttp(response)
+          const [afterError] = yield* readCatalog(failing.layer, store).pipe(
+            Effect.provideService(AuthCodeHandler, noSignIn),
+          )
+          assert.deepStrictEqual(afterError, [baseModel])
+          assert.lengthOf(failing.requests, 1)
+        }
 
         // A hung refresh of an expired token times out and falls back to the base catalog.
         const hungUrls: Array<string> = []

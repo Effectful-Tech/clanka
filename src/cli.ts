@@ -452,13 +452,11 @@ const acp = Command.make("acp", {
       Agent.ConversationMode.layer(false),
       Layer.succeed(Logger.LogToStderr, true),
       DeviceCodeHandler.layerLog,
+      AuthCodeHandler.layerUnavailable(
+        "Sign in to Antigravity by running `clanka --provider antigravity` in an interactive terminal.",
+      ),
       Antigravity.layerModelsRepo.pipe(
         Layer.provide(openAiCompatModels(flags)),
-        Layer.provideMerge(
-          AuthCodeHandler.layerUnavailable(
-            "Sign in to Antigravity by running `clanka --provider antigravity` in an interactive terminal.",
-          ),
-        ),
       ),
       compactionConfig(flags),
     ),

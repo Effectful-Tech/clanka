@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest"
+import { vi } from "vitest"
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import * as Effect from "effect/Effect"
@@ -6,12 +7,19 @@ import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as Path from "effect/Path"
+import * as Result from "effect/Result"
 import * as Stream from "effect/Stream"
 import * as LanguageModel from "effect/ai/LanguageModel"
 import * as Model from "effect/ai/Model"
+import * as Yaml from "effect/encoding/Yaml"
 import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as AgentSkills from "./AgentSkills.ts"
+
+vi.mock("effect/encoding/Yaml", async (importOriginal) => {
+  const actual = await importOriginal<typeof Yaml>()
+  return { ...actual }
+})
 
 const skillFile = (name: string, description: string) => `---
 name: ${name}
@@ -698,6 +706,39 @@ body`,
                 'Use when: the task mentions colons, "quotes" or other messy things',
               ],
             ],
+          )
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+  )
+
+  it.effect(
+    "discovers skills when Yaml.parse returns a Result and skips failed Results",
+    () =>
+      withRoots(
+        Effect.fnUntraced(function* (roots) {
+          const originalParse = Yaml.parse
+          const spy = vi.spyOn(Yaml, "parse").mockImplementation((input) => {
+            try {
+              return Result.succeed(originalParse(input))
+            } catch (error) {
+              return Result.fail(error)
+            }
+          })
+          yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
+          yield* writeSkill(
+            roots.project,
+            "valid",
+            skillFile("valid", "Parsed from Result"),
+          )
+          yield* writeSkill(
+            roots.project,
+            "invalid",
+            "---\nname: invalid\ndescription: Use when: deploying\n---\nbody",
+          )
+          const skills = yield* discover(roots)
+          assert.deepStrictEqual(
+            skills.map((skill) => [skill.name, skill.description]),
+            [["valid", "Parsed from Result"]],
           )
         }),
       ).pipe(Effect.provide(NodeServices.layer)),

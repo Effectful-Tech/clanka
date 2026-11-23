@@ -1,5 +1,11 @@
 # clanka
 
+## 0.29.1
+
+### Patch Changes
+
+- [#335](https://github.com/Effectful-Tech/clanka/pull/335) [`bc50254`](https://github.com/Effectful-Tech/clanka/commit/bc50254fbbbb5e5f074d8dc01247852c60289734) Thanks [@effect-bot](https://github.com/effect-bot)! - Unwrap `Result` values returned by `Yaml.parse` during agent skill frontmatter discovery so skills continue to load on newer Effect builds where `Yaml.parse` returns a `Result`.
+
 ## 0.29.0
 
 ### Minor Changes

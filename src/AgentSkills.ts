@@ -261,13 +261,11 @@ const parseFrontmatter = (
   const match = frontmatterPattern.exec(content)
   if (match === null) return Option.none()
   try {
+    // Newer Effect builds return a Result from Yaml.parse instead of throwing.
     const parsed: unknown = Yaml.parse(match[1]!)
-    if (Result.isResult(parsed)) {
-      return Result.isSuccess(parsed)
-        ? decodeFrontmatter(parsed.success)
-        : Option.none()
-    }
-    return decodeFrontmatter(parsed)
+    return decodeFrontmatter(
+      Result.isResult(parsed) ? Result.getOrThrow(parsed) : parsed,
+    )
   } catch {
     return Option.none()
   }

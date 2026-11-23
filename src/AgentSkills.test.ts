@@ -16,10 +16,7 @@ import * as Agent from "./Agent.ts"
 import * as AgentExecutor from "./AgentExecutor.ts"
 import * as AgentSkills from "./AgentSkills.ts"
 
-vi.mock("effect/encoding/Yaml", async (importOriginal) => {
-  const actual = await importOriginal<typeof Yaml>()
-  return { ...actual }
-})
+vi.mock("effect/encoding/Yaml", { spy: true })
 
 const skillFile = (name: string, description: string) => `---
 name: ${name}
@@ -716,15 +713,15 @@ body`,
     () =>
       withRoots(
         Effect.fnUntraced(function* (roots) {
-          const originalParse = Yaml.parse
-          const spy = vi.spyOn(Yaml, "parse").mockImplementation((input) => {
-            try {
-              return Result.succeed(originalParse(input))
-            } catch (error) {
-              return Result.fail(error)
-            }
-          })
-          yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
+          const parse = vi.mocked(Yaml.parse).mockImplementation((input) =>
+            input.includes("rejected")
+              ? Result.fail(new Error("rejected"))
+              : Result.succeed({
+                  name: "valid",
+                  description: "Parsed from Result",
+                }),
+          )
+          yield* Effect.addFinalizer(() => Effect.sync(() => parse.mockReset()))
           yield* writeSkill(
             roots.project,
             "valid",
@@ -732,8 +729,8 @@ body`,
           )
           yield* writeSkill(
             roots.project,
-            "invalid",
-            "---\nname: invalid\ndescription: Use when: deploying\n---\nbody",
+            "rejected",
+            skillFile("rejected", "Never decoded"),
           )
           const skills = yield* discover(roots)
           assert.deepStrictEqual(
